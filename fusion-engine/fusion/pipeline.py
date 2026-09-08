@@ -10,11 +10,12 @@ import json
 import logging
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .correlate import correlate, graph_to_json
+from .neo4j_store import Neo4jStore
 from .ingest_adsb import AirTrack, fetch_military, fetch_regions
 from .ingest_gdelt import OsintEvent, fetch_window
 
@@ -54,10 +55,14 @@ class FusionState:
     gdelt_stamp: str | None = None
     events: list[OsintEvent] = field(default_factory=list)
     tracks: list[AirTrack] = field(default_factory=list)
-    alerts: list = field(default_factory=list)
-    graph: dict = field(default_factory=dict)
+    event_ids: list[str] = field(default_factory=list)
+    batch_id: str | None = None
     updated: str | None = None
+    conflict_event_count: int = 0
+    military_track_count: int = 0
+    alert_count: int = 0
     regions: list[dict] = field(default_factory=load_regions)
+    store: Neo4jStore = field(default_factory=Neo4jStore, repr=False)
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     # --- areas of interest ---
@@ -96,6 +101,8 @@ class FusionState:
         with self.lock:
             self.gdelt_stamp = stamp
             self.events = all_ev
+            self.event_ids = [event.id for event in all_ev]
+            self.conflict_event_count = sum(event.is_conflict for event in all_ev)
         log.info("GDELT: %d geocoded events (%d conflict) from %d window(s)",
                  len(all_ev), sum(e.is_conflict for e in all_ev), windows)
 
@@ -109,41 +116,102 @@ class FusionState:
             tracks += [t for t in civ if t.hex not in have]
         with self.lock:
             self.tracks = tracks
+            self.military_track_count = sum(track.military for track in tracks)
         log.info("ADS-B: %d tracks (%d military)", len(tracks), sum(t.military for t in tracks))
 
     def fuse(self, radius_km=75.0, window_min=240.0):
         with self.lock:
             ev, tr = list(self.events), list(self.tracks)
-        G, alerts = correlate(ev, tr, radius_km=radius_km, window_min=window_min)
-        gj = graph_to_json(G)
+            event_ids = list(self.event_ids)
+        batch_id = f"live:{uuid.uuid4().hex}"
+        self.store.ingest(ev, tr, batch_id)
+        alerts = self.store.correlate(event_ids, batch_id, radius_km, window_min, min_severity=0.35)
         with self.lock:
-            self.alerts = alerts
-            self.graph = gj
+            self.batch_id = batch_id
             self.updated = datetime.now(timezone.utc).isoformat()
-        log.info("FUSE: graph %d nodes / %d edges, %d alerts (top=%s)",
-                 G.number_of_nodes(), G.number_of_edges(), len(alerts),
+            self.alert_count = len(alerts)
+        log.info("FUSE: persisted %d events / %d tracks, %d alerts (top=%s)",
+                 len(ev), len(tr), len(alerts),
                  alerts[0].score if alerts else None)
-        return G, alerts
+        return alerts
 
-    # --- persistence ---
-    def snapshot(self) -> dict:
+    def close(self):
+        self.store.close()
+
+    def api_events(self, conflict_only: bool = False, limit: int = 3000) -> list[dict]:
+        with self.lock:
+            event_ids = list(self.event_ids)
+        return self.store.events(event_ids, conflict_only, limit)
+
+    def api_aircraft(self, military_only: bool = False) -> list[dict]:
+        with self.lock:
+            batch_id = self.batch_id
+        return self.store.aircraft(batch_id, military_only)
+
+    def api_alerts(self, min_score: float = 0.0, limit: int = 100) -> list[dict]:
+        with self.lock:
+            event_ids, batch_id = list(self.event_ids), self.batch_id
+        if not batch_id:
+            return []
+        return [alert.to_dict() for alert in self.store.alerts(event_ids, batch_id, min_score, limit)]
+
+    def api_graph(self, max_nodes: int = 220, max_links: int = 400) -> dict:
+        with self.lock:
+            event_ids, batch_id = list(self.event_ids), self.batch_id
+        return self.store.graph(event_ids, batch_id, max_nodes=max_nodes, max_links=max_links)
+
+    def api_status(self) -> dict:
+        """Fast in-memory status for the live refresh timer.
+
+        The detailed dashboard endpoints query Neo4j independently.  Status must
+        stay cheap so it cannot hold up those requests once history has grown.
+        """
         with self.lock:
             return {
                 "updated": self.updated,
                 "gdelt_window": self.gdelt_stamp,
-                "regions": list(self.regions),
-                "counts": {"events": len(self.events), "conflict_events": sum(e.is_conflict for e in self.events),
-                           "tracks": len(self.tracks), "military_tracks": sum(t.military for t in self.tracks),
-                           "alerts": len(self.alerts)},
-                "events": [e.to_dict() for e in self.events],
-                "tracks": [t.to_dict() for t in self.tracks],
-                "alerts": [a.to_dict() for a in self.alerts],
-                "graph": self.graph,
+                "counts": {
+                    "events": len(self.event_ids),
+                    "conflict_events": self.conflict_event_count,
+                    "tracks": len(self.tracks),
+                    "military_tracks": self.military_track_count,
+                    "alerts": self.alert_count,
+                },
             }
+
+    def api_entity(self, node_id: str) -> dict | None:
+        return self.store.entity(node_id)
+
+    # --- persistence ---
+    def snapshot(self, include_graph: bool = True) -> dict:
+        with self.lock:
+            event_ids, batch_id = list(self.event_ids), self.batch_id
+            updated, gdelt_stamp, regions = self.updated, self.gdelt_stamp, list(self.regions)
+        events = self.store.events(event_ids, limit=20000)
+        tracks = self.store.aircraft(batch_id)
+        alerts = self.store.alerts(event_ids, batch_id, limit=2000) if batch_id else []
+        return {
+            "updated": updated,
+            "gdelt_window": gdelt_stamp,
+            "regions": regions,
+            "counts": {
+                "events": len(event_ids),
+                "conflict_events": sum(event["is_conflict"] for event in events),
+                "tracks": len(tracks),
+                "military_tracks": sum(track["military"] for track in tracks),
+                "alerts": len(alerts),
+            },
+            "events": events,
+            "tracks": tracks,
+            "alerts": [alert.to_dict() for alert in alerts],
+            "graph": self.store.graph(event_ids, batch_id) if include_graph else {"nodes": [], "links": [], "stats": {}},
+        }
 
     def save(self, path: Path = DATA / "snapshot.json"):
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(self.snapshot()), encoding="utf-8")
+        # This periodic artifact is for recovery/audit.  Building a browser graph
+        # projection on every 60-second ingest needlessly competes with the UI.
+        path.write_text(json.dumps(self.snapshot(include_graph=False)), encoding="utf-8")
         log.info("saved %s", path)
 
 
