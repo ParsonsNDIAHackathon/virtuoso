@@ -109,11 +109,121 @@ L.control.layers(null, {'Areas of interest':layers.regions, 'OSINT events':layer
 let DATA = { events:[], tracks:[], alerts:[], graph:{nodes:[],links:[]}, tails:[] };
 let MODE = 'live', SC = null, RCFG = null, playing = false, playTimer = null;
 let REGIONS = [];
-let liveLoading = false, graphLoading = false, graphLoaded = false, graphLastRefresh = 0;
+let liveLoading = false, liveRefreshQueued = false, queuedGraphRefresh = false;
+let graphLoading = false, graphLoaded = false, graphLastRefresh = 0;
 const GRAPH_REFRESH_MS = 5 * 60 * 1000;
+let mapRefreshTimer = null;
+const liveMapLayers = {events:new Map(), tracks:new Map(), links:new Map()};
 const NM_KM = 1.852;
 const distKm = (a,b,c,d) => { const R=6371, p=Math.PI/180, x=Math.sin((c-a)*p/2)**2 + Math.cos(a*p)*Math.cos(c*p)*Math.sin((d-b)*p/2)**2; return 2*R*Math.asin(Math.sqrt(x)); };
 const inAOI = (lat,lon) => !$('#aoi-filter').checked || !REGIONS.length || REGIONS.some(r => distKm(lat,lon,r.lat,r.lon) <= r.radius_nm*NM_KM);
+
+function mapLimits() {
+  const z = map.getZoom();
+  if (z < 4) return {events:160, tracks:240, alerts:40, lines:35};
+  if (z < 6) return {events:300, tracks:450, alerts:80, lines:70};
+  return {events:500, tracks:700, alerts:120, lines:100};
+}
+
+function viewportQuery() {
+  const b = map.getBounds();
+  return new URLSearchParams({
+    west:b.getWest().toFixed(5), south:b.getSouth().toFixed(5),
+    east:b.getEast().toFixed(5), north:b.getNorth().toFixed(5),
+  }).toString();
+}
+
+function clearLiveMap() {
+  for (const [group, items] of [[layers.events, liveMapLayers.events], [layers.air, liveMapLayers.tracks], [layers.links, liveMapLayers.links]]) {
+    items.forEach(layer => group.removeLayer(layer));
+    items.clear();
+  }
+}
+
+function syncLayers(items, store, group, create, update) {
+  const keep = new Set();
+  for (const item of items) {
+    keep.add(item.id);
+    const existing = store.get(item.id);
+    if (existing) update(existing, item);
+    else {
+      const layer = create(item);
+      layer.addTo(group);
+      store.set(item.id, layer);
+    }
+  }
+  for (const [id, layer] of store) {
+    if (!keep.has(id)) { group.removeLayer(layer); store.delete(id); }
+  }
+}
+
+function aggregate(items, type) {
+  if (map.getZoom() >= 5) return items.map(item => ({id:`${type}:${item.id}`, item}));
+  const cellSize = 64, zoom = map.getZoom(), buckets = new Map();
+  for (const item of items) {
+    const p = map.project([item.lat, item.lon], zoom);
+    const key = `${Math.floor(p.x/cellSize)}:${Math.floor(p.y/cellSize)}`;
+    const bucket = buckets.get(key) || [];
+    bucket.push(item); buckets.set(key, bucket);
+  }
+  return [...buckets].map(([key, members]) => {
+    if (members.length === 1) return {id:`${type}:${members[0].id}`, item:members[0]};
+    const lat = members.reduce((sum, item) => sum + item.lat, 0) / members.length;
+    const lon = members.reduce((sum, item) => sum + item.lon, 0) / members.length;
+    return {id:`cluster:${type}:${zoom}:${key}`, cluster:true, type, members, lat, lon};
+  });
+}
+
+function clusterIcon(spec) {
+  const color = spec.type === 'tracks' && spec.members.some(track => track.military) ? '#ff5c7a' : spec.type === 'tracks' ? '#4cc9f0' : '#ffb454';
+  return L.divIcon({className:'', iconSize:[30,30], iconAnchor:[15,15], html:`<div style="width:30px;height:30px;border-radius:50%;display:grid;place-items:center;background:${color};color:#0b1220;border:2px solid #fff;font-size:10px;font-weight:800">${spec.members.length}</div>`});
+}
+
+function eventLayer(spec) {
+  if (spec.cluster) {
+    const layer = L.marker([spec.lat, spec.lon], {icon:clusterIcon(spec)});
+    layer.bindTooltip(`${spec.members.length} events — click to zoom in`);
+    layer.on('click', () => map.setView([spec.lat, spec.lon], Math.min(Math.max(map.getZoom()+2, 5), 8)));
+    return layer;
+  }
+  const e = spec.item, social = (e.source_domain||'').startsWith('t.me/');
+  const layer = social
+    ? L.marker([e.lat, e.lon], {icon:L.divIcon({className:'', html:`<div style="width:10px;height:10px;transform:rotate(45deg);background:${e.is_conflict?'#f472b6':'#9d174d'};border:1px solid #0b1220"></div>`, iconSize:[10,10]})})
+    : L.circleMarker([e.lat, e.lon], {radius:e.is_conflict?5:3, color:e.is_conflict?'#ffb454':'#a16207', fillOpacity:e.is_conflict?.8:.5, weight:1});
+  layer._fusionItem = e;
+  layer.bindTooltip(social ? `Telegram ${e.source_domain.slice(5)}: ${e.place}` : `${e.root_label}: ${e.place}`);
+  layer.on('click', () => showEvent(layer._fusionItem));
+  return layer;
+}
+
+function updateEventLayer(layer, spec) {
+  if (spec.cluster) { layer.setLatLng([spec.lat, spec.lon]); layer.setIcon(clusterIcon(spec)); layer.setTooltipContent(`${spec.members.length} events — click to zoom in`); return; }
+  const e = spec.item, social = (e.source_domain||'').startsWith('t.me/');
+  layer._fusionItem = e; layer.setLatLng([e.lat, e.lon]);
+  layer.setTooltipContent(social ? `Telegram ${e.source_domain.slice(5)}: ${e.place}` : `${e.root_label}: ${e.place}`);
+}
+
+function trackLayer(spec) {
+  if (spec.cluster) {
+    const layer = L.marker([spec.lat, spec.lon], {icon:clusterIcon(spec)});
+    layer.bindTooltip(`${spec.members.length} aircraft — click to zoom in`);
+    layer.on('click', () => map.setView([spec.lat, spec.lon], Math.min(Math.max(map.getZoom()+2, 5), 8)));
+    return layer;
+  }
+  const t = spec.item, layer = L.circleMarker([t.lat, t.lon], {radius:t.military?4:2.5, color:t.military?'#ff5c7a':'#4cc9f0', fillOpacity:.8, weight:1});
+  layer._fusionItem = t;
+  layer.bindTooltip(`${t.callsign||t.registration||t.hex} ${t.ac_type||''} ${t.alt_ft??'ground'} ft`);
+  layer.on('click', () => showTrack(layer._fusionItem));
+  return layer;
+}
+
+function updateTrackLayer(layer, spec) {
+  if (spec.cluster) { layer.setLatLng([spec.lat, spec.lon]); layer.setIcon(clusterIcon(spec)); layer.setTooltipContent(`${spec.members.length} aircraft — click to zoom in`); return; }
+  const t = spec.item;
+  layer._fusionItem = t; layer.setLatLng([t.lat, t.lon]);
+  layer.setStyle({radius:t.military?4:2.5, color:t.military?'#ff5c7a':'#4cc9f0'});
+  layer.setTooltipContent(`${t.callsign||t.registration||t.hex} ${t.ac_type||''} ${t.alt_ft??'ground'} ft`);
+}
 
 async function loadRegions() {
   REGIONS = await fetch('/api/regions').then(r=>r.json());
@@ -222,16 +332,17 @@ async function refreshGraph() {
   }
 }
 
-async function loadLive({refreshGraph = false} = {}) {
-  // A slow graph query must never queue a second live refresh behind it.
-  if (liveLoading) return;
+async function loadLive({refreshGraph: refreshGraphNow = false} = {}) {
+  // A slow request never overlaps another; the newest viewport is queued.
+  if (liveLoading) { liveRefreshQueued = true; queuedGraphRefresh ||= refreshGraphNow; return; }
   liveLoading = true;
   try {
+    const limits = mapLimits(), view = viewportQuery();
     const [st, ev, tr, al] = await Promise.all([
       fetch('/api/status').then(r=>r.json()),
-      fetch('/api/events?conflict_only=true').then(r=>r.json()),
-      fetch('/api/aircraft').then(r=>r.json()),
-      fetch('/api/alerts?limit=300').then(r=>r.json()),
+      fetch(`/api/events?conflict_only=true&limit=${limits.events}&${view}`).then(r=>r.json()),
+      fetch(`/api/aircraft?limit=${limits.tracks}&${view}`).then(r=>r.json()),
+      fetch(`/api/alerts?limit=${limits.alerts}&${view}`).then(r=>r.json()),
     ]);
     DATA = { events:ev, tracks:tr, alerts:al, graph:DATA.graph, tails:[] };
     $('#s-ev').textContent = st.counts.events; $('#s-conf').textContent = st.counts.conflict_events;
@@ -244,17 +355,22 @@ async function loadLive({refreshGraph = false} = {}) {
   } finally {
     liveLoading = false;
   }
-  if (refreshGraph || !graphLoaded || Date.now() - graphLastRefresh >= GRAPH_REFRESH_MS) refreshGraph();
+  if (refreshGraphNow || !graphLoaded || Date.now() - graphLastRefresh >= GRAPH_REFRESH_MS) refreshGraph();
+  if (liveRefreshQueued) {
+    const graph = queuedGraphRefresh;
+    liveRefreshQueued = false; queuedGraphRefresh = false;
+    loadLive({refreshGraph:graph});
+  }
 }
 const fmtWin = w => w ? `${w.slice(0,4)}-${w.slice(4,6)}-${w.slice(6,8)} ${w.slice(8,10)}:${w.slice(10,12)}Z` : '–';
 
 function drawMap() {
+  if (MODE === 'live') return drawLiveMap();
+  clearLiveMap();
   ['events','air','links'].forEach(k=>layers[k].clearLayers());
-  const evById = {};
   (DATA.tails||[]).forEach(tl => L.polyline(tl.coords, {color: tl.military?'#ff5c7a':'#4cc9f0', weight:1, opacity:.45}).addTo(layers.air)
       .bindTooltip(`${tl.callsign||tl.r||tl.hex} ${tl.t||''} · last 30 min`));
   DATA.events.filter(e=>inAOI(e.lat,e.lon)).forEach(e => {
-    evById[e.id] = e;
     const social = (e.source_domain||'').startsWith('t.me/');
     const m = social
       ? L.marker([e.lat, e.lon], {icon: L.divIcon({className:'', html:`<div style="width:10px;height:10px;transform:rotate(45deg);background:${e.is_conflict?'#f472b6':'#9d174d'};border:1px solid #0b1220"></div>`, iconSize:[10,10]})}).addTo(layers.events)
@@ -270,6 +386,30 @@ function drawMap() {
     const t = trById[a.aircraft_id]; if (!t) return;
     L.polyline([[a.lat,a.lon],[t.lat,t.lon]], {color: a.score>0.5?'#ff5c7a':'#ffb454', weight: 1+3*a.score, opacity:.7}).addTo(layers.links)
      .bindTooltip(`${a.score.toFixed(2)} · ${a.aircraft_label} ↔ ${a.event_label}`);
+  });
+}
+
+function drawLiveMap() {
+  const events = DATA.events.filter(e => inAOI(e.lat, e.lon));
+  const tracks = DATA.tracks.filter(t => inAOI(t.lat, t.lon));
+  syncLayers(aggregate(events, 'events'), liveMapLayers.events, layers.events, eventLayer, updateEventLayer);
+  syncLayers(aggregate(tracks, 'tracks'), liveMapLayers.tracks, layers.air, trackLayer, updateTrackLayer);
+
+  const tracksById = Object.fromEntries(tracks.map(track => [track.id, track]));
+  const lineLimit = mapLimits().lines;
+  const lines = DATA.alerts.filter(alert => inAOI(alert.lat, alert.lon)).slice(0, lineLimit)
+    .map(alert => ({id:`link:${alert.id}`, alert, track:tracksById[alert.aircraft_id]}))
+    .filter(item => item.track);
+  syncLayers(lines, liveMapLayers.links, layers.links, item => {
+    const {alert, track} = item;
+    const layer = L.polyline([[alert.lat, alert.lon], [track.lat, track.lon]], {color:alert.score > .5 ? '#ff5c7a' : '#ffb454', weight:1 + 3 * alert.score, opacity:.7});
+    layer.bindTooltip(`${alert.score.toFixed(2)} · ${alert.aircraft_label} ↔ ${alert.event_label}`);
+    return layer;
+  }, (layer, item) => {
+    const {alert, track} = item;
+    layer.setLatLngs([[alert.lat, alert.lon], [track.lat, track.lon]]);
+    layer.setStyle({color:alert.score > .5 ? '#ff5c7a' : '#ffb454', weight:1 + 3 * alert.score});
+    layer.setTooltipContent(`${alert.score.toFixed(2)} · ${alert.aircraft_label} ↔ ${alert.event_label}`);
   });
 }
 
@@ -327,6 +467,11 @@ function drawGraph() {
 
 $('#refresh').onclick = async () => { $('#refresh').textContent='Refreshing…'; await fetch('/api/refresh',{method:'POST'}); await load(); $('#refresh').textContent='Refresh ADS-B + re-fuse'; };
 $('#graph-refresh').onclick = refreshGraph;
+map.on('moveend', () => {
+  if (MODE !== 'live' || drawing) return;
+  clearTimeout(mapRefreshTimer);
+  mapRefreshTimer = setTimeout(() => loadLive(), 250);
+});
 loadRegions().then(() => loadLive({refreshGraph:true}));
 setInterval(()=>{ if (MODE==='live') loadLive({refreshGraph: Date.now() - graphLastRefresh >= GRAPH_REFRESH_MS}); }, 60000);
 let _rt; window.addEventListener('resize', ()=>{ clearTimeout(_rt); _rt=setTimeout(()=>{ map.invalidateSize(); drawGraph(); }, 200); });

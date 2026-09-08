@@ -163,15 +163,17 @@ class FusionState:
     def close(self):
         self.store.close()
 
-    def api_events(self, conflict_only: bool = False, limit: int = 3000) -> list[dict]:
+    def api_events(self, conflict_only: bool = False, limit: int = 3000,
+                   bounds: tuple[float, float, float, float] | None = None) -> list[dict]:
         with self.lock:
             event_ids = list(self.event_ids)
-        return self.store.events(event_ids, conflict_only, limit)
+        return self.store.events(event_ids, conflict_only, limit, bounds)
 
-    def api_aircraft(self, military_only: bool = False) -> list[dict]:
+    def api_aircraft(self, military_only: bool = False, limit: int = 3000,
+                     bounds: tuple[float, float, float, float] | None = None) -> list[dict]:
         with self.lock:
             batch_id = self.batch_id
-        return self.store.aircraft(batch_id, military_only)
+        return self.store.aircraft(batch_id, military_only, limit, bounds)
 
     def api_alerts(self, min_score: float = 0.0, limit: int = 100) -> list[dict]:
         with self.lock:
@@ -179,6 +181,14 @@ class FusionState:
         if not batch_id:
             return []
         return [alert.to_dict() for alert in self.store.alerts(event_ids, batch_id, min_score, limit)]
+
+    def api_map_alerts(self, min_score: float = 0.0, limit: int = 100,
+                       bounds: tuple[float, float, float, float] | None = None) -> list[dict]:
+        with self.lock:
+            event_ids, batch_id = list(self.event_ids), self.batch_id
+        if not batch_id:
+            return []
+        return [alert.to_dict() for alert in self.store.alerts(event_ids, batch_id, min_score, limit, bounds)]
 
     def api_graph(self, max_nodes: int = 220, max_links: int = 400) -> dict:
         with self.lock:

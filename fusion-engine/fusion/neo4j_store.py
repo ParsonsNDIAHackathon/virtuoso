@@ -202,13 +202,19 @@ class Neo4jStore:
         return self.alerts(event_ids, batch_id)
 
     def alerts(self, event_ids: list[str], batch_id: str, min_score: float = 0.0,
-               limit: int | None = None) -> list[Alert]:
+               limit: int | None = None, bounds: tuple[float, float, float, float] | None = None) -> list[Alert]:
+        """Return correlations in an optional map viewport (west, south, east, north)."""
+        west, south, east, north = bounds or (-180.0, -90.0, 180.0, 90.0)
         records = self._query(
             """
             MATCH (a:Aircraft)-[r:NEAR {batch_id: $batch_id}]->(e:Event)
             WHERE e.id IN $event_ids AND r.score >= $min_score
+              AND e.lat >= $south AND e.lat <= $north
+              AND (($west <= $east AND e.lon >= $west AND e.lon <= $east)
+                   OR ($west > $east AND (e.lon >= $west OR e.lon <= $east)))
             RETURN a, e, r ORDER BY r.score DESC
             """, event_ids=event_ids, batch_id=batch_id, min_score=min_score,
+            west=west, south=south, east=east, north=north,
         )
         alerts = []
         for record in records:
@@ -232,26 +238,41 @@ class Neo4jStore:
         output = sorted(dedupe_alerts(alerts), key=lambda alert: alert.score, reverse=True)
         return output[:limit] if limit else output
 
-    def events(self, event_ids: list[str], conflict_only: bool = False, limit: int = 3000) -> list[dict]:
+    def events(self, event_ids: list[str], conflict_only: bool = False, limit: int = 3000,
+               bounds: tuple[float, float, float, float] | None = None) -> list[dict]:
+        """Return events in an optional map viewport (west, south, east, north)."""
         if not event_ids:
             return []
+        west, south, east, north = bounds or (-180.0, -90.0, 180.0, 90.0)
         records = self._query(
             """
-            MATCH (e:Event) WHERE e.id IN $event_ids AND ($conflict_only = false OR e.is_conflict = true)
-            RETURN e ORDER BY e.observed_at DESC LIMIT $limit
+            MATCH (e:Event)
+            WHERE e.id IN $event_ids AND ($conflict_only = false OR e.is_conflict = true)
+              AND e.lat >= $south AND e.lat <= $north
+              AND (($west <= $east AND e.lon >= $west AND e.lon <= $east)
+                   OR ($west > $east AND (e.lon >= $west OR e.lon <= $east)))
+            RETURN e ORDER BY e.severity DESC, e.observed_at DESC LIMIT $limit
             """, event_ids=event_ids, conflict_only=conflict_only, limit=limit,
+            west=west, south=south, east=east, north=north,
         )
         return [{key: value for key, value in dict(record["e"]).items() if key in EVENT_FIELDS} for record in records]
 
-    def aircraft(self, batch_id: str | None, military_only: bool = False) -> list[dict]:
+    def aircraft(self, batch_id: str | None, military_only: bool = False, limit: int = 3000,
+                 bounds: tuple[float, float, float, float] | None = None) -> list[dict]:
+        """Return current-batch aircraft in an optional map viewport."""
         if not batch_id:
             return []
+        west, south, east, north = bounds or (-180.0, -90.0, 180.0, 90.0)
         records = self._query(
             """
             MATCH (a:Aircraft)-[:OBSERVED_AS]->(o:AirObservation {batch_id: $batch_id})
-            WHERE $military_only = false OR o.military = true
-            RETURN o, a.id AS aircraft_id ORDER BY o.military DESC, o.hex
-            """, batch_id=batch_id, military_only=military_only,
+            WHERE ($military_only = false OR o.military = true)
+              AND o.lat >= $south AND o.lat <= $north
+              AND (($west <= $east AND o.lon >= $west AND o.lon <= $east)
+                   OR ($west > $east AND (o.lon >= $west OR o.lon <= $east)))
+            RETURN o, a.id AS aircraft_id ORDER BY o.military DESC, o.hex LIMIT $limit
+            """, batch_id=batch_id, military_only=military_only, limit=limit,
+            west=west, south=south, east=east, north=north,
         )
         out = []
         for record in records:

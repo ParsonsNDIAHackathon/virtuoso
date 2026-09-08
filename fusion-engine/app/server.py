@@ -9,7 +9,7 @@ import logging
 import threading
 from pathlib import Path
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -22,6 +22,24 @@ STATIC = Path(__file__).parent / "static"
 app = FastAPI(title="Multi-INT Fusion Engine", version="0.1")
 state = FusionState()
 _worker: threading.Thread | None = None
+
+
+def _bounds(west: float | None, south: float | None, east: float | None,
+            north: float | None) -> tuple[float, float, float, float] | None:
+    """Validate Leaflet bounds and normalize longitudes for Neo4j queries."""
+    values = (west, south, east, north)
+    if all(value is None for value in values):
+        return None
+    if any(value is None for value in values):
+        raise HTTPException(status_code=422, detail="west, south, east, and north must be supplied together")
+    assert west is not None and south is not None and east is not None and north is not None
+    if not -90 <= south <= north <= 90:
+        raise HTTPException(status_code=422, detail="invalid latitude bounds")
+    # A world view can span more than one wrapped map copy.
+    if east - west >= 360:
+        return -180.0, south, 180.0, north
+    normalise = lambda lon: ((lon + 180) % 360) - 180
+    return normalise(west), south, normalise(east), north
 
 
 @app.on_event("startup")
@@ -47,18 +65,24 @@ def status():
 
 
 @app.get("/api/alerts")
-def alerts(limit: int = Query(100, le=2000), min_score: float = 0.0):
-    return state.api_alerts(min_score, limit)
+def alerts(limit: int = Query(100, le=2000), min_score: float = 0.0,
+           west: float | None = None, south: float | None = None,
+           east: float | None = None, north: float | None = None):
+    return state.api_map_alerts(min_score, limit, _bounds(west, south, east, north))
 
 
 @app.get("/api/events")
-def events(conflict_only: bool = False, limit: int = Query(3000, le=20000)):
-    return state.api_events(conflict_only, limit)
+def events(conflict_only: bool = False, limit: int = Query(3000, le=20000),
+           west: float | None = None, south: float | None = None,
+           east: float | None = None, north: float | None = None):
+    return state.api_events(conflict_only, limit, _bounds(west, south, east, north))
 
 
 @app.get("/api/aircraft")
-def aircraft(military_only: bool = False):
-    return state.api_aircraft(military_only)
+def aircraft(military_only: bool = False, limit: int = Query(3000, le=10000),
+             west: float | None = None, south: float | None = None,
+             east: float | None = None, north: float | None = None):
+    return state.api_aircraft(military_only, limit, _bounds(west, south, east, north))
 
 
 @app.get("/api/graph")
