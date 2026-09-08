@@ -133,20 +133,22 @@ class FusionState:
 
     def refresh_firms(self):
         """Latest 24 h of VIIRS thermal anomalies inside every area-of-interest circle, scored for
-        novelty against the same weekday one week earlier (routine flares score ~0)."""
+        novelty against the previous two days (routine flares score ~0)."""
         from datetime import timedelta
         with self.lock:
             circles = list(self.regions)
         out = []
         seen = set()
-        base_day = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%d")
+        # rolling baseline: the two days before today (flare pixels wander ~1-2 km between passes,
+        # so a single day a week earlier over-flags routine flares as new)
+        base_day = (datetime.now(timezone.utc) - timedelta(days=2)).strftime("%Y-%m-%d")
         for r in circles:
             d = r.get("radius_nm", 250) * 1.852 / 111.0            # deg of latitude
             dlon = d / max(0.2, abs(__import__("math").cos(__import__("math").radians(r["lat"]))))
             bbox = (max(-90, r["lat"] - d), max(-180, r["lon"] - dlon), min(90, r["lat"] + d), min(180, r["lon"] + dlon))
             try:
                 hs = fetch_firms(bbox, None, days=1)
-                base = fetch_firms(bbox, base_day, days=1)
+                base = fetch_firms(bbox, base_day, days=2)
                 hs = firms_novelty(hs, base)
             except Exception as e:
                 log.warning("FIRMS %s failed: %s", r.get("name"), e)

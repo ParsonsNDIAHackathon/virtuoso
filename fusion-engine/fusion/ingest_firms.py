@@ -89,14 +89,15 @@ if __name__ == "__main__":
     import argparse, json
     ap = argparse.ArgumentParser()
     ap.add_argument("day")
-    ap.add_argument("--baseline", default=None, help="baseline day for novelty, e.g. 2026-08-11")
+    ap.add_argument("--baseline", default=None, help="baseline start day for novelty (2-day window); default = day-2")
     ap.add_argument("--bbox", default="23.5,52,28.5,59")
     a = ap.parse_args()
     logging.basicConfig(level=logging.INFO)
     bbox = tuple(float(x) for x in a.bbox.split(","))
     hs = fetch(bbox, a.day)
-    if a.baseline:
-        hs = novelty(hs, fetch(bbox, a.baseline))
+    from datetime import timedelta
+    base_day = a.baseline or (datetime.strptime(a.day, "%Y-%m-%d") - timedelta(days=2)).strftime("%Y-%m-%d")
+    hs = novelty(hs, fetch(bbox, base_day, days=2))
     root = Path(__file__).resolve().parent.parent
     out = root / "data" / "replay" / f"{a.day}_firms.json"
     out.parent.mkdir(parents=True, exist_ok=True)
