@@ -180,6 +180,18 @@ def track_polylines(tracks: dict[str, dict], t_from: float, t_to: float, max_poi
     return out
 
 
+
+def _data_root():
+    """data dir shared with the server: FUSION_DATA_DIR (from env or fusion-engine/.env), else ./data"""
+    import os
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+    except Exception:
+        pass
+    return Path(os.getenv("FUSION_DATA_DIR") or (Path(__file__).resolve().parent.parent / "data"))
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -190,10 +202,10 @@ if __name__ == "__main__":
     ex.add_argument("--max-members", type=int, default=None)
     a = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
-    root = Path(__file__).resolve().parent.parent
+    root = _data_root().parent  # data dir parent; see _data_root()
     bbox = tuple(float(x) for x in a.bbox.split(","))
     day = re.search(r"(\d{4}-\d{2}-\d{2})", a.archive_dir)
-    out = Path(a.out) if a.out else root / "data" / "replay" / f"{day.group(1) if day else 'archive'}_adsb.json"
+    out = Path(a.out) if a.out else _data_root() / "replay" / f"{day.group(1) if day else 'archive'}_adsb.json"
     kept = extract_bbox(Path(a.archive_dir), bbox, out, max_members=a.max_members)
     mil = sum(1 for v in kept.values() if v["military"])
     print(f"{len(kept)} aircraft in bbox ({mil} military) -> {out}")

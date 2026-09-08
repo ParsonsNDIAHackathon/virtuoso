@@ -191,6 +191,18 @@ def fetch_latest(channel: str) -> list[SocialPost]:
     return sorted(parse_page(channel, r.text), key=lambda p: p.ts)
 
 
+
+def _data_root():
+    """data dir shared with the server: FUSION_DATA_DIR (from env or fusion-engine/.env), else ./data"""
+    import os
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+    except Exception:
+        pass
+    return Path(os.getenv("FUSION_DATA_DIR") or (Path(__file__).resolve().parent.parent / "data"))
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("channels", nargs="*", default=DEFAULT_CHANNELS)
@@ -205,8 +217,8 @@ if __name__ == "__main__":
             allp += fetch_channel(ch, a.since, a.until)
         except Exception as e:
             log.warning("%s failed: %s", ch, e)
-    root = Path(__file__).resolve().parent.parent
-    out = Path(a.out) if a.out else root / "data" / "replay" / f"{a.since}_telegram.json"
+    root = _data_root().parent  # data dir parent; see _data_root()
+    out = Path(a.out) if a.out else _data_root() / "replay" / f"{a.since}_telegram.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps([p.to_dict() for p in allp], ensure_ascii=False), encoding="utf-8")
     print(f"{len(allp)} posts -> {out}")

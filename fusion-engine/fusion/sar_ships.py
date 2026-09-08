@@ -142,6 +142,18 @@ def detect(scene_dir: Path, level: int = 2, k: float = 5.0, floor: float | None 
     return dets
 
 
+
+def _data_root():
+    """data dir shared with the server: FUSION_DATA_DIR (from env or fusion-engine/.env), else ./data"""
+    import os
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+    except Exception:
+        pass
+    return Path(os.getenv("FUSION_DATA_DIR") or (Path(__file__).resolve().parent.parent / "data"))
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("scene_dir")
@@ -153,9 +165,9 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
     bbox = tuple(float(x) for x in a.bbox.split(","))
     dets = detect(Path(a.scene_dir), level=a.level, k=a.k, bbox=bbox)
-    root = Path(__file__).resolve().parent.parent
+    root = _data_root().parent  # data dir parent; see _data_root()
     day = re.search(r"(\d{8})T", Path(a.scene_dir).name).group(1)
-    out = Path(a.out) if a.out else root / "data" / "replay" / f"{day[:4]}-{day[4:6]}-{day[6:]}_sar.json"
+    out = Path(a.out) if a.out else _data_root() / "replay" / f"{day[:4]}-{day[4:6]}-{day[6:]}_sar.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     prev = json.loads(out.read_text(encoding="utf-8")) if out.exists() else []
     prev = [d for d in prev if d.get("scene") != Path(a.scene_dir).name]
