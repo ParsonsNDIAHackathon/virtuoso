@@ -43,6 +43,7 @@ export type CuratedLead = { url: string; platform: string; publisher: string; pu
 export type Evidence = { kind: string; prepared_date?: string; retrieved_date?: string; vessels: CuratedVessel[]; sources: CuratedSource[]; claims: CuratedClaim[]; leads: CuratedLead[]; excluded: Array<{ reason?: string }>; notes: string[]; window?: { t_min: number; t_max: number; label?: string } };
 export type ReplaySnapshot = { events: Event[]; tracks: Track[]; alerts: Alert[]; graph: Graph; tails?: Tail[]; firms?: Firms[]; sar?: Sar[]; sar_scene?: { n: number; label: string; ts: string }; sar_core?: Sar[]; sar_core_scene?: { n: number; label: string; ts: string }; counts: Status["counts"]; t_iso: string };
 export type Entity = { neighbors?: Array<{ kind: string; label: string }> };
+export type LinkPreview = { url: string; host: string; title?: string | null; description?: string | null; image?: string | null; site_name?: string | null; published?: string | null; embeddable?: boolean; error?: string | null; status?: number };
 
 export type LivePicture = { status: Status; events: Event[]; tracks: Track[]; alerts: Alert[]; firms: Firms[] };
 
