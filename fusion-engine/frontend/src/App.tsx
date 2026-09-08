@@ -59,6 +59,13 @@ function telegramPostId(href: string) {
   } catch { return undefined; }
 }
 
+function canPreviewSource(href?: string) {
+  if (!href) return false;
+  try {
+    return new URL(href).hostname !== "t.me" || Boolean(telegramPostId(href));
+  } catch { return false; }
+}
+
 function TelegramPostEmbed({ post, setLoading }: { post: string; setLoading: (value: boolean) => void }) {
   const element = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -130,8 +137,8 @@ export function App() {
   const records = live ? { events: events.data ?? [], tracks: tracks.data ?? [], alerts: alerts.data ?? [], firms: firms.data ?? [], sar: [], tails: [], sarCore: [] } : { events: replay.events, tracks: replay.tracks, alerts: replay.alerts, firms: replay.firms ?? [], sar: replay.sar ?? [], tails: replay.tails ?? [], sarCore: replay.sar_core ?? [] };
   const currentStatus: Status = live ? status.data ?? EMPTY_STATUS : { counts: replay.counts, updated: replay.t_iso, store: "replay" };
   const queue = useMemo(() => records.alerts.filter((alert) => !filterAoi || (regions.data ?? []).length === 0 || (regions.data ?? []).some((region) => distanceKm(region.lat, region.lon, alert.lat, alert.lon) <= region.radius_nm * 1.852)), [records.alerts, filterAoi, regions.data]);
-  const selectMap = useCallback((next: Detail) => { setDetail(next); setSourceViewer(next.href ? next : null); }, []);
-  const selectAlert = useCallback((alert: Alert) => { const event = records.events.find((item) => item.id === alert.event_id); const next = { title: `Correlation score ${alert.score.toFixed(3)}`, lines: [alert.reason ?? "Correlation", `Aircraft ${alert.aircraft_label}`, `Event ${alert.event_label}`, `Δ ${alert.distance_km} km · Δt ${alert.dt_min ?? "–"} min`], href: event?.url, hrefLabel: "Open source article" }; setFocus([alert.lat, alert.lon, 8]); setDetail(next); setSourceViewer(next.href ? next : null); }, [records.events]);
+  const selectMap = useCallback((next: Detail) => { setDetail(next); setSourceViewer(canPreviewSource(next.href) ? next : null); }, []);
+  const selectAlert = useCallback((alert: Alert) => { const event = records.events.find((item) => item.id === alert.event_id); const href = event && (event.id.startsWith("tg:") || !event.url?.includes("t.me/")) ? event.url : undefined; const next = { title: `Correlation score ${alert.score.toFixed(3)}`, lines: [alert.reason ?? "Correlation", `Aircraft ${alert.aircraft_label}`, `Event ${alert.event_label}`, `Δ ${alert.distance_km} km · Δt ${alert.dt_min ?? "–"} min`], href, hrefLabel: "Open source article" }; setFocus([alert.lat, alert.lon, 8]); setDetail(next); setSourceViewer(canPreviewSource(next.href) ? next : null); }, [records.events]);
   const replaySar = replay.sar_scene ? `Sentinel-1: ${replay.sar_scene.n} ships · ${replay.sar_scene.label}` : "Sentinel-1: no radar scene within 3 days";
 
   return <main className="relative z-10 min-h-screen p-2 text-ink lg:h-screen lg:overflow-hidden"><SourcesDialog open={sourcesOpen} onClose={() => setSourcesOpen(false)} /><div className="grid min-h-[calc(100vh-1rem)] grid-rows-[auto_auto_1fr] overflow-hidden border border-line bg-canvas/95 lg:h-[calc(100vh-1rem)]">
