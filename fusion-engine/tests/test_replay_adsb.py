@@ -3,7 +3,7 @@ import gzip, io, json, tarfile, tempfile
 from pathlib import Path
 from fusion.replay_adsb import extract_bbox, load_tracks, snapshot_at, track_polylines, HORMUZ_BBOX
 
-T0 = 1787356800.0  # 2026-08-18 00:00:00Z
+T0 = 1787011200.0  # 2026-08-18 00:00:00Z
 
 def _trace(icao, reg, typ, mil, pts, flight=None):
     trace = []
