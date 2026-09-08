@@ -1,0 +1,15 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pandas>=2.2
+requests>=2.31
+# graph stores: Neo4j when reachable (docker compose up -d), networkx fallback otherwise
+neo4j>=6.0,<7
+python-dotenv>=1.0
+networkx>=3.2
+# extra sources
+websocket-client>=1.8        # aisstream.io live AIS
+boto3>=1.35                  # Copernicus Data Space S3 (Sentinel-1)
+tifffile>=2024.9             # read Sentinel-1 COG overviews
+global-land-mask>=1.0        # sea/land mask for radar ship detection
+scipy>=1.13
+numpy>=1.26
