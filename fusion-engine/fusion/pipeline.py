@@ -73,7 +73,7 @@ class FusionState:
     store: object = field(default_factory=make_store, repr=False)
     social: list[OsintEvent] = field(default_factory=list)
     firms: list[dict] = field(default_factory=list)
-    history: list[dict] = field(default_factory=list)   # per-fuse counts for the live activity timeline (24 h)
+    history: list[dict] = field(default_factory=lambda: _load_history())   # per-fuse counts, persisted across restarts
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     # --- areas of interest ---
@@ -196,10 +196,17 @@ class FusionState:
             self.updated = datetime.now(timezone.utc).isoformat()
             self.alert_count = len(alerts)
             now_ts = datetime.now(timezone.utc).timestamp()
-            self.history.append({"t": now_ts, "events": len(self.events), "conflict": sum(e.is_conflict for e in self.events),
-                                 "social": len(self.social), "tracks": len(tr), "military": sum(t.military for t in tr),
-                                 "alerts": len(alerts), "firms_new": sum(1 for h in self.firms if h.get("novelty", 0) >= 0.9)})
-            self.history = [h for h in self.history if now_ts - h["t"] <= 24 * 3600]
+            point = {"t": now_ts, "events": len(self.events), "conflict": sum(e.is_conflict for e in self.events),
+                     "social": len(self.social), "tracks": len(tr), "military": sum(t.military for t in tr),
+                     "alerts": len(alerts), "firms_new": sum(1 for h in self.firms if h.get("novelty", 0) >= 0.9)}
+            self.history.append(point)
+            self.history = [h for h in self.history if now_ts - h["t"] <= HISTORY_KEEP_H * 3600]
+        try:
+            HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with open(HISTORY_FILE, "a", encoding="utf-8") as f:
+                f.write(json.dumps(point) + "\n")
+        except Exception as e:
+            log.warning("history append failed: %s", e)
         log.info("FUSE: persisted %d events / %d tracks, %d alerts (top=%s)",
                  len(ev), len(tr), len(alerts),
                  alerts[0].score if alerts else None)
@@ -253,9 +260,13 @@ class FusionState:
                 },
             }
 
-    def api_timeline(self) -> dict:
+    def api_timeline(self, hours: float = 24.0) -> dict:
+        """Activity points for the last `hours` (0 = everything on disk)."""
+        cutoff = datetime.now(timezone.utc).timestamp() - hours * 3600 if hours > 0 else 0
         with self.lock:
-            return {"step_min": 1, "bins": list(self.history)}
+            pts = [h for h in self.history if h["t"] >= cutoff]
+            return {"step_min": 1, "hours": hours, "bins": pts,
+                    "since": min((h["t"] for h in self.history), default=None)}
 
     def api_entity(self, node_id: str) -> dict | None:
         return self.store.entity(node_id)
@@ -291,6 +302,27 @@ class FusionState:
         # projection on every 60-second ingest needlessly competes with the UI.
         path.write_text(json.dumps(self.snapshot(include_graph=False)), encoding="utf-8")
         log.info("saved %s", path)
+
+
+HISTORY_FILE = DATA / "history.jsonl"
+HISTORY_KEEP_H = float(os.getenv("FUSION_HISTORY_H", "168"))     # keep 7 days on disk by default
+
+
+def _load_history() -> list[dict]:
+    """Reload the per-fuse activity points written by earlier runs (one JSON object per line)."""
+    if not HISTORY_FILE.exists():
+        return []
+    cutoff = datetime.now(timezone.utc).timestamp() - HISTORY_KEEP_H * 3600
+    out = []
+    for line in HISTORY_FILE.read_text(encoding="utf-8").splitlines():
+        try:
+            h = json.loads(line)
+            if h.get("t", 0) >= cutoff:
+                out.append(h)
+        except ValueError:
+            continue
+    log.info("history: %d points reloaded from %s", len(out), HISTORY_FILE)
+    return out
 
 
 def _prev_window(stamp: str) -> str:

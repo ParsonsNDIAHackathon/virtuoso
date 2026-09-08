@@ -59,9 +59,9 @@ def aircraft(military_only: bool = False):
 
 
 @app.get("/api/timeline")
-def timeline():
-    """Per-fuse activity counts for the last 24 h (live activity strip)."""
-    return state.api_timeline()
+def timeline(hours: float = Query(24.0, ge=0, le=24 * 30)):
+    """Per-fuse activity counts for the last `hours` (0 = all persisted history)."""
+    return state.api_timeline(hours)
 
 
 @app.get("/api/firms")
