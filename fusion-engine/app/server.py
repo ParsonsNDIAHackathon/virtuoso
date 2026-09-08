@@ -58,6 +58,12 @@ def aircraft(military_only: bool = False):
     return state.api_aircraft(military_only)
 
 
+@app.get("/api/timeline")
+def timeline():
+    """Per-fuse activity counts for the last 24 h (live activity strip)."""
+    return state.api_timeline()
+
+
 @app.get("/api/firms")
 def firms():
     with state.lock:

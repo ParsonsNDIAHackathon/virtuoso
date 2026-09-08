@@ -161,13 +161,46 @@ class ReplayState:
         self._cache[key] = out
         return out
 
-    def timeline(self, step_min: int = 15) -> list[dict]:
-        """Event volume per step for the scrubber histogram."""
+    def timeline(self, step_min: int = 15) -> dict:
+        """Per-bin activity across every source for the scrubber strip:
+        events (all / conflict), Telegram posts, aircraft and military aircraft with a position in the
+        bin, new thermal anomalies (novelty >= 0.9), plus radar scene times as markers."""
         self.load()
-        bins: dict[int, dict] = {}
+        step = step_min * 60
+        n = int(86400 // step)
+        bins = [{"t": self.t_min + i * step, "events": 0, "conflict": 0, "social": 0,
+                 "tracks": 0, "military": 0, "firms_new": 0} for i in range(n)]
+
+        def idx(ts):
+            i = int((ts - self.t_min) // step)
+            return i if 0 <= i < n else None
+
         for e in self.events:
-            b = int((datetime.fromisoformat(e.ts).timestamp() - self.t_min) // (step_min * 60))
-            d = bins.setdefault(b, {"t": self.t_min + b * step_min * 60, "events": 0, "conflict": 0})
-            d["events"] += 1
-            d["conflict"] += int(e.is_conflict)
-        return [bins[k] for k in sorted(bins)]
+            i = idx(datetime.fromisoformat(e.ts).timestamp())
+            if i is None:
+                continue
+            if e.source_domain.startswith("t.me/"):
+                bins[i]["social"] += 1
+            else:
+                bins[i]["events"] += 1
+                bins[i]["conflict"] += int(e.is_conflict)
+        seen = [set() for _ in range(n)]
+        mil = [set() for _ in range(n)]
+        for hexid, a in self.tracks.items():
+            for p in a["points"]:
+                i = idx(p[0])
+                if i is not None:
+                    seen[i].add(hexid)
+                    if a.get("military"):
+                        mil[i].add(hexid)
+        for i in range(n):
+            bins[i]["tracks"] = len(seen[i])
+            bins[i]["military"] = len(mil[i])
+        for h in self.firms:
+            i = idx(datetime.fromisoformat(h["ts"]).timestamp())
+            if i is not None and h.get("novelty", 0) >= 0.9:
+                bins[i]["firms_new"] += 1
+        scenes = sorted({d["ts"] for d in self.sar})
+        return {"step_min": step_min, "t_min": self.t_min, "bins": bins,
+                "sar_scenes": [{"ts": ts, "t": datetime.fromisoformat(ts).timestamp(),
+                                "n": sum(1 for d in self.sar if d["ts"] == ts)} for ts in scenes]}

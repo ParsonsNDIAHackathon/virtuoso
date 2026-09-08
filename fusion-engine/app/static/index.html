@@ -19,7 +19,8 @@
   header button { margin-left:auto; background:#1e3a8a; color:#fff; border:0; padding:6px 12px; border-radius:6px; cursor:pointer }
   main { display:grid; grid-template-columns: 1fr 420px; grid-template-rows: 1fr 300px; gap:8px; padding:8px; min-height:0 }
   #map { grid-row:1; grid-column:1; border:1px solid var(--line); border-radius:8px }
-  #graph { grid-row:2; grid-column:1; border:1px solid var(--line); border-radius:8px; background:var(--panel); position:relative }
+  #graph { grid-row:2; grid-column:1; border:1px solid var(--line); border-radius:8px; background:var(--panel); position:relative; overflow:hidden }
+  #tl-legend { position:absolute; top:8px; right:12px; font-size:11px; color:var(--mute) } #tl-legend i { display:inline-block; width:10px; height:3px; margin:0 4px 0 10px; vertical-align:middle }
   #side { grid-row:1/3; grid-column:2; display:flex; flex-direction:column; gap:8px; min-height:0 }
   .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px; overflow:auto }
   .panel h2 { font-size:12px; text-transform:uppercase; color:var(--mute); margin:0 0 8px }
@@ -48,7 +49,6 @@
   <select id="mode" style="margin-left:auto;background:#1e293b;color:#fff;border:1px solid #334;border-radius:6px;padding:5px 8px">
     <option value="live">LIVE · global stream</option>
   </select>
-  <button id="graph-refresh" title="Load the latest compact Neo4j graph projection">Refresh graph</button>
   <button id="refresh">Refresh ADS-B + re-fuse</button>
 </header>
 <div id="livebar" style="display:flex;align-items:center;gap:12px;padding:6px 16px;background:#0f172a;border-bottom:1px solid #223052;font-size:12px">
@@ -72,7 +72,7 @@
 </div>
 <main>
   <div id="map"></div>
-  <div id="graph"><div id="gtitle">Knowledge graph · alert neighbourhoods + top actors</div><div class="tip" id="tip"></div></div>
+  <div id="graph"><div id="gtitle">Activity timeline · all sources</div><div id="tl-legend"></div><div class="tip" id="tip"></div></div>
   <div id="side">
     <div class="panel legend" style="flex:0 0 auto">
       <span><i style="background:var(--osint)"></i>OSINT event</span>
@@ -128,8 +128,7 @@ setGibs(null);
 let DATA = { events:[], tracks:[], alerts:[], graph:{nodes:[],links:[]}, tails:[], firms:[], sar:[] };
 let MODE = 'live', SC = null, RCFG = null, playing = false, playTimer = null;
 let REGIONS = [];
-let liveLoading = false, graphLoading = false, graphLoaded = false, graphLastRefresh = 0;
-const GRAPH_REFRESH_MS = 5 * 60 * 1000;
+let liveLoading = false, TL = null;
 const NM_KM = 1.852;
 const distKm = (a,b,c,d) => { const R=6371, p=Math.PI/180, x=Math.sin((c-a)*p/2)**2 + Math.cos(a*p)*Math.cos(c*p)*Math.sin((d-b)*p/2)**2; return 2*R*Math.asin(Math.sqrt(x)); };
 const inAOI = (lat,lon) => !$('#aoi-filter').checked || !REGIONS.length || REGIONS.some(r => distKm(lat,lon,r.lat,r.lon) <= r.radius_nm*NM_KM);
@@ -199,22 +198,23 @@ async function loadReplay() {
   $('#s-al').textContent = r.counts.alerts; $('#s-win').textContent = 'replay';
   $('#s-upd').textContent = r.t_iso.slice(11,16) + 'Z'; $('#rb-time').textContent = r.t_iso.slice(0,16).replace('T',' ') + ' UTC';
   $('#sar-note').textContent = DATA.sarScene ? `Sentinel-1: ${DATA.sarScene.n} ships · ${DATA.sarScene.label} (${DATA.sarScene.ts.slice(0,16).replace('T',' ')}Z)` : 'Sentinel-1: no radar scene within 3 days';
-  drawMap(); drawAlerts(); drawGraph();
+  drawMap(); drawAlerts(); drawTimeline();
 }
 
 async function enterReplay(id) {
   SC = id; MODE = 'replay';
   RCFG = await fetch(`/api/replay/${id}/config`).then(r=>r.json());
   const sc = RCFG.scenario;
-  $('#replaybar').style.display = 'flex'; $('#livebar').style.display = 'none'; $('#refresh').hidden = true; $('#graph-refresh').hidden = true;
+  $('#replaybar').style.display = 'flex'; $('#livebar').style.display = 'none'; $('#refresh').hidden = true;
   $('#rb-title').textContent = sc.title; $('#rb-notes').textContent = sc.notes || '';
   $('#rb-src').textContent = (RCFG.adsb_available ? `GDELT ${RCFG.n_events} events · adsb.lol archive ${RCFG.n_aircraft} aircraft (${RCFG.n_military} mil)` : `GDELT ${RCFG.n_events} events · ADS-B archive NOT LOADED`) + ` · FIRMS ${RCFG.n_firms||0} · Sentinel-1 ${RCFG.n_sar||0} ships/${(RCFG.sar_scenes||[]).length} scenes`;
   map.setView(sc.center, sc.zoom); setGibs(sc.day);
   const [la0,lo0,la1,lo1] = sc.bbox; L.rectangle([[la0,lo0],[la1,lo1]], {color:'#ffb454', weight:1, fill:false, dashArray:'4 4'}).addTo(map);
   if (sc.sources && sc.sources.length) $('#detail-body').innerHTML = `<b>${sc.title}</b><br>${sc.notes||''}<br><b>Key reporting from the day (GDELT-indexed):</b><br>` + sc.sources.map(([t,u]) => `• <a href="${u}" target="_blank">${t}</a>`).join('<br>');
+  TL = await fetch(`/api/replay/${id}/timeline`).then(r=>r.json());
   await loadReplay();
 }
-function exitReplay() { MODE='live'; stopPlay(); setGibs(null); $('#livebar').style.display = 'flex'; $('#replaybar').style.display = 'none'; $('#refresh').hidden = false; $('#graph-refresh').hidden = false; graphLoaded = false; map.setView([35,10],2); loadLive({refreshGraph:true}); }
+function exitReplay() { MODE='live'; stopPlay(); setGibs(null); $('#livebar').style.display = 'flex'; $('#replaybar').style.display = 'none'; $('#refresh').hidden = false; map.setView([35,10],2); loadLive(); }
 function stopPlay(){ playing=false; clearInterval(playTimer); $('#rb-play').textContent='▶ Play'; }
 $('#rb-play').onclick = () => {
   if (playing) return stopPlay();
@@ -225,24 +225,7 @@ let _st; $('#rb-t').oninput = () => { const t=RCFG.t_min+Number($('#rb-t').value
 $('#mode').onchange = e => e.target.value==='live' ? exitReplay() : enterReplay(e.target.value);
 fetch('/api/replay/scenarios').then(r=>r.json()).then(list => list.forEach(sc => { const o=document.createElement('option'); o.value=sc.id; o.textContent='REPLAY · '+sc.title; $('#mode').appendChild(o); }));
 
-async function refreshGraph() {
-  if (MODE !== 'live' || graphLoading) return;
-  graphLoading = true;
-  const b = $('#graph-refresh'); b.disabled = true; b.textContent = 'Loading graph…';
-  try {
-    const response = await fetch('/api/graph');
-    if (!response.ok) throw new Error(`graph request failed (${response.status})`);
-    DATA.graph = await response.json();
-    graphLoaded = true; graphLastRefresh = Date.now();
-    drawGraph();
-  } catch (err) {
-    console.error('Graph refresh failed', err);
-  } finally {
-    graphLoading = false; b.disabled = false; b.textContent = 'Refresh graph';
-  }
-}
-
-async function loadLive({refreshGraph = false} = {}) {
+async function loadLive() {
   // A slow graph query must never queue a second live refresh behind it.
   if (liveLoading) return;
   liveLoading = true;
@@ -254,19 +237,19 @@ async function loadLive({refreshGraph = false} = {}) {
       fetch('/api/alerts?limit=300').then(r=>r.json()),
       fetch('/api/firms').then(r=>r.json()).catch(()=>[]),
     ]);
-    DATA = { events:ev, tracks:tr, alerts:al, graph:DATA.graph, tails:[], firms:fi||[], sar:[] };
+    DATA = { events:ev, tracks:tr, alerts:al, graph:{nodes:[],links:[]}, tails:[], firms:fi||[], sar:[] };
+    TL = await fetch('/api/timeline').then(r=>r.json()).catch(()=>null);
     $('#live-note').textContent = `${st.counts.social||0} Telegram posts · ${st.counts.firms||0} thermal anomalies (${st.counts.firms_novel||0} new vs baseline) · radar: n/a live · store: ${st.store||'?'}`;
     $('#s-ev').textContent = st.counts.events; $('#s-conf').textContent = st.counts.conflict_events;
     $('#s-tr').textContent = st.counts.tracks; $('#s-mil').textContent = st.counts.military_tracks;
     $('#s-al').textContent = st.counts.alerts; $('#s-win').textContent = fmtWin(st.gdelt_window);
     $('#s-upd').textContent = st.updated ? new Date(st.updated).toLocaleTimeString() : 'warming up… (first fuse takes ~2 min)';
-    drawMap(); drawAlerts();
+    drawMap(); drawAlerts(); drawTimeline();
   } catch (err) {
     console.error('Live refresh failed', err);
   } finally {
     liveLoading = false;
   }
-  if (refreshGraph || !graphLoaded || Date.now() - graphLastRefresh >= GRAPH_REFRESH_MS) refreshGraph();
 }
 const fmtWin = w => w ? `${w.slice(0,4)}-${w.slice(4,6)}-${w.slice(6,8)} ${w.slice(8,10)}:${w.slice(10,12)}Z` : '–';
 
@@ -332,38 +315,59 @@ function showEvent(e) { if ((e.source_domain||'').startsWith('t.me/')) { $('#det
   $('#detail-body').innerHTML = `<b>${e.root_label}</b> · ${e.place} (${e.country})<br>${[e.actor1,e.actor2].filter(Boolean).join(' → ')}<br>Goldstein ${e.goldstein} · tone ${e.tone.toFixed(1)} · mentions ${e.num_mentions} · ${e.source_domain}<br>Themes: ${(e.themes||[]).slice(0,8).join(', ')}<br><a href="${e.url}" target="_blank">article</a>`; }
 function showTrack(t) { $('#detail-body').innerHTML = `<b>${t.callsign||'(no callsign)'}</b> · ${t.registration||''} · ${t.ac_type||'?'} · ICAO ${t.hex}<br>${t.military?'MILITARY':'civil'} · ${t.alt_ft??'ground'} ft · ${t.gs_kt||'?'} kt · trk ${t.track_deg||'?'}° · squawk ${t.squawk||'–'}<br>source ${t.source} · rssi ${t.rssi} · msgs ${t.messages}<br>${t.ts}`; }
 
-// ---------- force graph ----------
-const color = {event:'#ffb454', aircraft:'#4cc9f0', actor:'#a78bfa', location:'#34d399', source:'#64748b'};
-function drawGraph() {
+// ---------- activity timeline (replaces the force graph) ----------
+const SERIES = [
+  {k:'conflict', label:'conflict OSINT events', color:'#ffb454'},
+  {k:'social',   label:'Telegram posts',        color:'#f472b6'},
+  {k:'tracks',   label:'aircraft',              color:'#4cc9f0'},
+  {k:'military', label:'military aircraft',     color:'#ff5c7a'},
+  {k:'firms_new',label:'new thermal anomalies', color:'#ef4444'},
+  {k:'alerts',   label:'correlations',          color:'#a78bfa'},
+];
+function drawTimeline() {
   const el = $('#graph'); d3.select(el).selectAll('svg').remove();
-  const W = el.clientWidth, H = el.clientHeight;
-  const g = DATA.graph; if (!g.nodes.length) return;
-  const nodes = g.nodes.map(n=>({...n})); const ids = new Set(nodes.map(n=>n.id));
-  const links = g.links.filter(l=>ids.has(l.source)&&ids.has(l.target)).map(l=>({...l}));
-  const svg = d3.select(el).append('svg').attr('width',W).attr('height',H);
-  const zoomG = svg.append('g');
-  svg.call(d3.zoom().scaleExtent([.2,6]).on('zoom', ev=>zoomG.attr('transform', ev.transform)));
-  const sim = d3.forceSimulation(nodes)
-    .force('link', d3.forceLink(links).id(d=>d.id).distance(l=>l.kind==='NEAR'?40:25).strength(.5))
-    .force('charge', d3.forceManyBody().strength(-60)).force('center', d3.forceCenter(W/2,H/2)).force('collide', d3.forceCollide(7));
-  const link = zoomG.append('g').selectAll('line').data(links).join('line')
-    .attr('stroke', l=>l.kind==='NEAR'?'#ff5c7a':'#334155').attr('stroke-width', l=>l.kind==='NEAR'?1+3*(l.score||0):.6).attr('stroke-opacity',.7);
-  const node = zoomG.append('g').selectAll('circle').data(nodes).join('circle')
-    .attr('r', d=>d.kind==='actor'?4+Math.min(d.mentions||0,20)/3 : d.kind==='event'?4+6*(d.severity||0) : 4)
-    .attr('fill', d=>d.kind==='aircraft'&&d.military?'#ff5c7a':color[d.kind]||'#999').attr('stroke','#0b1220').attr('stroke-width',.8)
-    .call(d3.drag().on('start',(e,d)=>{if(!e.active)sim.alphaTarget(.3).restart();d.fx=d.x;d.fy=d.y}).on('drag',(e,d)=>{d.fx=e.x;d.fy=e.y}).on('end',(e,d)=>{if(!e.active)sim.alphaTarget(0);d.fx=null;d.fy=null}))
-    .on('mousemove',(e,d)=>{const t=$('#tip'); t.style.display='block'; t.style.left=(e.offsetX+12)+'px'; t.style.top=(e.offsetY+12)+'px'; t.textContent=`${d.kind}: ${d.label}`})
-    .on('mouseleave',()=>$('#tip').style.display='none')
-    .on('click',(e,d)=>{ if(d.lat!=null) map.setView([d.lat,d.lon],7); fetch('/api/entity/'+encodeURIComponent(d.id)).then(r=>r.json()).then(x=>{
-        $('#detail-body').innerHTML = `<b>${d.kind.toUpperCase()}</b> ${d.label}<br>` + (x.neighbors||[]).map(n=>`<span style="color:${color[n.kind]}">●</span> ${n.kind}: ${n.label}`).join('<br>'); }); });
-  sim.on('tick', ()=>{ link.attr('x1',d=>d.source.x).attr('y1',d=>d.source.y).attr('x2',d=>d.target.x).attr('y2',d=>d.target.y); node.attr('cx',d=>d.x).attr('cy',d=>d.y); });
+  if (!TL || !TL.bins || !TL.bins.length) { $('#tl-legend').textContent = MODE==='live' ? 'collecting history… (one point per fuse)' : ''; return; }
+  const W = el.clientWidth, H = el.clientHeight, m = {l:44, r:14, t:30, b:24};
+  const bins = TL.bins;
+  const series = SERIES.filter(sr => bins.some(b => (b[sr.k]||0) > 0));
+  const isReplay = MODE === 'replay';
+  const x = d3.scaleTime().domain(isReplay ? [new Date(RCFG.t_min*1000), new Date((RCFG.t_max+1)*1000)] : d3.extent(bins, b=>new Date(b.t*1000))).range([m.l, W-m.r]);
+  // each series normalised to its own max so a 1,500-aircraft line does not flatten 20 posts; tooltip shows real counts
+  const rowH = (H - m.t - m.b) / series.length;
+  const svg = d3.select(el).append('svg').attr('width', W).attr('height', H);
+  $('#tl-legend').innerHTML = series.map(sr=>`<i style="background:${sr.color}"></i>${sr.label}`).join('');
+  series.forEach((sr, i) => {
+    const y0 = m.t + i*rowH, mx = d3.max(bins, b=>b[sr.k]||0) || 1;
+    const y = d3.scaleLinear().domain([0, mx]).range([y0+rowH-2, y0+4]);
+    svg.append('text').attr('x', m.l-6).attr('y', y0+rowH/2+4).attr('text-anchor','end').attr('fill', sr.color).attr('font-size', 10).text(mx);
+    svg.append('path').datum(bins).attr('fill', sr.color).attr('fill-opacity', .18).attr('stroke', sr.color).attr('stroke-width', 1.2)
+      .attr('d', d3.area().x(b=>x(new Date(b.t*1000))).y0(y0+rowH-2).y1(b=>y(b[sr.k]||0)).curve(d3.curveMonotoneX));
+    svg.append('line').attr('x1', m.l).attr('x2', W-m.r).attr('y1', y0+rowH-2).attr('y2', y0+rowH-2).attr('stroke', '#223052');
+  });
+  svg.append('g').attr('transform', `translate(0,${H-m.b+2})`).call(d3.axisBottom(x).ticks(8).tickFormat(d3.utcFormat('%H:%MZ'))).attr('color', '#8b9bb8').attr('font-size', 10);
+  // radar scene markers (replay)
+  (TL.sar_scenes||[]).forEach(sc => { const px = x(new Date(sc.t*1000));
+    svg.append('line').attr('x1', px).attr('x2', px).attr('y1', m.t-6).attr('y2', H-m.b).attr('stroke', '#e2e8f0').attr('stroke-dasharray', '3 3');
+    svg.append('text').attr('x', px+3).attr('y', m.t-8).attr('fill', '#e2e8f0').attr('font-size', 10).text(`radar ${sc.n} ships`); });
+  // cursor at the scrubber time (replay)
+  if (isReplay) { const t = RCFG.t_min + Number($('#rb-t').value); const px = x(new Date(t*1000));
+    svg.append('line').attr('x1', px).attr('x2', px).attr('y1', m.t-4).attr('y2', H-m.b).attr('stroke', '#fff').attr('stroke-width', 1.5); }
+  // hover tooltip + click to seek
+  const tip = $('#tip');
+  svg.append('rect').attr('x', m.l).attr('y', m.t).attr('width', W-m.l-m.r).attr('height', H-m.t-m.b).attr('fill', 'transparent').style('cursor', isReplay?'pointer':'default')
+    .on('mousemove', ev => { const [mx] = d3.pointer(ev); const t = x.invert(mx).getTime()/1000;
+      const b = bins.reduce((a,c)=>Math.abs(c.t-t)<Math.abs(a.t-t)?c:a, bins[0]);
+      tip.style.display='block'; tip.style.left=(mx+12)+'px'; tip.style.top=(ev.offsetY+12)+'px';
+      tip.innerHTML = `<b>${new Date(b.t*1000).toISOString().slice(11,16)}Z</b> ` + series.map(sr=>`<span style="color:${sr.color}">${b[sr.k]||0} ${sr.label}</span>`).join(' · '); })
+    .on('mouseleave', ()=> tip.style.display='none')
+    .on('click', ev => { if (!isReplay) return; const [mx] = d3.pointer(ev); const t = x.invert(mx).getTime()/1000;
+      $('#rb-t').value = Math.max(0, Math.min(86340, Math.round((t - RCFG.t_min)/60)*60)); loadReplay(); });
 }
 
 $('#refresh').onclick = async () => { $('#refresh').textContent='Refreshing…'; await fetch('/api/refresh',{method:'POST'}); await load(); $('#refresh').textContent='Refresh ADS-B + re-fuse'; };
-$('#graph-refresh').onclick = refreshGraph;
-loadRegions().then(() => loadLive({refreshGraph:true}));
-setInterval(()=>{ if (MODE==='live') loadLive({refreshGraph: Date.now() - graphLastRefresh >= GRAPH_REFRESH_MS}); }, 60000);
-let _rt; window.addEventListener('resize', ()=>{ clearTimeout(_rt); _rt=setTimeout(()=>{ map.invalidateSize(); drawGraph(); }, 200); });
+loadRegions().then(() => loadLive());
+setInterval(()=>{ if (MODE==='live') loadLive(); }, 60000);
+let _rt; window.addEventListener('resize', ()=>{ clearTimeout(_rt); _rt=setTimeout(()=>{ map.invalidateSize(); drawTimeline(); }, 200); });
 setTimeout(()=>map.invalidateSize(), 500);
 </script>
 </body>

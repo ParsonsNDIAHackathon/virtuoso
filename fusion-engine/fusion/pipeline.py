@@ -67,6 +67,7 @@ class FusionState:
     store: object = field(default_factory=make_store, repr=False)
     social: list[OsintEvent] = field(default_factory=list)
     firms: list[dict] = field(default_factory=list)
+    history: list[dict] = field(default_factory=list)   # per-fuse counts for the live activity timeline (24 h)
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     # --- areas of interest ---
@@ -188,6 +189,11 @@ class FusionState:
             self.batch_id = batch_id
             self.updated = datetime.now(timezone.utc).isoformat()
             self.alert_count = len(alerts)
+            now_ts = datetime.now(timezone.utc).timestamp()
+            self.history.append({"t": now_ts, "events": len(self.events), "conflict": sum(e.is_conflict for e in self.events),
+                                 "social": len(self.social), "tracks": len(tr), "military": sum(t.military for t in tr),
+                                 "alerts": len(alerts), "firms_new": sum(1 for h in self.firms if h.get("novelty", 0) >= 0.9)})
+            self.history = [h for h in self.history if now_ts - h["t"] <= 24 * 3600]
         log.info("FUSE: persisted %d events / %d tracks, %d alerts (top=%s)",
                  len(ev), len(tr), len(alerts),
                  alerts[0].score if alerts else None)
@@ -240,6 +246,10 @@ class FusionState:
                     "firms_novel": sum(1 for h in self.firms if h.get("novelty", 0) >= 0.9),
                 },
             }
+
+    def api_timeline(self) -> dict:
+        with self.lock:
+            return {"step_min": 1, "bins": list(self.history)}
 
     def api_entity(self, node_id: str) -> dict | None:
         return self.store.entity(node_id)
