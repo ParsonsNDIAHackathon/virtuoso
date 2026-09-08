@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,8 +20,13 @@ from .replay_adsb import load_tracks, snapshot_at, track_polylines
 from .replay_gdelt import HORMUZ_BBOX, HORMUZ_KW, load_day
 
 log = logging.getLogger(__name__)
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+except Exception:
+    pass
 ROOT = Path(__file__).resolve().parent.parent
-DATA = ROOT / "data"
+DATA = Path(os.getenv("FUSION_DATA_DIR") or (ROOT / "data"))
 
 SCENARIOS = {
     "hormuz-2026-08-18": {

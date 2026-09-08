@@ -76,7 +76,7 @@
   <div id="side">
     <div class="panel legend" style="flex:0 0 auto">
       <span><i style="background:var(--osint)"></i>OSINT event</span>
-      <span><i style="background:#f472b6;border-radius:0;transform:rotate(45deg)"></i>Telegram post</span>
+      <span><i style="background:#f472b6"></i>Telegram post</span>
       <span><i style="width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-bottom:9px solid #ef4444;border-radius:0;background:none"></i>Thermal anomaly (▲ bright = new vs baseline)</span>
       <span><i style="border:2px solid #e2e8f0;background:transparent;border-radius:2px"></i>Radar ship (nearest pass)</span>
       <span><i style="border:2px solid #fbbf24;background:transparent;border-radius:2px"></i>Radar ship (strait pass, other day)</span>
@@ -108,7 +108,8 @@
 </main>
 <script>
 const $ = s => document.querySelector(s);
-const map = L.map('map', {worldCopyJump:true}).setView([35, 10], 2);
+const map = L.map('map', {worldCopyJump:true, preferCanvas:true}).setView([35, 10], 2);
+const canvasR = L.canvas({padding:0.3});   // one <canvas> for every marker instead of thousands of DOM nodes
 L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {attribution:'© OpenStreetMap contributors', maxZoom:18, className:'dark-tiles'}).addTo(map);
 // NASA GIBS VIIRS true-color (keyless). Same toggle in both modes: replay uses the scenario day,
 // live uses yesterday (daily imagery lands with a few hours' lag). Off by default so both modes share the dark map.
@@ -256,7 +257,10 @@ async function loadLive() {
 }
 const fmtWin = w => w ? `${w.slice(0,4)}-${w.slice(4,6)}-${w.slice(6,8)} ${w.slice(8,10)}:${w.slice(10,12)}Z` : '–';
 
+let _mapSig = '';
 function drawMap() {
+  const sig = [MODE, DATA.events.length, DATA.tracks.length, DATA.alerts.length, DATA.firms.length, DATA.sar.length, (DATA.tails||[]).length, map.getZoom(), $('#aoi-filter').checked, REGIONS.length, DATA.tracks[0]&&DATA.tracks[0].ts].join('|');
+  if (sig === _mapSig) return; _mapSig = sig;
   ['events','air','links','firms','sar'].forEach(k=>layers[k].clearLayers());
   // thermal anomalies: small flat triangles, no glow. Routine flares only appear when zoomed in
   // (zoom >= 7); new-vs-baseline anomalies show at every zoom but stay small.
@@ -265,39 +269,40 @@ function drawMap() {
   (DATA.firms||[]).filter(h => ((h.novelty||0) >= 0.9 && (z >= 5 || (h.frp||0) >= 10)) || z >= 7).forEach(h => {
     const novel = (h.novelty||0) >= 0.9;
     const sz = novel ? (z >= 7 ? 5 : 3.5) : 3;
-    L.marker([h.lat, h.lon], {icon: L.divIcon({className:'', iconSize:[sz*2, sz*2], iconAnchor:[sz, sz*1.4],
-        html:`<div style="width:0;height:0;border-left:${sz}px solid transparent;border-right:${sz}px solid transparent;border-bottom:${sz*1.8}px solid ${novel?'#f87171':'#7f1d1d'};opacity:${novel?.9:.6}"></div>`})}).addTo(layers.firms)
+    const d = sz * 360 / (256 * Math.pow(2, z));   // pixels -> degrees at this zoom, so the triangle keeps its size
+    L.polygon([[h.lat + d*1.6, h.lon], [h.lat - d*0.6, h.lon - d*1.1], [h.lat - d*0.6, h.lon + d*1.1]],
+      {renderer:canvasR, color:novel?'#f87171':'#7f1d1d', weight:1, fillColor:novel?'#f87171':'#7f1d1d', fillOpacity:novel?.9:.6}).addTo(layers.firms)
       .bindTooltip(`${novel?'NEW ':''}thermal anomaly ${h.ts.slice(11,16)}Z · ${h.frp} MW · ${h.satellite} ${h.daynight==='N'?'night':'day'}${novel?' · not present on baseline day':''}`);
   });
   // strait-core scene (may be from another day): amber outline so its age is visually distinct
   if (DATA.sarCoreScene && (!DATA.sarScene || DATA.sarCoreScene.ts !== DATA.sarScene.ts)) (DATA.sarCore||[]).forEach(d => {
-    L.marker([d.lat, d.lon], {icon: L.divIcon({className:'', html:`<div style="width:${d.length_m>=150?11:7}px;height:${d.length_m>=150?11:7}px;border:2px solid #fbbf24;border-radius:2px;opacity:.85"></div>`, iconSize:[11,11]})}).addTo(layers.sar)
+    L.circleMarker([d.lat, d.lon], {renderer:canvasR, radius:d.length_m>=150?5:3.5, color:'#fbbf24', weight:2, fill:false, opacity:.85}).addTo(layers.sar)
       .bindTooltip(`Radar ship (strait scene ${DATA.sarCoreScene.ts.slice(0,16).replace('T',' ')}Z · ${DATA.sarCoreScene.label}) · ~${d.length_m} m`);
   });
   (DATA.sar||[]).forEach(d => {
     const big = d.length_m >= 150;
-    L.marker([d.lat, d.lon], {icon: L.divIcon({className:'', html:`<div style="width:${big?12:8}px;height:${big?12:8}px;border:2px solid #e2e8f0;background:${big?'#e2e8f0aa':'transparent'};border-radius:2px"></div>`, iconSize:[12,12]})}).addTo(layers.sar)
+    L.circleMarker([d.lat, d.lon], {renderer:canvasR, radius:big?5:3.5, color:'#e2e8f0', weight:2, fillColor:'#e2e8f0', fillOpacity:big?.6:0}).addTo(layers.sar)
       .bindTooltip(`Radar ship detection · ~${d.length_m} m · contrast ${d.contrast} · Sentinel-1 ${d.ts.slice(0,16).replace('T',' ')}Z`);
   });
   const evById = {};
-  (DATA.tails||[]).forEach(tl => L.polyline(tl.coords, {color: tl.military?'#ff5c7a':'#4cc9f0', weight:1, opacity:.45}).addTo(layers.air)
+  (DATA.tails||[]).slice(0,300).forEach(tl => L.polyline(tl.coords, {renderer:canvasR, color: tl.military?'#ff5c7a':'#4cc9f0', weight:1, opacity:.45}).addTo(layers.air)
       .bindTooltip(`${tl.callsign||tl.r||tl.hex} ${tl.t||''} · last 30 min`));
   DATA.events.filter(e=>inAOI(e.lat,e.lon)).forEach(e => {
     evById[e.id] = e;
     const social = (e.source_domain||'').startsWith('t.me/');
     const m = social
-      ? L.marker([e.lat, e.lon], {icon: L.divIcon({className:'', html:`<div style="width:10px;height:10px;transform:rotate(45deg);background:${e.is_conflict?'#f472b6':'#9d174d'};border:1px solid #0b1220"></div>`, iconSize:[10,10]})}).addTo(layers.events)
-      : L.circleMarker([e.lat, e.lon], {radius:e.is_conflict?5:3, color:e.is_conflict?'#ffb454':'#a16207', fillOpacity:e.is_conflict?.8:.5, weight:1}).addTo(layers.events);
+      ? L.circleMarker([e.lat, e.lon], {renderer:canvasR, radius:5, color:'#0b1220', fillColor:e.is_conflict?'#f472b6':'#9d174d', fillOpacity:.95, weight:1}).addTo(layers.events)
+      : L.circleMarker([e.lat, e.lon], {renderer:canvasR, radius:e.is_conflict?5:3, color:e.is_conflict?'#ffb454':'#a16207', fillOpacity:e.is_conflict?.8:.5, weight:1}).addTo(layers.events);
     m.bindTooltip(social ? `Telegram ${e.source_domain.slice(5)}: ${e.place}` : `${e.root_label}: ${e.place}`); m.on('click', ()=>showEvent(e));
   });
   DATA.tracks.filter(t=>inAOI(t.lat,t.lon)).forEach(t => {
-    const m = L.circleMarker([t.lat, t.lon], {radius:t.military?4:2.5, color:t.military?'#ff5c7a':'#4cc9f0', fillOpacity:.8, weight:1}).addTo(layers.air);
+    const m = L.circleMarker([t.lat, t.lon], {renderer:canvasR, radius:t.military?4:2.5, color:t.military?'#ff5c7a':'#4cc9f0', fillOpacity:.8, weight:1}).addTo(layers.air);
     m.bindTooltip(`${t.callsign||t.registration||t.hex} ${t.ac_type||''} ${t.alt_ft??'ground'} ft`); m.on('click', ()=>showTrack(t));
   });
   const trById = Object.fromEntries(DATA.tracks.map(t=>[t.id,t]));
   DATA.alerts.filter(a=>inAOI(a.lat,a.lon)).slice(0,150).forEach(a => {
     const t = trById[a.aircraft_id]; if (!t) return;
-    L.polyline([[a.lat,a.lon],[t.lat,t.lon]], {color: a.score>0.5?'#ff5c7a':'#ffb454', weight: 1+3*a.score, opacity:.7}).addTo(layers.links)
+    L.polyline([[a.lat,a.lon],[t.lat,t.lon]], {renderer:canvasR, color: a.score>0.5?'#ff5c7a':'#ffb454', weight: 1+3*a.score, opacity:.7}).addTo(layers.links)
      .bindTooltip(`${a.score.toFixed(2)} · ${a.aircraft_label} ↔ ${a.event_label}`);
   });
 }

@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import threading
 import time
 import uuid
@@ -22,7 +23,12 @@ from .ingest_telegram import DEFAULT_CHANNELS, fetch_latest, social_to_event
 from .ingest_firms import fetch as fetch_firms, novelty as firms_novelty
 
 log = logging.getLogger(__name__)
-DATA = Path(__file__).resolve().parent.parent / "data"
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+except Exception:
+    pass
+DATA = Path(os.getenv("FUSION_DATA_DIR") or (Path(__file__).resolve().parent.parent / "data"))   # keep this out of OneDrive-synced folders
 
 # Areas of interest: circles (lat, lon, radius_nm) unioned with the global military feed for live
 # ADS-B, and drawn on the map. adsb.lol caps point queries at 250 nm. Users can add/remove circles
