@@ -44,9 +44,18 @@ docker compose up --build             # command console at http://localhost:8080
 ```
 
 `docker compose up` runs the React command console, FastAPI fusion API, and Neo4j on one private
-network. Only the console is published; it proxies `/api/*` to FastAPI. For frontend development,
-run `uvicorn app.server:app --port 8000` from this directory, then `npm install && npm run dev` in
-`frontend/`; Vite proxies the same API routes to the local FastAPI process.
+network. Only the console is published; it proxies `/api/*` to FastAPI (long upstream timeouts, so
+`POST /api/refresh` and the first replay build do not 504). `./data` is bind-mounted into the API
+container as `/app/data` and Compose pins `FUSION_DATA_DIR=/app/data` / `FUSION_STORE=auto`, so any
+dev-only values for those in `.env` are ignored inside the stack. The Neo4j browser is not published;
+`docker compose exec neo4j cypher-shell -u neo4j -p "$NEO4J_PASSWORD"` reaches it, or add a `ports:`
+entry locally. For frontend development, run `uvicorn app.server:app --port 8000` from this
+directory, then `npm ci && npm run dev` in `frontend/`; Vite proxies the same API routes to the local
+FastAPI process.
+
+**Fresh-box replay:** the first `REPLAY` request builds the day's GDELT cache into `./data/gdelt`
+(about 10-15 minutes) and looks for `./data/replay/2026-08-18_adsb.json`. Produce that file once with
+the archive steps under "Sources" (it is not in git) or the replay shows zero aircraft.
 
 **Graph store selection** (`fusion/store.py`): at startup the engine probes Neo4j; if it answers, facts,
 observations and correlations are persisted there (`fusion/neo4j_store.py`, Cypher correlation,
@@ -61,7 +70,7 @@ same alerts on one snapshot (last run: 568/568 identical).
 previews and NASA GIBS need no key.
 
 API: `/api/status`, `/api/alerts`, `/api/events?conflict_only=true`, `/api/aircraft`, `/api/firms`,
-`/api/graph`, `/api/entity/{id}`, `/api/regions` (GET/POST/DELETE), `POST /api/refresh`,
+`/api/graph`, `/api/entity/{id}`, `/api/regions` (GET/POST/PATCH/DELETE), `POST /api/refresh`,
 `/api/replay/scenarios`, `/api/replay/{id}/config|timeline|at?t=`.
 
 ## Sources

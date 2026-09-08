@@ -39,5 +39,10 @@ export type Entity = { neighbors?: Array<{ kind: string; label: string }> };
 export type LivePicture = { status: Status; events: Event[]; tracks: Track[]; alerts: Alert[]; firms: Firms[] };
 
 export type Viewport = { west: number; south: number; east: number; north: number; zoom: number };
-export type TimelineBin = { t: number; events: number; conflict: number; social: number; tracks: number; military: number; alerts?: number; firms_new: number };
-export type Timeline = { bins: TimelineBin[]; step_min: number; hours?: number; t_min?: number; sar_scenes?: Array<{ t: number; ts: string; n: number }> };
+// Live bins: flows (events, social, alerts, firms_new) are sums per 15-min bin; tracks/military are
+// levels averaged from this server's own fuse history and null where nothing was recorded yet.
+export type TimelineBin = { t: number; events: number; conflict: number; social: number; tracks: number | null; military: number | null; alerts?: number; firms_new: number; backfilled?: boolean };
+export type Timeline = {
+  bins: TimelineBin[]; step_min: number; hours?: number; t_min?: number; sar_scenes?: Array<{ t: number; ts: string; n: number }>;
+  backfill?: { status: string; hours: number; windows: number }; since?: number | null;
+};

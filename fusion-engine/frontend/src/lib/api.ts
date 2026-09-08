@@ -19,6 +19,7 @@ export const api = {
   regions: () => request<Region[]>("/api/regions"),
   addRegion: (region: Pick<Region, "lat" | "lon" | "radius_nm"> & { name?: string }) => request<Region>("/api/regions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(region) }),
   removeRegion: (id: string) => request<{ ok: boolean }>(`/api/regions/${id}`, { method: "DELETE" }),
+  renameRegion: (id: string, name: string) => request<Region>(`/api/regions/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) }),
   refresh: () => request<Status>("/api/refresh", { method: "POST" }),
   timeline: (hours: number) => request<Timeline>(`/api/timeline?hours=${hours}`),
   scenarios: () => request<ReplayScenario[]>("/api/replay/scenarios"),
