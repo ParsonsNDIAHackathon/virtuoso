@@ -38,21 +38,39 @@ All commands run from this folder (`fusion-engine/`):
 
 ```bash
 cd fusion-engine
-cp .env.example .env  # set NEO4J_PASSWORD before starting the database
 pip install -r requirements.txt
-docker compose up -d
-python -m fusion.pipeline            # one-shot: fetch, fuse, print top alerts, write data/snapshot.json
-uvicorn app.server:app --port 8000   # dashboard at http://localhost:8000 (streams in background)
+cp .env.example .env                 # then add your keys (see "Keys" below)
+docker compose up -d                 # optional: Neo4j graph store (localhost:7474 / bolt 7687)
+uvicorn app.server:app --port 8001   # dashboard at http://localhost:8001 (serves immediately, fuses in background)
 ```
 
-The Compose service runs Neo4j with named `neo4j_data` and `neo4j_logs` volumes. It binds Browser
-(`7474`) and Bolt (`7687`) only to localhost. The application loads credentials from `.env`.
-`docker compose down` preserves
-the graph; `docker compose down -v` removes it. First ingestion takes a few minutes: two GDELT
-windows (~6 MB GKG each) are downloaded and cached under `data/gdelt/`.
+**Graph store selection** (`fusion/store.py`): at startup the engine probes Neo4j; if it answers, facts,
+observations and correlations are persisted there (`fusion/neo4j_store.py`, Cypher correlation,
+24 h retention on aircraft observations). If not, it falls back to the in-memory networkx engine
+(`fusion/correlate_mem.py`) with identical scoring; `/api/status` reports `"store": "neo4j"|"memory"`.
+Force one with `FUSION_STORE=neo4j|memory|auto`. `tests/parity_stores.py` checks both produce the
+same alerts on one snapshot (last run: 568/568 identical).
 
-API: `/api/status`, `/api/alerts`, `/api/events?conflict_only=true`, `/api/aircraft`,
-`/api/graph`, `/api/entity/{id}`, `POST /api/refresh`.
+**Keys** (`.env`, git-ignored): `NEO4J_PASSWORD` (any local password), `FIRMS_MAP_KEY`
+(free, NASA FIRMS), `AISSTREAM_API_KEY` (free, aisstream.io), `CDSE_S3_ACCESS_KEY` /
+`CDSE_S3_SECRET_KEY` (Copernicus Data Space S3 keys, for Sentinel-1). GDELT, adsb.lol, Telegram
+previews and NASA GIBS need no key.
+
+API: `/api/status`, `/api/alerts`, `/api/events?conflict_only=true`, `/api/aircraft`, `/api/firms`,
+`/api/graph`, `/api/entity/{id}`, `/api/regions` (GET/POST/DELETE), `POST /api/refresh`,
+`/api/replay/scenarios`, `/api/replay/{id}/config|timeline|at?t=`.
+
+## Sources
+
+| Layer | Live | Replay (Hormuz 2026-08-18) | Module |
+|---|---|---|---|
+| OSINT events + GKG entities | GDELT 2.0, every 15 min | all 96 windows of the day, Hormuz bbox/keywords | `ingest_gdelt.py`, `replay_gdelt.py` |
+| Air tracks | adsb.lol military feed + one query per drawn circle, every 60 s | adsb.lol `globe_history` daily archive (ODbL), traces filtered to the Gulf | `ingest_adsb.py`, `replay_adsb.py`, `scripts/fetch_archive.py` |
+| Social posts | Telegram public channel previews, every 5 min | same channels paged back to the day | `ingest_telegram.py` |
+| Thermal anomalies | NASA FIRMS VIIRS inside each circle, every 15 min, novelty vs 7 days earlier | FIRMS for the day, novelty vs Aug 11 | `ingest_firms.py` |
+| Radar ship detections | n/a (revisit is days) | Sentinel-1 GRD COG scenes from Copernicus S3, nearest scene within 3 days, age labeled | `sar_ships.py` |
+| Vessels (AIS) | aisstream.io (no coverage in the Gulf; works in the Med) | none free | `ingest_ais.py` |
+| Satellite basemap | NASA GIBS VIIRS true color (yesterday) | same, scenario day | dashboard layer toggle |
 
 ## Replay mode — Strait of Hormuz, 18 Aug 2026
 
@@ -61,7 +79,10 @@ Both replay layers are **real data for that day**, no relocation or synthetic po
 | Layer | Source | How to build |
 |---|---|---|
 | OSINT | GDELT 2.0, all 96 windows of 2026-08-18, filtered to the Hormuz bbox (23.5–28.5 N, 52–59 E) or Hormuz/tanker keywords | `python -m fusion.replay_gdelt 2026-08-18` |
-| Air tracks | adsb.lol `globe_history_2026` release `v2026.08.18-planes-readsb-prod-0` (two split tar parts, ~4 GB, ODbL) | download both parts to a folder, then `python -m fusion.replay_adsb extract <folder>` |
+| Air tracks | adsb.lol `globe_history_2026` release `v2026.08.18-planes-readsb-prod-0` (two split tar parts, ~4 GB, ODbL) | `python scripts/fetch_archive.py 2026-08-18 <folder>` then `python -m fusion.replay_adsb extract <folder>` |
+| Social | Telegram public channels | `python -m fusion.ingest_telegram --since 2026-08-18 --until 2026-08-19` |
+| Thermal | NASA FIRMS | `python -m fusion.ingest_firms 2026-08-18 --baseline 2026-08-11` |
+| Radar ships | Sentinel-1 GRD COG (Copernicus S3) | download VV tiff + annotation XML for a scene, then `python -m fusion.sar_ships <scene folder>` |
 
 The extractor streams the tar, gunzips each `traces/xx/trace_full_<hex>.json`, keeps only aircraft with a
 position inside the bbox, and writes `data/replay/2026-08-18_adsb.json` (small). At runtime
