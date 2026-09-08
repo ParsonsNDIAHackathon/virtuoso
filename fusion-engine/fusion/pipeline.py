@@ -18,6 +18,7 @@ from .correlate import correlate, graph_to_json
 from .ingest_adsb import AirTrack, fetch_military, fetch_regions
 from .ingest_gdelt import OsintEvent, fetch_window
 from .ingest_telegram import DEFAULT_CHANNELS, fetch_latest, social_to_event
+from .ingest_firms import fetch as fetch_firms, novelty as firms_novelty
 
 log = logging.getLogger(__name__)
 DATA = Path(__file__).resolve().parent.parent / "data"
@@ -60,6 +61,7 @@ class FusionState:
     updated: str | None = None
     regions: list[dict] = field(default_factory=load_regions)
     social: list[OsintEvent] = field(default_factory=list)
+    firms: list[dict] = field(default_factory=list)
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     # --- areas of interest ---
@@ -118,6 +120,35 @@ class FusionState:
                            if datetime.fromisoformat(e.ts).timestamp() >= cutoff] + [e for e in fresh if e.id not in have]
         log.info("Telegram: %d posts polled, %d geolocated in last 6 h", len(posts), len(self.social))
 
+    def refresh_firms(self):
+        """Latest 24 h of VIIRS thermal anomalies inside every area-of-interest circle, scored for
+        novelty against the same weekday one week earlier (routine flares score ~0)."""
+        from datetime import timedelta
+        with self.lock:
+            circles = list(self.regions)
+        out = []
+        seen = set()
+        base_day = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%d")
+        for r in circles:
+            d = r.get("radius_nm", 250) * 1.852 / 111.0            # deg of latitude
+            dlon = d / max(0.2, abs(__import__("math").cos(__import__("math").radians(r["lat"]))))
+            bbox = (max(-90, r["lat"] - d), max(-180, r["lon"] - dlon), min(90, r["lat"] + d), min(180, r["lon"] + dlon))
+            try:
+                hs = fetch_firms(bbox, None, days=1)
+                base = fetch_firms(bbox, base_day, days=1)
+                hs = firms_novelty(hs, base)
+            except Exception as e:
+                log.warning("FIRMS %s failed: %s", r.get("name"), e)
+                continue
+            for h in hs:
+                if h.id not in seen:
+                    seen.add(h.id)
+                    out.append(h.to_dict())
+        with self.lock:
+            self.firms = out
+        log.info("FIRMS live: %d hotspots in %d circles (%d novel)", len(out), len(circles),
+                 sum(1 for h in out if h["novelty"] >= 0.9))
+
     def refresh_adsb(self, regions=True):
         tracks = fetch_military()
         if regions:
@@ -153,7 +184,9 @@ class FusionState:
                 "regions": list(self.regions),
                 "counts": {"events": len(self.events), "conflict_events": sum(e.is_conflict for e in self.events),
                            "tracks": len(self.tracks), "military_tracks": sum(t.military for t in self.tracks),
-                           "alerts": len(self.alerts)},
+                           "alerts": len(self.alerts), "social": len(self.social), "firms": len(self.firms),
+                           "firms_novel": sum(1 for h in self.firms if h.get("novelty", 0) >= 0.9)},
+                "firms": list(self.firms),
                 "events": [e.to_dict() for e in self.events + self.social],
                 "tracks": [t.to_dict() for t in self.tracks],
                 "alerts": [a.to_dict() for a in self.alerts],
@@ -205,6 +238,10 @@ def run_loop(state: FusionState, gdelt_every=900, adsb_every=60, windows=2, prim
                 last_g = now
             except Exception as e:
                 log.warning("GDELT refresh failed (keeping previous events): %s", e)
+            try:
+                state.refresh_firms()
+            except Exception as e:
+                log.warning("FIRMS refresh failed: %s", e)
         try:
             state.refresh_adsb()
         except Exception as e:

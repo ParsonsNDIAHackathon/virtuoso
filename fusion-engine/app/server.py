@@ -64,6 +64,12 @@ def aircraft(military_only: bool = False):
         return [t.to_dict() for t in state.tracks if (t.military or not military_only)]
 
 
+@app.get("/api/firms")
+def firms():
+    with state.lock:
+        return list(state.firms)
+
+
 @app.get("/api/graph")
 def graph():
     with state.lock:

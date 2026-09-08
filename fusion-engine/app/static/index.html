@@ -50,6 +50,15 @@
   </select>
   <button id="refresh">Refresh ADS-B + re-fuse</button>
 </header>
+<div id="livebar" style="display:flex;align-items:center;gap:12px;padding:6px 16px;background:#0f172a;border-bottom:1px solid #223052;font-size:12px">
+  <b style="color:#4cc9f0">LIVE</b>
+  <span style="color:#8b9bb8">sources:</span>
+  <span>GDELT 2.0 <span style="color:#8b9bb8">every 15 min</span></span> ·
+  <span>adsb.lol ADS-B <span style="color:#8b9bb8">every 60 s, global military + drawn circles</span></span> ·
+  <span>Telegram <span style="color:#8b9bb8">every 5 min</span></span> ·
+  <span>NASA FIRMS <span style="color:#8b9bb8">every 15 min, novelty vs 7 days ago</span></span>
+  <span id="live-note" style="margin-left:auto;color:#e2e8f0"></span>
+</div>
 <div id="replaybar" style="display:none;align-items:center;gap:12px;padding:6px 16px;background:#0f172a;border-bottom:1px solid #223052;font-size:12px">
   <b id="rb-title" style="color:#ffb454"></b>
   <span id="rb-notes" style="color:#8b9bb8;max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
@@ -99,14 +108,21 @@
 const $ = s => document.querySelector(s);
 const map = L.map('map', {worldCopyJump:true}).setView([35, 10], 2);
 L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {attribution:'© OpenStreetMap contributors', maxZoom:18, className:'dark-tiles'}).addTo(map);
-let gibs = null;   // NASA GIBS VIIRS true-color for the scenario day (no auth), added in replay mode
+// NASA GIBS VIIRS true-color (keyless). Same toggle in both modes: replay uses the scenario day,
+// live uses yesterday (daily imagery lands with a few hours' lag). Off by default so both modes share the dark map.
+let gibs = null, gibsDay = null, gibsOn = false;
+function gibsLayer(day) { return L.tileLayer(`https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/VIIRS_SNPP_CorrectedReflectance_TrueColor/default/${day}/GoogleMapsCompatible_Level9/{z}/{y}/{x}.jpg`, {maxNativeZoom:9, maxZoom:18, opacity:.85, attribution:'NASA GIBS VIIRS ' + day}); }
 function setGibs(day) {
-  if (gibs) { map.removeLayer(gibs); gibs = null; }
-  if (!day) return;
-  gibs = L.tileLayer(`https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/VIIRS_SNPP_CorrectedReflectance_TrueColor/default/${day}/GoogleMapsCompatible_Level9/{z}/{y}/{x}.jpg`, {maxNativeZoom:9, maxZoom:18, opacity:.85, attribution:'NASA GIBS VIIRS ' + day}).addTo(map);
+  gibsDay = day || new Date(Date.now() - 86400000).toISOString().slice(0,10);
+  const wasOn = gibsOn; if (gibs) { map.removeLayer(gibs); layerCtl.removeLayer(gibs); }
+  gibs = gibsLayer(gibsDay); layerCtl.addOverlay(gibs, `Satellite imagery (VIIRS ${gibsDay})`);
+  if (wasOn) gibs.addTo(map);
 }
+map.on('overlayadd', e => { if (e.layer === gibs) gibsOn = true; });
+map.on('overlayremove', e => { if (e.layer === gibs) gibsOn = false; });
 const layers = { regions:L.layerGroup().addTo(map), sar:L.layerGroup().addTo(map), firms:L.layerGroup().addTo(map), events:L.layerGroup().addTo(map), air:L.layerGroup().addTo(map), links:L.layerGroup().addTo(map) };
-L.control.layers(null, {'Areas of interest':layers.regions, 'Radar ship detections':layers.sar, 'Thermal anomalies (FIRMS)':layers.firms, 'OSINT events':layers.events, 'Aircraft':layers.air, 'Correlation links':layers.links}).addTo(map);
+const layerCtl = L.control.layers(null, {'Areas of interest':layers.regions, 'Radar ship detections':layers.sar, 'Thermal anomalies (FIRMS)':layers.firms, 'OSINT events':layers.events, 'Aircraft':layers.air, 'Correlation links':layers.links}).addTo(map);
+setGibs(null);
 
 let DATA = { events:[], tracks:[], alerts:[], graph:{nodes:[],links:[]}, tails:[], firms:[], sar:[] };
 let MODE = 'live', SC = null, RCFG = null, playing = false, playTimer = null;
@@ -187,7 +203,7 @@ async function enterReplay(id) {
   SC = id; MODE = 'replay';
   RCFG = await fetch(`/api/replay/${id}/config`).then(r=>r.json());
   const sc = RCFG.scenario;
-  $('#replaybar').style.display = 'flex'; $('#refresh').hidden = true;
+  $('#replaybar').style.display = 'flex'; $('#livebar').style.display = 'none'; $('#refresh').hidden = true;
   $('#rb-title').textContent = sc.title; $('#rb-notes').textContent = sc.notes || '';
   $('#rb-src').textContent = (RCFG.adsb_available ? `GDELT ${RCFG.n_events} events · adsb.lol archive ${RCFG.n_aircraft} aircraft (${RCFG.n_military} mil)` : `GDELT ${RCFG.n_events} events · ADS-B archive NOT LOADED`) + ` · FIRMS ${RCFG.n_firms||0} · Sentinel-1 ${RCFG.n_sar||0} ships/${(RCFG.sar_scenes||[]).length} scenes`;
   map.setView(sc.center, sc.zoom); setGibs(sc.day);
@@ -195,7 +211,7 @@ async function enterReplay(id) {
   if (sc.sources && sc.sources.length) $('#detail-body').innerHTML = `<b>${sc.title}</b><br>${sc.notes||''}<br><b>Key reporting from the day (GDELT-indexed):</b><br>` + sc.sources.map(([t,u]) => `• <a href="${u}" target="_blank">${t}</a>`).join('<br>');
   await loadReplay();
 }
-function exitReplay() { MODE='live'; stopPlay(); setGibs(null); $('#replaybar').style.display = 'none'; $('#refresh').hidden = false; map.setView([35,10],2); loadLive(); }
+function exitReplay() { MODE='live'; stopPlay(); setGibs(null); $('#livebar').style.display = 'flex'; $('#replaybar').style.display = 'none'; $('#refresh').hidden = false; map.setView([35,10],2); loadLive(); }
 function stopPlay(){ playing=false; clearInterval(playTimer); $('#rb-play').textContent='▶ Play'; }
 $('#rb-play').onclick = () => {
   if (playing) return stopPlay();
@@ -207,14 +223,16 @@ $('#mode').onchange = e => e.target.value==='live' ? exitReplay() : enterReplay(
 fetch('/api/replay/scenarios').then(r=>r.json()).then(list => list.forEach(sc => { const o=document.createElement('option'); o.value=sc.id; o.textContent='REPLAY · '+sc.title; $('#mode').appendChild(o); }));
 
 async function loadLive() {
-  const [st, ev, tr, al, gr] = await Promise.all([
+  const [st, ev, tr, al, gr, fi] = await Promise.all([
     fetch('/api/status').then(r=>r.json()),
     fetch('/api/events?conflict_only=true').then(r=>r.json()),
     fetch('/api/aircraft').then(r=>r.json()),
     fetch('/api/alerts?limit=300').then(r=>r.json()),
     fetch('/api/graph').then(r=>r.json()),
+    fetch('/api/firms').then(r=>r.json()).catch(()=>[]),
   ]);
-  DATA = { events:ev, tracks:tr, alerts:al, graph:gr, tails:[], firms:[], sar:[] };
+  DATA = { events:ev, tracks:tr, alerts:al, graph:gr, tails:[], firms:fi||[], sar:[] };
+  $('#live-note').textContent = `${st.counts.social||0} Telegram posts · ${st.counts.firms||0} thermal anomalies (${st.counts.firms_novel||0} new vs baseline) · radar: n/a live`;
   $('#s-ev').textContent = st.counts.events; $('#s-conf').textContent = st.counts.conflict_events;
   $('#s-tr').textContent = st.counts.tracks; $('#s-mil').textContent = st.counts.military_tracks;
   $('#s-al').textContent = st.counts.alerts; $('#s-win').textContent = fmtWin(st.gdelt_window);
