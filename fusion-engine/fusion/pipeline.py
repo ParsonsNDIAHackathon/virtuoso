@@ -220,7 +220,14 @@ class FusionState:
             self.set_source_status("firms", state, count=len(out), detail=detail)
 
     def refresh_adsb(self, regions=True):
+        # The public military endpoint returns first.  Publish it immediately
+        # instead of keeping the source in "starting" while six rate-limited
+        # AOI point requests run one after another.
         tracks = fetch_military()
+        with self.lock:
+            self.tracks = list(tracks)
+            self.military_track_count = sum(track.military for track in tracks)
+        self.set_source_status("adsb", "partial", count=len(tracks), detail="Military feed live; collecting configured AOI traffic")
         if regions:
             with self.lock:
                 circles = [(r["lat"], r["lon"], r.get("radius_nm", 250)) for r in self.regions]
