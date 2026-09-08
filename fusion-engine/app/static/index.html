@@ -85,7 +85,7 @@
   <div id="map"></div>
   <div id="graph"><div id="gtitle">Activity timeline · all sources
       <select id="tl-window" style="margin-left:10px;background:#1e293b;color:#fff;border:1px solid #334;border-radius:4px;font-size:11px;padding:1px 4px">
-        <option value="1">last 1 h</option><option value="6" selected>last 6 h</option><option value="24">last 24 h</option><option value="168">last 7 days</option><option value="0">everything recorded</option>
+        <option value="6">last 6 h</option><option value="24" selected>last 24 h</option><option value="48">last 48 h</option><option value="168">last 7 days</option>
       </select></div><div id="tl-legend"></div><div class="tip" id="tip"></div></div>
   <div id="side">
     <div class="panel legend" style="flex:0 0 auto;cursor:pointer" onclick="openSources()" title="Click for a full explanation of every layer and its source">
@@ -384,13 +384,13 @@ const SERIES = [   // replay: arrivals per 15-min bin
   {k:'firms_new',label:'new thermal anomalies', color:'#ef4444'},
   {k:'alerts',   label:'correlations',          color:'#a78bfa'},
 ];
-const SERIES_LIVE = [   // live: what arrived since the previous minute (flows), aircraft as a level
-  {k:'d_conflict',  label:'new conflict events /min (GDELT lands every 15 min)', color:'#ffb454'},
-  {k:'d_social',    label:'new Telegram posts /min',   color:'#f472b6'},
-  {k:'tracks',      label:'aircraft in coverage',      color:'#4cc9f0'},
-  {k:'military',    label:'military aircraft airborne',color:'#ff5c7a'},
-  {k:'d_firms_new', label:'new thermal anomalies /min',color:'#ef4444'},
-  {k:'d_alerts',    label:'new correlations /min',     color:'#a78bfa'},
+const SERIES_LIVE = [   // live: 15-min bins inside the drawn circles; GDELT + Telegram backfilled from the sources
+  {k:'conflict',  label:'conflict OSINT events (in circles)', color:'#ffb454'},
+  {k:'social',    label:'Telegram posts (in circles)',        color:'#f472b6'},
+  {k:'tracks',    label:'aircraft in coverage',               color:'#4cc9f0'},
+  {k:'military',  label:'military aircraft',                  color:'#ff5c7a'},
+  {k:'firms_new', label:'new thermal anomalies',              color:'#ef4444'},
+  {k:'alerts',    label:'new correlations',                   color:'#a78bfa'},
 ];
 function drawTimeline() {
   const el = $('#graph'); d3.select(el).selectAll('svg').remove();
@@ -399,15 +399,13 @@ function drawTimeline() {
   const bins = TL.bins;
   const isReplay = MODE === 'replay';
   // the first point after a cold start counts everything as new; hide that spike
-  const binsUse = isReplay ? bins : bins.map(b => b.primed === false ? {...b, d_conflict:0, d_social:0, d_alerts:0, d_firms_new:0, d_tracks:0} : b);
-  const series = (isReplay ? SERIES : SERIES_LIVE).filter(sr => binsUse.some(b => (b[sr.k]||0) > 0) || (!isReplay && sr.k.startsWith('d_')));
+  const binsUse = bins;
+  const series = (isReplay ? SERIES : SERIES_LIVE).filter(sr => binsUse.some(b => (b[sr.k]||0) > 0) || !isReplay);
   const hrs = Number($('#tl-window').value||24);
   // live: never let a few minutes of fresh history hide as a sliver at the right edge — the window
   // starts at the first recorded point (minus a margin) when that is later than the selected window
-  const first = d3.min(bins, b=>b.t*1000), now = Date.now();
-  let start = hrs > 0 ? now - hrs*3600e3 : first - 5*60e3;
-  if (first - 5*60e3 > start) start = Math.max(first - 5*60e3, now - Math.max(15*60e3, (now-first)*1.15));
-  const liveDom = [new Date(start), new Date(now)];
+  const now = Date.now();
+  const liveDom = [new Date(now - (hrs > 0 ? hrs : 168)*3600e3), new Date(now)];
   const x = d3.scaleTime().domain(isReplay ? [new Date(RCFG.t_min*1000), new Date((RCFG.t_max+1)*1000)] : liveDom).range([m.l, W-m.r]);
   // each series normalised to its own max so a 1,500-aircraft line does not flatten 20 posts; tooltip shows real counts
   const rowH = (H - m.t - m.b) / series.length;
@@ -418,11 +416,11 @@ function drawTimeline() {
     const y = d3.scaleLinear().domain([0, mx]).range([y0+rowH-2, y0+4]);
     svg.append('text').attr('x', m.l-6).attr('y', y0+rowH/2+4).attr('text-anchor','end').attr('fill', sr.color).attr('font-size', 10).text(mx);
     svg.append('path').datum(binsUse).attr('fill', sr.color).attr('fill-opacity', .18).attr('stroke', sr.color).attr('stroke-width', 1.2)
-      .attr('d', d3.area().x(b=>x(new Date(b.t*1000))).y0(y0+rowH-2).y1(b=>y(b[sr.k]||0)).curve(d3.curveMonotoneX));
+      .attr('d', d3.area().defined(b=>b[sr.k]!=null).x(b=>x(new Date(b.t*1000))).y0(y0+rowH-2).y1(b=>y(b[sr.k]||0)).curve(d3.curveMonotoneX));
     svg.append('line').attr('x1', m.l).attr('x2', W-m.r).attr('y1', y0+rowH-2).attr('y2', y0+rowH-2).attr('stroke', '#223052');
-    if (!isReplay || bins.length < 200) svg.append('g').selectAll('circle').data(binsUse).join('circle').attr('cx', b=>x(new Date(b.t*1000))).attr('cy', b=>y(b[sr.k]||0)).attr('r', 2).attr('fill', sr.color);
+    if (binsUse.length < 200) svg.append('g').selectAll('circle').data(binsUse.filter(b=>b[sr.k]!=null)).join('circle').attr('cx', b=>x(new Date(b.t*1000))).attr('cy', b=>y(b[sr.k]||0)).attr('r', 1.8).attr('fill', sr.color);
   });
-  if (!isReplay) $('#tl-legend').innerHTML += `<span style="margin-left:14px;color:#e2e8f0">${bins.length} points since ${new Date(first).toISOString().slice(11,16)}Z (1/min, kept 7 days)</span>`;
+  if (!isReplay && TL.backfill) $('#tl-legend').innerHTML += `<span style="margin-left:14px;color:#e2e8f0">15-min bins · GDELT/Telegram backfilled ${TL.backfill.hours} h from the sources (${TL.backfill.status}, ${TL.backfill.windows} windows) · aircraft & correlations from this server's own history</span>`;
   const span = (x.domain()[1]-x.domain()[0])/3600e3;
   svg.append('g').attr('transform', `translate(0,${H-m.b+2})`).call(d3.axisBottom(x).ticks(8).tickFormat(d3.utcFormat(span > 36 ? '%m-%d %H:%MZ' : '%H:%MZ'))).attr('color', '#8b9bb8').attr('font-size', 10);
   // radar scene markers (replay)

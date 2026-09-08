@@ -21,6 +21,7 @@ from .ingest_adsb import AirTrack, fetch_military, fetch_regions
 from .ingest_gdelt import OsintEvent, fetch_window
 from .ingest_telegram import DEFAULT_CHANNELS, fetch_latest, social_to_event
 from .ingest_firms import fetch as fetch_firms, novelty as firms_novelty
+from .backfill import Backfill
 
 log = logging.getLogger(__name__)
 try:
@@ -74,6 +75,7 @@ class FusionState:
     social: list[OsintEvent] = field(default_factory=list)
     firms: list[dict] = field(default_factory=list)
     history: list[dict] = field(default_factory=lambda: _load_history())   # per-fuse counts, persisted across restarts
+    backfill: Backfill = field(default_factory=lambda: Backfill(DATA / "gdelt", hours=float(os.getenv("FUSION_BACKFILL_H", "48"))), repr=False)
     _seen: dict = field(default_factory=lambda: {"events": {}, "social": {}, "alerts": {}, "firms": {}, "tracks": {}}, repr=False)
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
@@ -290,12 +292,16 @@ class FusionState:
             }
 
     def api_timeline(self, hours: float = 24.0) -> dict:
-        """Activity points for the last `hours` (0 = everything on disk)."""
-        cutoff = datetime.now(timezone.utc).timestamp() - hours * 3600 if hours > 0 else 0
+        """15-min bins for the last `hours`: GDELT/Telegram backfilled inside the drawn circles,
+        FIRMS novel anomalies, plus our own aircraft levels and correlation flows."""
+        hours = hours if hours > 0 else 24 * 7
         with self.lock:
-            pts = [h for h in self.history if h["t"] >= cutoff]
-            return {"step_min": 1, "hours": hours, "bins": pts,
-                    "since": min((h["t"] for h in self.history), default=None)}
+            hist, firms = list(self.history), list(self.firms)
+        bins = self.backfill.bins(hours, hist, firms)
+        return {"step_min": 15, "hours": hours, "bins": bins,
+                "backfill": {"status": self.backfill.progress, "hours": self.backfill.hours,
+                             "windows": len(self.backfill.gdelt)},
+                "since": min((h["t"] for h in hist), default=None)}
 
     def api_entity(self, node_id: str) -> dict | None:
         return self.store.entity(node_id)
@@ -401,6 +407,15 @@ def run_loop(state: FusionState, gdelt_every=900, adsb_every=60, windows=2, prim
                 state.store.prune(max_age_h=24.0)
             except Exception as e:
                 log.warning("store prune failed: %s", e)
+            try:
+                with state.lock:
+                    circles = list(state.regions)
+                if state.backfill.built_at is None:
+                    state.backfill.start(circles)
+                else:
+                    state.backfill.extend(circles)
+            except Exception as e:
+                log.warning("backfill failed: %s", e)
         try:
             state.refresh_adsb()
         except Exception as e:
