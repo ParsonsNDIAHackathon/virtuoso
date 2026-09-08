@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Activity, AlertTriangle, Crosshair, ExternalLink, Info, Pause, Play, RefreshCw, ScanSearch, Trash2, X } from "lucide-react";
 import { api } from "./lib/api";
@@ -51,11 +51,55 @@ function Inspector({ detail }: { detail: Detail | null }) {
   return <Panel className="min-h-[150px] overflow-auto p-3 scrollbar"><h2 className="mb-2 font-mono text-[10px] font-semibold uppercase tracking-[.14em] text-muted">Inspector</h2>{detail ? <div className="space-y-1 text-xs leading-relaxed"><p className="font-semibold text-ink">{detail.title}</p>{detail.lines.map((line, index) => <p key={index} className="text-muted">{line}</p>)}{detail.href && <a className="inline-block pt-1 font-mono text-[10px] uppercase tracking-wide text-command hover:underline" href={detail.href} target="_blank" rel="noreferrer">{detail.hrefLabel ?? "Open source"} ↗</a>}</div> : <p className="text-xs text-muted">Select an alert or map element to inspect its operational context.</p>}</Panel>;
 }
 
+function telegramPostId(href: string) {
+  try {
+    const parts = new URL(href).pathname.split("/").filter(Boolean);
+    const [channel, post] = parts[0] === "s" ? parts.slice(1) : parts;
+    return channel && /^\d+$/.test(post ?? "") ? `${channel}/${post}` : undefined;
+  } catch { return undefined; }
+}
+
+function TelegramPostEmbed({ post, setLoading }: { post: string; setLoading: (value: boolean) => void }) {
+  const element = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const target = element.current;
+    if (!target) return;
+    target.replaceChildren();
+    const script = document.createElement("script");
+    script.async = true;
+    script.src = "https://telegram.org/js/telegram-widget.js?22";
+    script.setAttribute("data-telegram-post", post);
+    script.setAttribute("data-width", "100%");
+    script.setAttribute("data-color", "2AABEE");
+    script.onload = () => setLoading(false);
+    target.appendChild(script);
+    return () => target.replaceChildren();
+  }, [post, setLoading]);
+  return <div ref={element} className="h-full overflow-auto p-2 scrollbar" />;
+}
+
+function blockedEmbedProvider(href: string) {
+  try {
+    const host = new URL(href).hostname;
+    return host === "firms.modaps.eosdis.nasa.gov" ? "NASA FIRMS" : undefined;
+  } catch { return undefined; }
+}
+
+function SourceRecord({ detail, provider }: { detail: Detail; provider: string }) {
+  return <div className="h-full overflow-auto p-4 text-xs scrollbar"><p className="font-mono text-[10px] uppercase tracking-[.14em] text-command">{provider} source record</p><h3 className="mt-2 text-sm font-semibold text-ink">{detail.title}</h3><div className="mt-4 space-y-2 border-l-2 border-command/60 pl-3">{detail.lines.map((line, index) => <p key={index} className="text-muted">{line}</p>)}</div><p className="mt-5 text-[11px] leading-relaxed text-muted">{provider} blocks third-party framing in Firefox. This panel shows the record retrieved by the engine; use External to browse the provider’s map.</p></div>;
+}
+
 function SourceViewer({ detail, onClose }: { detail: Detail; onClose: () => void }) {
   const [loading, setLoading] = useState(true);
   useEffect(() => setLoading(true), [detail.href]);
   if (!detail.href) return null;
-  return <Panel className="absolute inset-0 z-20 flex min-h-0 flex-col overflow-hidden border-command/60 bg-canvas shadow-2xl"><header className="flex items-center gap-2 border-b border-line px-3 py-2"><div className="min-w-0"><p className="font-mono text-[9px] uppercase tracking-[.14em] text-command">Source viewer</p><h2 className="truncate text-xs font-semibold text-ink">{detail.title}</h2></div><a className="ml-auto inline-flex h-7 items-center gap-1 border border-line px-2 font-mono text-[9px] uppercase text-muted hover:text-ink" href={detail.href} target="_blank" rel="noreferrer"><ExternalLink size={11} /> External</a><button aria-label="Close source viewer" onClick={onClose} className="grid h-7 w-7 place-items-center border border-line text-muted hover:text-ink"><X size={14} /></button></header><div className="relative min-h-0 flex-1 bg-black/20">{loading && <div className="pointer-events-none absolute inset-0 grid place-items-center font-mono text-[10px] uppercase tracking-wide text-muted">Loading source…</div>}<iframe title={detail.hrefLabel ?? detail.title} src={detail.href} onLoad={() => setLoading(false)} className="relative h-full w-full border-0 bg-panel" /></div><p className="border-t border-line px-3 py-1.5 font-mono text-[9px] text-muted">If a provider blocks embedding, use External.</p></Panel>;
+  const telegramPost = telegramPostId(detail.href);
+  const blockedProvider = blockedEmbedProvider(detail.href);
+  return <Panel className="absolute inset-0 z-20 flex min-h-0 flex-col overflow-hidden border-command/60 bg-canvas shadow-2xl">
+    <header className="flex items-center gap-2 border-b border-line px-3 py-2"><div className="min-w-0"><p className="font-mono text-[9px] uppercase tracking-[.14em] text-command">Source viewer</p><h2 className="truncate text-xs font-semibold text-ink">{detail.title}</h2></div><a className="ml-auto inline-flex h-7 items-center gap-1 border border-line px-2 font-mono text-[9px] uppercase text-muted hover:text-ink" href={detail.href} target="_blank" rel="noreferrer"><ExternalLink size={11} /> External</a><button aria-label="Close source viewer" onClick={onClose} className="grid h-7 w-7 place-items-center border border-line text-muted hover:text-ink"><X size={14} /></button></header>
+    <div className="relative min-h-0 flex-1 bg-black/20">{loading && !blockedProvider && <div className="pointer-events-none absolute inset-0 grid place-items-center font-mono text-[10px] uppercase tracking-wide text-muted">Loading source…</div>}{telegramPost ? <TelegramPostEmbed post={telegramPost} setLoading={setLoading} /> : blockedProvider ? <SourceRecord detail={detail} provider={blockedProvider} /> : <iframe title={detail.hrefLabel ?? detail.title} src={detail.href} onLoad={() => setLoading(false)} className="relative h-full w-full border-0 bg-panel" />}</div>
+    <p className="border-t border-line px-3 py-1.5 font-mono text-[9px] text-muted">{telegramPost ? "Telegram’s official post embed." : blockedProvider ? `${blockedProvider} record preview · provider map opens externally.` : "If a provider blocks embedding, use External."}</p>
+  </Panel>;
 }
 
 function AlertQueue({ alerts, onSelect }: { alerts: Alert[]; onSelect: (alert: Alert) => void }) {
