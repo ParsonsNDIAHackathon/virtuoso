@@ -124,6 +124,11 @@ def _neo4j_reachable(timeout_s: float = 3.0) -> bool:
 
 
 def make_store():
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+    except Exception:
+        pass
     mode = os.getenv("FUSION_STORE", "auto").lower()
     if mode == "memory":
         log.info("store: in-memory (FUSION_STORE=memory)")
