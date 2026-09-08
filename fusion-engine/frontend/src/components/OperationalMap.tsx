@@ -11,6 +11,12 @@ const LAYER_LABELS: Record<keyof LayerState, string> = { events: "OSINT", tracks
 const clusterIcon = (count: number, color: string) => L.divIcon({ className: "", iconSize: [34, 34], iconAnchor: [17, 17], html: `<span style="display:grid;place-items:center;width:34px;height:34px;border-radius:50%;border:2px solid ${color};background:#101710e8;color:${color};font:600 10px monospace">${count > 999 ? "999+" : count}</span>` });
 const planeIcons = new Map<string, L.DivIcon>();
 const thermalIcons = new Map<string, L.DivIcon>();
+const telegramIcon = L.divIcon({
+  className: "", iconSize: [22, 22], iconAnchor: [11, 11],
+  html: '<svg viewBox="0 0 32 32" width="22" height="22" style="display:block;filter:drop-shadow(0 0 2px #101710)" aria-label="Telegram post"><circle cx="16" cy="16" r="14" fill="#2387c6" stroke="#101710" stroke-width="1.5"/><path d="m7 15.1 17-6.7c.8-.3 1.5.2 1.2 1.2l-3.1 14.1c-.2 1-1 1.2-1.8.7l-4.6-3.4-2.2 2.1c-.2.2-.4.4-.9.4l.3-4.8 8.8-8c.4-.4-.1-.6-.6-.3L10.2 17l-4.7-1.5c-1-.3-1-1 .2-1.4z" fill="#effaff"/></svg>',
+});
+
+function isTelegram(event: Event) { return event.source_domain?.startsWith("t.me/") || event.url?.includes("t.me/"); }
 
 function thermalIcon(novel: boolean) {
   const key = novel ? "novel" : "routine"; const cached = thermalIcons.get(key); if (cached) return cached;
@@ -76,9 +82,9 @@ function AreaDrawer({ enabled, onDraft }: { enabled: boolean; onDraft: Props["on
   useEffect(() => { map.getContainer().style.cursor = enabled ? "crosshair" : ""; if (!enabled) map.dragging.enable(); }, [enabled, map]);
   useMapEvents({ mousedown(event) { if (enabled) { origin.current = event.latlng; map.dragging.disable(); } }, mouseup(event) { if (!enabled || !origin.current) return; const center = origin.current; origin.current = null; map.dragging.enable(); const radius_nm = Math.min(250, Math.max(5, Math.round(distanceKm(center.lat, center.lng, event.latlng.lat, event.latlng.lng) / NM_KM))); onDraft({ name: `AOI ${center.lat.toFixed(1)}, ${center.lng.toFixed(1)}`, lat: center.lat, lon: center.lng, radius_nm, user: true }); } }); return null;
 }
-function ClusterLayer<T extends Point>({ values, zoom, color, renderPoint, onSelect }: { values: T[]; zoom: number; color: string; renderPoint: (value: T) => MapDetail; onSelect: (detail: MapDetail) => void }) {
+function ClusterLayer<T extends Point>({ values, zoom, color, renderPoint, markerIcon, onSelect }: { values: T[]; zoom: number; color: string; renderPoint: (value: T) => MapDetail; markerIcon?: (value: T) => L.DivIcon | undefined; onSelect: (detail: MapDetail) => void }) {
   const map = useMap(); const groups = useMemo(() => cluster(values, zoom), [values, zoom]);
-  return <>{groups.map((group, index) => group.items.length === 1 ? <CircleMarker key={`point-${index}-${group.items[0].lat}-${group.items[0].lon}`} center={[group.lat, group.lon]} renderer={renderer} radius={4} pathOptions={{ color, fillColor: color, fillOpacity: .8, weight: 1 }} eventHandlers={{ click: () => onSelect(renderPoint(group.items[0])) }} /> : <Marker key={`cluster-${index}`} position={[group.lat, group.lon]} icon={clusterIcon(group.items.length, color)} eventHandlers={{ click: () => map.setView([group.lat, group.lon], Math.min(zoom + 2, 9)) }} />)}</>;
+  return <>{groups.map((group, index) => { const item = group.items[0]; const icon = group.items.length === 1 && zoom >= 6 ? markerIcon?.(item) : undefined; return icon ? <Marker key={`icon-${index}-${item.lat}-${item.lon}`} position={[group.lat, group.lon]} icon={icon} eventHandlers={{ click: () => onSelect(renderPoint(item)) }} /> : group.items.length === 1 ? <CircleMarker key={`point-${index}-${item.lat}-${item.lon}`} center={[group.lat, group.lon]} renderer={renderer} radius={4} pathOptions={{ color, fillColor: color, fillOpacity: .8, weight: 1 }} eventHandlers={{ click: () => onSelect(renderPoint(item)) }} /> : <Marker key={`cluster-${index}`} position={[group.lat, group.lon]} icon={clusterIcon(group.items.length, color)} eventHandlers={{ click: () => map.setView([group.lat, group.lon], Math.min(zoom + 2, 9)) }} />; })}</>;
 }
 
 function TrackLayer({ values, zoom, onSelect }: { values: Track[]; zoom: number; onSelect: (detail: MapDetail) => void }) {
@@ -105,7 +111,7 @@ export function OperationalMap({ events, tracks, alerts, firms, sar, sarCore, ta
     {layers.firms && <ThermalLayer values={firms} zoom={viewport.zoom} onSelect={onSelect} />}
     {layers.sar && <ClusterLayer values={sarCore} zoom={viewport.zoom} color="#f2bb57" onSelect={onSelect} renderPoint={(item) => ({ title: "Radar ship · strait-core scene", lines: [`~${item.length_m ?? "?"} m`, `Sentinel-1 ${item.ts.slice(0, 16)}Z`] })} />}
     {layers.sar && <ClusterLayer values={sar} zoom={viewport.zoom} color="#e5e7df" onSelect={onSelect} renderPoint={(item) => ({ title: "Radar ship detection", lines: [`~${item.length_m ?? "?"} m · contrast ${item.contrast ?? "?"}`, `Sentinel-1 ${item.ts.slice(0, 16)}Z`] })} />}
-    {layers.events && <ClusterLayer values={filteredEvents} zoom={viewport.zoom} color={eventColor} onSelect={onSelect} renderPoint={(item) => ({ title: item.source_domain?.startsWith("t.me/") ? `Telegram · ${item.source_domain.slice(5)}` : item.root_label, lines: [item.place, `Goldstein ${item.goldstein ?? "–"} · tone ${item.tone?.toFixed(1) ?? "–"}`, `Themes: ${item.themes?.slice(0, 8).join(", ") || "–"}`], href: item.url, hrefLabel: "Open source" })} />}
+    {layers.events && <ClusterLayer values={filteredEvents} zoom={viewport.zoom} color={eventColor} markerIcon={(item) => isTelegram(item) ? telegramIcon : undefined} onSelect={onSelect} renderPoint={(item) => ({ title: isTelegram(item) ? `Telegram · ${item.source_domain?.replace(/^t\.me\//, "") || "post"}` : item.root_label, lines: [item.place, `Goldstein ${item.goldstein ?? "–"} · tone ${item.tone?.toFixed(1) ?? "–"}`, `Themes: ${item.themes?.slice(0, 8).join(", ") || "–"}`], href: item.url, hrefLabel: "Open source" })} />}
     {layers.tracks && <TrackLayer values={filteredTracks} zoom={viewport.zoom} onSelect={onSelect} />}
     {layers.tracks && tails.map((tail, index) => <Polyline key={`tail-${index}`} positions={tail.coords} renderer={renderer} pathOptions={{ color: tail.military ? "#df5e55" : "#5cc7da", weight: 1, opacity: .45 }} />)}
     {layers.links && alerts.filter((item) => include(item.lat, item.lon)).slice(0, 75).flatMap((alert) => { const track = trackById.get(alert.aircraft_id); return track ? [<Polyline key={`${alert.aircraft_id}-${alert.event_id}`} positions={[[alert.lat, alert.lon], [track.lat, track.lon]]} renderer={renderer} pathOptions={{ color: alert.score > .5 ? "#df5e55" : eventColor, weight: 1 + 3 * alert.score, opacity: .7 }} />] : []; })}
