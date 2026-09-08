@@ -36,3 +36,5 @@ export type ReplaySnapshot = { events: Event[]; tracks: Track[]; alerts: Alert[]
 export type Entity = { neighbors?: Array<{ kind: string; label: string }> };
 
 export type LivePicture = { status: Status; events: Event[]; tracks: Track[]; alerts: Alert[]; firms: Firms[] };
+
+export type Viewport = { west: number; south: number; east: number; north: number; zoom: number };

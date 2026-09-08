@@ -38,7 +38,9 @@ export function KnowledgeGraph({ graph, onSelect }: { graph: Graph; onSelect: (n
       edge.attr("x1", (item) => coordinate(item.source, "x")).attr("y1", (item) => coordinate(item.source, "y")).attr("x2", (item) => coordinate(item.target, "x")).attr("y2", (item) => coordinate(item.target, "y"));
       node.attr("cx", (item) => item.x ?? 0).attr("cy", (item) => item.y ?? 0);
     });
-    return () => { simulation.stop(); svg.remove(); };
+    // A force layout is useful for orientation, but must never continuously occupy the UI thread.
+    const stopTimer = window.setTimeout(() => simulation.stop(), 1500);
+    return () => { window.clearTimeout(stopTimer); simulation.stop(); svg.remove(); };
   }, [graph, onSelect]);
   return <div ref={ref} className="h-full w-full" aria-label="Knowledge graph" />;
 }
