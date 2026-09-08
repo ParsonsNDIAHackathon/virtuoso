@@ -54,9 +54,9 @@
   <button id="sources-btn" title="What every layer is, where it comes from, and what a marker means" style="background:#334155;color:#fff;border:0;padding:6px 12px;border-radius:6px;cursor:pointer;margin-left:8px">ⓘ Data sources</button>
   <button id="refresh">Refresh ADS-B + re-fuse</button>
 </header>
-<div id="sources-modal" hidden style="position:fixed;inset:0;background:#000a;z-index:2000;display:flex;align-items:center;justify-content:center" onclick="if(event.target===this)this.hidden=true">
+<div id="sources-modal" style="display:none;position:fixed;inset:0;background:#000a;z-index:2000;align-items:center;justify-content:center" onclick="if(event.target===this)closeSources()">
   <div style="background:var(--panel);border:1px solid var(--line);border-radius:10px;max-width:1100px;width:94%;max-height:88vh;overflow:auto;padding:18px 22px;font-size:13px">
-    <div style="display:flex;align-items:center;margin-bottom:8px"><h2 style="margin:0;font-size:16px">Where the data comes from</h2><button onclick="document.getElementById('sources-modal').hidden=true" style="margin-left:auto;background:none;border:0;color:#fff;font-size:18px;cursor:pointer">✕</button></div>
+    <div style="display:flex;align-items:center;margin-bottom:8px"><h2 style="margin:0;font-size:16px">Where the data comes from</h2><button onclick="closeSources()" style="margin-left:auto;background:none;border:0;color:#fff;font-size:18px;cursor:pointer">✕</button></div>
     <p style="color:var(--mute);margin:0 0 10px">Every marker on the map is real data from the organisation named below. Nothing is simulated or relocated. Live mode streams; replay mode uses the same sources for one historical day.</p>
     <table id="sources-table" style="width:100%"><thead><tr><th style="width:150px">Layer</th><th>What it is</th><th style="width:210px">Who produces it</th><th style="width:150px">How often</th><th>What a marker means · caveats</th></tr></thead><tbody></tbody></table>
   </div>
@@ -156,10 +156,11 @@ const SOURCES = [
 function openSources() {
   const tb = document.querySelector('#sources-table tbody'); tb.innerHTML = '';
   SOURCES.forEach(s => { const tr = document.createElement('tr'); tr.innerHTML = `<td>${s.glyph} <b>${s.layer}</b></td><td>${s.what}</td><td>${s.who}</td><td>${s.when}</td><td>${s.means}</td>`; tb.appendChild(tr); });
-  $('#sources-modal').hidden = false;
+  $('#sources-modal').style.display = 'flex';
 }
+function closeSources() { $('#sources-modal').style.display = 'none'; }
 $('#sources-btn').onclick = openSources;
-document.addEventListener('keydown', e => { if (e.key === 'Escape') $('#sources-modal').hidden = true; });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeSources(); });
 const NM_KM = 1.852;
 const distKm = (a,b,c,d) => { const R=6371, p=Math.PI/180, x=Math.sin((c-a)*p/2)**2 + Math.cos(a*p)*Math.cos(c*p)*Math.sin((d-b)*p/2)**2; return 2*R*Math.asin(Math.sqrt(x)); };
 const inAOI = (lat,lon) => !$('#aoi-filter').checked || !REGIONS.length || REGIONS.some(r => distKm(lat,lon,r.lat,r.lon) <= r.radius_nm*NM_KM);
