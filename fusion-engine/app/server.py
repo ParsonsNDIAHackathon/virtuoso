@@ -78,6 +78,14 @@ def aircraft(military_only: bool = False, limit: int = Query(3000, ge=1, le=2000
     return _in_view(state.api_aircraft(military_only), bbox, limit)
 
 
+@app.get("/api/preview")
+def link_preview(url: str = Query(..., min_length=8, max_length=2048)):
+    """Open Graph / meta summary of a source page (cached). Used for the Inspector's source card
+    because most publishers forbid iframes."""
+    from fusion.preview import preview
+    return preview(url)
+
+
 @app.get("/api/timeline")
 def timeline(hours: float = Query(24.0, ge=0, le=24 * 30)):
     """Per-fuse activity counts for the last `hours` (0 = all persisted history)."""
