@@ -17,6 +17,7 @@ from pathlib import Path
 from .correlate import correlate, graph_to_json
 from .ingest_adsb import AirTrack, fetch_military, fetch_regions
 from .ingest_gdelt import OsintEvent, fetch_window
+from .ingest_telegram import DEFAULT_CHANNELS, fetch_latest, social_to_event
 
 log = logging.getLogger(__name__)
 DATA = Path(__file__).resolve().parent.parent / "data"
@@ -58,6 +59,7 @@ class FusionState:
     graph: dict = field(default_factory=dict)
     updated: str | None = None
     regions: list[dict] = field(default_factory=load_regions)
+    social: list[OsintEvent] = field(default_factory=list)
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     # --- areas of interest ---
@@ -99,6 +101,23 @@ class FusionState:
         log.info("GDELT: %d geocoded events (%d conflict) from %d window(s)",
                  len(all_ev), sum(e.is_conflict for e in all_ev), windows)
 
+    def refresh_social(self, channels=None):
+        """Poll public Telegram channel previews; keep the last 6 h of geolocated posts."""
+        posts = []
+        for ch in channels or DEFAULT_CHANNELS:
+            try:
+                posts += fetch_latest(ch)
+            except Exception as e:
+                log.warning("telegram %s failed: %s", ch, e)
+        cutoff = datetime.now(timezone.utc).timestamp() - 6 * 3600
+        fresh = [social_to_event(p) for p in posts
+                 if p.lat is not None and datetime.fromisoformat(p.ts).timestamp() >= cutoff]
+        with self.lock:
+            have = {e.id for e in self.social}
+            self.social = [e for e in self.social
+                           if datetime.fromisoformat(e.ts).timestamp() >= cutoff] + [e for e in fresh if e.id not in have]
+        log.info("Telegram: %d posts polled, %d geolocated in last 6 h", len(posts), len(self.social))
+
     def refresh_adsb(self, regions=True):
         tracks = fetch_military()
         if regions:
@@ -113,7 +132,7 @@ class FusionState:
 
     def fuse(self, radius_km=75.0, window_min=240.0):
         with self.lock:
-            ev, tr = list(self.events), list(self.tracks)
+            ev, tr = list(self.events) + list(self.social), list(self.tracks)
         G, alerts = correlate(ev, tr, radius_km=radius_km, window_min=window_min)
         gj = graph_to_json(G)
         with self.lock:
@@ -135,7 +154,7 @@ class FusionState:
                 "counts": {"events": len(self.events), "conflict_events": sum(e.is_conflict for e in self.events),
                            "tracks": len(self.tracks), "military_tracks": sum(t.military for t in self.tracks),
                            "alerts": len(self.alerts)},
-                "events": [e.to_dict() for e in self.events],
+                "events": [e.to_dict() for e in self.events + self.social],
                 "tracks": [t.to_dict() for t in self.tracks],
                 "alerts": [a.to_dict() for a in self.alerts],
                 "graph": self.graph,
@@ -155,20 +174,31 @@ def _prev_window(stamp: str) -> str:
 
 def run_once(state: FusionState, windows=2) -> FusionState:
     state.refresh_gdelt(windows=windows)
+    try:
+        state.refresh_social()
+    except Exception as e:
+        log.warning("social refresh failed: %s", e)
     state.refresh_adsb()
     state.fuse()
     state.save()
     return state
 
 
-def run_loop(state: FusionState, gdelt_every=900, adsb_every=60, windows=2, primed=True):
+def run_loop(state: FusionState, gdelt_every=900, adsb_every=60, windows=2, primed=True, social_every=300):
     """Background loop: ADS-B every minute, GDELT every 15 minutes, re-fuse after each.
     primed=True means run_once() already populated state, so the first tick waits."""
     last_g = time.time() if primed else 0.0
+    last_s = last_g
     if primed:
         time.sleep(adsb_every)
     while True:
         now = time.time()
+        if now - last_s >= social_every:
+            try:
+                state.refresh_social()
+                last_s = now
+            except Exception as e:
+                log.warning("social refresh failed: %s", e)
         if now - last_g >= gdelt_every:
             try:
                 state.refresh_gdelt(windows=windows)

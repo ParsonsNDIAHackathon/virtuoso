@@ -14,6 +14,7 @@ from pathlib import Path
 
 from .correlate import correlate, graph_to_json
 from .ingest_gdelt import OsintEvent
+from .ingest_telegram import SocialPost, social_to_event
 from .replay_adsb import load_tracks, snapshot_at, track_polylines
 from .replay_gdelt import HORMUZ_BBOX, HORMUZ_KW, load_day
 
@@ -68,6 +69,12 @@ class ReplayState:
                 self.events = load_day(self.day, DATA / "gdelt", self.sc["bbox"], self.sc["keywords"])
                 gpath.parent.mkdir(parents=True, exist_ok=True)
                 gpath.write_text(json.dumps([e.to_dict() for e in self.events]), encoding="utf-8")
+            tpath = DATA / "replay" / f"{self.day}_telegram.json"
+            if tpath.exists():
+                posts = [SocialPost(**d) for d in json.loads(tpath.read_text(encoding="utf-8"))]
+                social = [social_to_event(p) for p in posts if p.lat is not None]
+                self.events += social
+                log.info("replay %s: +%d geolocated Telegram posts (%d total posts)", self.day, len(social), len(posts))
             apath = DATA / "replay" / f"{self.day}_adsb.json"
             if apath.exists():
                 self.tracks = load_tracks(apath)

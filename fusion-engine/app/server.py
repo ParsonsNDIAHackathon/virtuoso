@@ -57,7 +57,7 @@ def alerts(limit: int = Query(100, le=2000), min_score: float = 0.0):
 @app.get("/api/events")
 def events(conflict_only: bool = False, limit: int = Query(3000, le=20000)):
     with state.lock:
-        ev = [e.to_dict() for e in state.events if (e.is_conflict or not conflict_only)]
+        ev = [e.to_dict() for e in state.events + state.social if (e.is_conflict or not conflict_only)]
     return ev[:limit]
 
 
