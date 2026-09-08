@@ -197,6 +197,19 @@ def replay_timeline(scenario: str, step_min: int = 15):
     return _replay(scenario).timeline(step_min)
 
 
+@app.get("/api/replay/{scenario}/evidence")
+def replay_evidence(scenario: str):
+    """Analyst-reviewed (curated, manual) records for a scenario: vessels, sources, claims, leads.
+    Not sensor data; never enters correlation or alerts."""
+    try:
+        b = _replay(scenario).evidence()
+    except KeyError:
+        return JSONResponse({"error": "unknown scenario"}, status_code=404)
+    if b is None:
+        return JSONResponse({"error": "no curated evidence for this scenario"}, status_code=404)
+    return b
+
+
 @app.get("/api/replay/{scenario}/at")
 def replay_at(scenario: str, t: float, lookback_min: float = 120.0, radius_km: float = 75.0):
     """Fused picture at epoch second t."""

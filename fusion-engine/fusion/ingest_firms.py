@@ -85,6 +85,18 @@ def novelty(hotspots: list[Hotspot], baseline: list[Hotspot], radius_km: float =
     return hotspots
 
 
+
+def _data_root():
+    """data dir shared with the server: FUSION_DATA_DIR (from env or fusion-engine/.env), else ./data"""
+    import os
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+    except Exception:
+        pass
+    return Path(os.getenv("FUSION_DATA_DIR") or (Path(__file__).resolve().parent.parent / "data"))
+
+
 if __name__ == "__main__":
     import argparse, json
     ap = argparse.ArgumentParser()
@@ -98,8 +110,8 @@ if __name__ == "__main__":
     from datetime import timedelta
     base_day = a.baseline or (datetime.strptime(a.day, "%Y-%m-%d") - timedelta(days=2)).strftime("%Y-%m-%d")
     hs = novelty(hs, fetch(bbox, base_day, days=2))
-    root = Path(__file__).resolve().parent.parent
-    out = root / "data" / "replay" / f"{a.day}_firms.json"
+    root = _data_root().parent  # data dir parent; see _data_root()
+    out = _data_root() / "replay" / f"{a.day}_firms.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps([h.to_dict() for h in hs]), encoding="utf-8")
     novel = sorted(hs, key=lambda h: -h.novelty)[:10]

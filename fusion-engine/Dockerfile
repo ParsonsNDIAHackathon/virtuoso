@@ -9,7 +9,8 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
 COPY fusion ./fusion
-COPY data ./data
+# data/ is git-ignored and bind-mounted by docker-compose; create the mount point so a fresh clone builds.
+RUN mkdir -p /app/data
 
 EXPOSE 8000
 CMD ["uvicorn", "app.server:app", "--host", "0.0.0.0", "--port", "8000"]

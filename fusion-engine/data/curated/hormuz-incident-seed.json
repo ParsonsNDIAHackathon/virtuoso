@@ -1,0 +1,36 @@
+{
+  "schema_version": "1.0",
+  "title": "Hormuz maritime incidents, August 17–19, 2026",
+  "prepared_date": "2026-09-08",
+  "data_kind": "manually_curated_source_claims",
+  "raw_ais_observations_available": false,
+  "notes": [
+    "This is a research seed, not automatically ingested news or raw vessel AIS.",
+    "Unknown exact times and coordinates are null rather than invented.",
+    "Source publication dates must gate an as-known-at-the-time replay; date-only sources have unknown within-day availability.",
+    "Current retrospective sources must not be treated as information available on the event date.",
+    "Candidate MMSI validity on the incident date requires static-AIS or provider confirmation."
+  ],
+  "vessels": [
+    {"id":"imo:9294484","name":"MINOAN DIGNITY","imo":"9294484","mmsi_candidate":"636016405","callsign_candidate":"D5GA3","vessel_type":"bulk_carrier","flag":"Liberia","identity_source_ids":["imo_register","minoan_directory"]},
+    {"id":"imo:9333280","name":"AMARA","imo":"9333280","mmsi_candidate":"636023272","callsign_candidate":"5LMW6","vessel_type":"chemical_oil_products_tanker","flag":"Liberia","identity_source_ids":["amara_directory"]}
+  ],
+  "sources": [
+    {"id":"imo_register","publisher":"International Maritime Organization","url":"https://www.imo.org/en/mediacentre/hottopics/pages/middle-east-highlighted-incidents.aspx","source_type":"official_incident_register","publication_date":null,"as_of_date":"2026-09-02","retrieved_date":"2026-09-08"},
+    {"id":"intercargo","publisher":"INTERCARGO","url":"https://www.intercargo.org/statement-intercargo-is-deeply-saddened-by-reports-that-a-seafarer-on-board-the-liberia-flagged-bulk-carrier-minoan-dignity/","source_type":"industry_association_statement","publication_date":"2026-08-18","publication_time_utc":null},
+    {"id":"windward","publisher":"Windward","url":"https://windward.ai/blog/a-fatal-hormuz-strike-and-irans-first-seizure-since-june/","source_type":"provider_analysis","publication_date":"2026-08-19","publication_time_utc":null},
+    {"id":"maritime_executive","publisher":"The Maritime Executive","url":"https://maritime-executive.com/article/chief-engineer-killed-as-bulker-is-attacked-exiting-strait-of-hormuz","source_type":"news_report","publication_date":"2026-08-18","publication_time_utc":null},
+    {"id":"minoan_directory","publisher":"MyShipTracking","url":"https://www.myshiptracking.com/vessels/minoan-dignity-mmsi-636016405-imo-9294484","source_type":"vessel_directory","publication_date":null,"retrieved_date":"2026-09-08"},
+    {"id":"amara_directory","publisher":"VesselFinder","url":"https://www.vesselfinder.com/vessels/details/9333280","source_type":"vessel_directory","publication_date":null,"retrieved_date":"2026-09-08"}
+  ],
+  "claims": [
+    {"id":"md-official-incident","vessel_id":"imo:9294484","source_ids":["imo_register"],"event_date":"2026-08-17","event_time_utc":null,"time_precision":"date_only","location_text":"Strait of Hormuz","coordinates":null,"claim":"Official register records vessel damage, one seafarer fatality and no pollution.","evidence_class":"officially_recorded_incident","attacker":null},
+    {"id":"md-association-statement","vessel_id":"imo:9294484","source_ids":["intercargo"],"event_date":"2026-08-17","event_time_utc":null,"time_precision":"date_only","location_text":"Strait of Hormuz","coordinates":null,"claim":"Association statement reports a seafarer death following an attack while the vessel was transiting.","evidence_class":"published_statement","attacker":null},
+    {"id":"md-secondary-timing","vessel_id":"imo:9294484","source_ids":["maritime_executive"],"event_date":null,"event_time_utc":null,"time_precision":"ambiguous_overnight","reported_date_span":["2026-08-17","2026-08-18"],"location_text":"Near the Omani coast during outbound transit","coordinates":null,"claim":"Reporting describes an overnight projectile strike affecting the engine room.","evidence_class":"secondary_report","attacker":null,"conflicts_with":["md-official-incident"],"conflict_note":"Overnight wording differs from the date-only August 17 official record; exact UTC event time is unresolved."},
+    {"id":"amara-speed-1137","vessel_id":"imo:9333280","source_ids":["windward"],"event_date":"2026-08-17","event_time_utc":"2026-08-17T11:37:00Z","time_precision":"minute_as_reported","coordinates":null,"reported_speed_knots":10.7,"claim":"Provider analysis reports vessel speed of 10.7 knots.","evidence_class":"provider_reported_ais_observation","raw_record_available":false},
+    {"id":"amara-speed-1242","vessel_id":"imo:9333280","source_ids":["windward"],"event_date":"2026-08-17","event_time_utc":"2026-08-17T12:42:00Z","time_precision":"minute_as_reported","coordinates":null,"reported_speed_knots":2.9,"claim":"Provider analysis reports speed reduced to 2.9 knots near Larak Island.","evidence_class":"provider_reported_ais_observation","raw_record_available":false},
+    {"id":"amara-course-change","vessel_id":"imo:9333280","source_ids":["windward"],"event_date":"2026-08-17","event_time_utc":"2026-08-17T14:51:00Z","time_precision":"minute_as_reported","location_text":"Approximately five nautical miles southeast of Qeshm Island","coordinates":null,"claim":"Provider describes course deviation followed by loitering and reversal.","evidence_class":"provider_reported_movement","raw_record_available":false},
+    {"id":"amara-detention-assessment","vessel_id":"imo:9333280","source_ids":["windward","maritime_executive"],"event_date":"2026-08-17","event_time_utc":null,"time_precision":"date_only","location_text":"Near Qeshm Island","coordinates":null,"claim":"Sources link the vessel to a reported detention by Iranian forces; keep this assessment separate from observed movement.","evidence_class":"reported_assessed_detention","raw_record_available":false}
+  ],
+  "ais_request": {"from_utc_inclusive":"2026-08-16T00:00:00Z","to_utc_exclusive":"2026-08-20T00:00:00Z","imos":["9294484","9333280"],"mmsi_candidates":["636016405","636023272"],"optional_bbox_west_south_east_north":[54,24,59,28],"status":"not_submitted"}
+}

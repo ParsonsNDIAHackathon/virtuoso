@@ -1,0 +1,71 @@
+{
+  "retrieved_date": "2026-09-08",
+  "scope": "Small manually reviewed discovery sample, not an exhaustive social-media archive",
+  "items": [
+    {
+      "id": "x-unicanal-2090143755475026290",
+      "platform": "X",
+      "url": "https://x.com/Unicanal/status/2090143755475026290",
+      "publisher": "Unicanal",
+      "publication_time_utc": "2026-08-19T18:27:58Z",
+      "original_language": "es",
+      "original_language_inspected": true,
+      "summary_en": "The broadcaster attributes a daily count of ten Hormuz crossings to Kpler and reports the Minoan Dignity incident as occurring August 17.",
+      "summary_kind": "assistant paraphrase, not verbatim translation",
+      "referenced_entities": [
+        "imo:9294484"
+      ],
+      "attributed_data_provider": "Kpler",
+      "raw_ais_available": false,
+      "status": "secondary reporting; underlying traffic count not independently verified",
+      "exact_traffic_interval_utc": null
+    },
+    {
+      "id": "telegram-iswnews-86027",
+      "platform": "Telegram",
+      "url": "https://t.me/iswnews/86027",
+      "publisher": "ISWNews / تحولات جهان اسلام",
+      "publication_time_utc": "2026-08-18T15:41:20Z",
+      "original_language": "fa",
+      "summary_en": "The channel attributes the Minoan Dignity attack to Iranian forces and makes additional claims about vessel disablement and unsuccessful evacuation attempts.",
+      "summary_kind": "assistant paraphrase; claims require independent corroboration",
+      "referenced_entities": [
+        "imo:9294484"
+      ],
+      "status": "unverified social-source claims; not merged into the official incident record"
+    },
+    {
+      "id": "x-egyosint-2090412218789548222",
+      "platform": "X",
+      "url": "https://x.com/EGYOSINT/status/2090412218789548222",
+      "publisher": "Egypt's Intel Observer",
+      "publication_time_utc": "2026-08-20T12:14:45Z",
+      "original_language": "en",
+      "summary_en": "The account claims that August 20 Sentinel-2 imagery shows AMARA near Larak. A matching-date Sentinel-2 scene covering Larak was independently located; the vessel identity has not been verified.",
+      "summary_kind": "assistant paraphrase",
+      "referenced_entities": [
+        "imo:9333280"
+      ],
+      "status": "post-incident image interpretation lead; outside initial publication window, retained explicitly as later context",
+      "catalog_item_id": "S2B_40RDQ_20260820_0_L2A"
+    }
+  ],
+  "excluded_or_deferred": [
+    {
+      "url": "https://t.me/eskannews_com/209609",
+      "publication_time_utc": "2026-08-22T05:47:01Z",
+      "reason": "Outside August 16–19 publication window; retrospective reporting"
+    },
+    {
+      "url": "https://x.com/jackprandelli/status/2090467567164944767",
+      "publication_time_utc": "2026-08-20T15:54:41Z",
+      "reason": "Outside requested UTC publication window despite appearing in search results"
+    }
+  ],
+  "notes": [
+    "Social claims are not raw AIS.",
+    "Post popularity and verification badges are not evidence of factual accuracy.",
+    "Full articles/posts and media are not republished in this dataset.",
+    "No public posts, replies, likes, follows or account-setting changes were made."
+  ]
+}

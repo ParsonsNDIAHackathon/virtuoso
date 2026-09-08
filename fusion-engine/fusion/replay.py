@@ -30,13 +30,17 @@ DATA = Path(os.getenv("FUSION_DATA_DIR") or (ROOT / "data"))
 
 SCENARIOS = {
     "hormuz-2026-08-18": {
-        "title": "Strait of Hormuz, 18 Aug 2026",
-        "day": "2026-08-18",
+        "title": "Hormuz maritime incidents, 17–18 Aug 2026",
+        "day": "2026-08-18",                       # anchor day (kept for compatibility)
+        "days": ["2026-08-17", "2026-08-18"],       # replay window = first 00:00Z -> last 23:59:59Z
         "bbox": HORMUZ_BBOX,
         "keywords": HORMUZ_KW,
         "center": (26.0, 55.5),
         "zoom": 7,
-        "notes": "US-Iran ceasefire expiry; vessel struck by projectile exiting Hormuz; Iranian missile fire toward UAE.",
+        "notes": "Aug 17: MINOAN DIGNITY (bulk carrier) struck exiting Hormuz, one seafarer killed; AMARA (products tanker) reported detained. Aug 18: US-Iran ceasefire expiry, Iranian missile fire toward UAE.",
+        # analyst-reviewed records (observatory notebook); served by /evidence, never correlated
+        "curated": {"seed": str(ROOT / "data" / "curated" / "hormuz-incident-seed.json"),
+                    "leads": str(ROOT / "data" / "curated" / "social-source-leads.json")},
         "sources": [
             ("Vessel hit by projectile while exiting Strait of Hormuz", "https://shipandbunker.com/news/emea/178048-vessel-hit-by-projectile-while-exiting-strait-of-hormuz"),
             ("Ship attacked in Hormuz as US-Iran ceasefire expiry risks prolonged conflict", "https://www.cnbcafrica.com/2026/ship-attacked-in-hormuz-strait-as-u-s-iran-ceasefire-expiry-risks-prolonged-conflict"),
@@ -70,6 +74,8 @@ class ReplayState:
     def __init__(self, scenario_id: str, store=None):
         self.sc = dict(SCENARIOS[scenario_id], id=scenario_id)
         self.day = self.sc["day"]
+        self.days = list(self.sc.get("days") or [self.day])
+        self.loaded_layers: dict[str, list[str]] = {"gdelt": [], "adsb": [], "telegram": [], "firms": []}
         self.events: list[OsintEvent] = []
         self.tracks: dict[str, dict] = {}
         self.firms: list[dict] = []
@@ -78,51 +84,70 @@ class ReplayState:
         self.lock = threading.Lock()
         self._cache: dict[int, dict] = {}
         self.store = store or make_store()
-        d = datetime.strptime(self.day, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-        self.t_min = d.timestamp()
-        self.t_max = self.t_min + 86400 - 1
+        d0 = datetime.strptime(self.days[0], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        d1 = datetime.strptime(self.days[-1], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        self.t_min = d0.timestamp()
+        self.t_max = d1.timestamp() + 86400 - 1
 
     def load(self):
         with self.lock:
             if self.loaded:
                 return
-            gpath = DATA / "replay" / f"{self.day}_gdelt.json"
-            if gpath.exists():
-                self.events = [OsintEvent(**e) for e in json.loads(gpath.read_text(encoding="utf-8"))]
-            else:
-                log.info("building GDELT replay for %s (first time, may take minutes)", self.day)
-                self.events = load_day(self.day, DATA / "gdelt", self.sc["bbox"], self.sc["keywords"])
-                gpath.parent.mkdir(parents=True, exist_ok=True)
-                gpath.write_text(json.dumps([e.to_dict() for e in self.events]), encoding="utf-8")
-            tpath = DATA / "replay" / f"{self.day}_telegram.json"
-            if tpath.exists():
-                posts = [SocialPost(**d) for d in json.loads(tpath.read_text(encoding="utf-8"))]
-                social = [social_to_event(p) for p in posts if p.lat is not None]
-                self.events += social
-                log.info("replay %s: +%d geolocated Telegram posts (%d total posts)", self.day, len(social), len(posts))
-            fpath = DATA / "replay" / f"{self.day}_firms.json"
-            if fpath.exists():
-                self.firms = json.loads(fpath.read_text(encoding="utf-8"))
+            self.events, self.firms, self.tracks = [], [], {}
+            for day in self.days:
+                gpath = DATA / "replay" / f"{day}_gdelt.json"
+                if gpath.exists():
+                    self.events += [OsintEvent(**e) for e in json.loads(gpath.read_text(encoding="utf-8"))]
+                    self.loaded_layers["gdelt"].append(day)
+                elif day == self.day:
+                    log.info("building GDELT replay for %s (first time, may take minutes)", day)
+                    ev = load_day(day, DATA / "gdelt", self.sc["bbox"], self.sc["keywords"])
+                    gpath.parent.mkdir(parents=True, exist_ok=True)
+                    gpath.write_text(json.dumps([e.to_dict() for e in ev]), encoding="utf-8")
+                    self.events += ev
+                    self.loaded_layers["gdelt"].append(day)
+                else:
+                    log.warning("replay: no GDELT file for %s (run: python -m fusion.replay_gdelt %s)", day, day)
+                tpath = DATA / "replay" / f"{day}_telegram.json"
+                if tpath.exists():
+                    posts = [SocialPost(**d) for d in json.loads(tpath.read_text(encoding="utf-8"))]
+                    social = [social_to_event(p) for p in posts if p.lat is not None]
+                    self.events += social
+                    self.loaded_layers["telegram"].append(day)
+                    log.info("replay %s: +%d geolocated Telegram posts (%d total posts)", day, len(social), len(posts))
+                fpath = DATA / "replay" / f"{day}_firms.json"
+                if fpath.exists():
+                    self.firms += json.loads(fpath.read_text(encoding="utf-8"))
+                    self.loaded_layers["firms"].append(day)
+                apath = DATA / "replay" / f"{day}_adsb.json"
+                if apath.exists():
+                    for hexid, a in load_tracks(apath).items():
+                        if hexid in self.tracks:
+                            t = self.tracks[hexid]
+                            t["points"] = sorted(t["points"] + a["points"], key=lambda p: p[0])
+                            t["n"] = len(t["points"]); t["t_first"] = t["points"][0][0]; t["t_last"] = t["points"][-1][0]
+                            t["military"] = t["military"] or a.get("military", False)
+                        else:
+                            self.tracks[hexid] = a
+                    self.loaded_layers["adsb"].append(day)
+                else:
+                    log.warning("replay: no ADS-B file for %s", day)
             self.sar = []
             for spath in sorted((DATA / "replay").glob("*_sar.json")):
                 try:
                     sday = datetime.strptime(spath.name[:10], "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp()
                 except ValueError:
                     continue
-                if abs(sday - self.t_min) <= 3 * 86400:
+                if self.t_min - 3 * 86400 <= sday <= self.t_max + 3 * 86400:
                     self.sar += json.loads(spath.read_text(encoding="utf-8"))
-            apath = DATA / "replay" / f"{self.day}_adsb.json"
-            if apath.exists():
-                self.tracks = load_tracks(apath)
-            else:
-                log.warning("no ADS-B replay file %s - run fusion.replay_adsb extract", apath)
             self.loaded = True
-            log.info("replay %s: %d events, %d aircraft", self.day, len(self.events), len(self.tracks))
+            log.info("replay %s: %d events, %d aircraft; layers loaded %s", "..".join(self.days), len(self.events), len(self.tracks), self.loaded_layers)
 
     def config(self) -> dict:
         self.load()
         return {
-            "scenario": self.sc, "t_min": self.t_min, "t_max": self.t_max,
+            "scenario": self.sc, "t_min": self.t_min, "t_max": self.t_max, "days": self.days,
+            "layers_loaded": self.loaded_layers,
             "n_events": len(self.events), "n_conflict": sum(e.is_conflict for e in self.events),
             "n_aircraft": len(self.tracks), "n_military": sum(1 for a in self.tracks.values() if a["military"]),
             "adsb_available": bool(self.tracks), "n_firms": len(self.firms), "n_sar": len(self.sar),
@@ -193,13 +218,24 @@ class ReplayState:
         self._cache[key] = out
         return out
 
+    def evidence(self) -> dict | None:
+        """Curated manual evidence attached to this scenario (None if the scenario has none).
+        Loaded fresh from the committed JSON; never mixed into events, tracks or alerts."""
+        cfg = self.sc.get("curated")
+        if not cfg:
+            return None
+        from .curated import load_bundle
+        b = load_bundle(cfg["seed"], cfg["leads"])
+        b["window"] = {"t_min": self.t_min, "t_max": self.t_max, "label": self.sc.get("title")}
+        return b
+
     def timeline(self, step_min: int = 15) -> dict:
         """Per-bin activity across every source for the scrubber strip:
         events (all / conflict), Telegram posts, aircraft and military aircraft with a position in the
         bin, new thermal anomalies (novelty >= 0.9), plus radar scene times as markers."""
         self.load()
         step = step_min * 60
-        n = int(86400 // step)
+        n = int((self.t_max + 1 - self.t_min) // step)
         bins = [{"t": self.t_min + i * step, "events": 0, "conflict": 0, "social": 0,
                  "tracks": 0, "military": 0, "firms_new": 0} for i in range(n)]
 
