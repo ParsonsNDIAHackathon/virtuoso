@@ -299,9 +299,15 @@ class FusionState:
         return self.store.events(event_ids, conflict_only, limit)
 
     def api_aircraft(self, military_only: bool = False) -> list[dict]:
+        """Return the latest ingest snapshot, including the early military result.
+
+        The graph store is updated after all AOI point requests finish and fusion
+        runs.  Serving it here made the map wait on those rate-limited requests
+        even though ``refresh_adsb`` had already received the military feed.
+        """
         with self.lock:
-            batch_id = self.batch_id
-        return self.store.aircraft(batch_id, military_only)
+            tracks = [track.to_dict() for track in self.tracks]
+        return [track for track in tracks if not military_only or track["military"]]
 
     def api_alerts(self, min_score: float = 0.0, limit: int = 100) -> list[dict]:
         with self.lock:
