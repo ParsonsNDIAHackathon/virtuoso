@@ -72,7 +72,7 @@ def _norm(a: dict, ts: str, military: bool) -> AirTrack | None:
     )
 
 
-MIN_GAP_S = 1.5          # adsb.lol rate-limits bursts; space requests out
+MIN_GAP_S = 3.0          # adsb.lol rate-limits bursts; ~3 s between calls avoids most 429s
 _last_call = 0.0
 
 
