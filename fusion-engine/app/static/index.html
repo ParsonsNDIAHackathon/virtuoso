@@ -181,6 +181,7 @@ async function enterReplay(id) {
   $('#rb-src').textContent = RCFG.adsb_available ? `GDELT ${RCFG.n_events} events · adsb.lol archive ${RCFG.n_aircraft} aircraft (${RCFG.n_military} mil)` : `GDELT ${RCFG.n_events} events · ADS-B archive NOT LOADED`;
   map.setView(sc.center, sc.zoom);
   const [la0,lo0,la1,lo1] = sc.bbox; L.rectangle([[la0,lo0],[la1,lo1]], {color:'#ffb454', weight:1, fill:false, dashArray:'4 4'}).addTo(map);
+  if (sc.sources && sc.sources.length) $('#detail-body').innerHTML = `<b>${sc.title}</b><br>${sc.notes||''}<br><b>Key reporting from the day (GDELT-indexed):</b><br>` + sc.sources.map(([t,u]) => `• <a href="${u}" target="_blank">${t}</a>`).join('<br>');
   await loadReplay();
 }
 function exitReplay() { MODE='live'; stopPlay(); $('#replaybar').style.display = 'none'; $('#refresh').hidden = false; map.setView([35,10],2); loadLive(); }

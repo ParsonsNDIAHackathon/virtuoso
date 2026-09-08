@@ -30,6 +30,15 @@ SCENARIOS = {
         "center": (26.0, 55.5),
         "zoom": 7,
         "notes": "US-Iran ceasefire expiry; vessel struck by projectile exiting Hormuz; Iranian missile fire toward UAE.",
+        "sources": [
+            ("Vessel hit by projectile while exiting Strait of Hormuz", "https://shipandbunker.com/news/emea/178048-vessel-hit-by-projectile-while-exiting-strait-of-hormuz"),
+            ("Ship attacked in Hormuz as US-Iran ceasefire expiry risks prolonged conflict", "https://www.cnbcafrica.com/2026/ship-attacked-in-hormuz-strait-as-u-s-iran-ceasefire-expiry-risks-prolonged-conflict"),
+            ("Crew killed in vessel strike in Strait of Hormuz", "https://economictimes.indiatimes.com/news/international/world-news/us-iran-war-crew-killed-in-vessel-strike-in-strait-of"),
+            ("Iran fires ballistic missiles at UAE", "https://www.jns.org/news/world/iran-fires-ballistic-missiles-at-uae"),
+            ("UAE warns of potential missile threats", "https://keralakaumudi.com/en/en/world/gulf/uae-warns-of-potential-missile-threats-1793501"),
+            ("Iran threatens escalation as Hormuz crisis deepens", "https://gulfnews.com/world/mena/middle-east-war-iran-threatens-escalation-as-hormuz-crisis-deepens-1.500644222"),
+            ("CNN: Iran, the Strait of Hormuz and oil", "https://edition.cnn.com/2026/08/18/business/iran-strait-of-hormuz-oil"),
+        ],
     },
 }
 
