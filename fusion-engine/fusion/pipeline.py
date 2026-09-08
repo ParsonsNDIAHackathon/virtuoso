@@ -441,6 +441,14 @@ def run_loop(state: FusionState, gdelt_every=900, adsb_every=60, windows=2, prim
         time.sleep(adsb_every)
     while True:
         now = time.time()
+        # Always start the cycle with ADS-B.  GDELT downloads, FIRMS AOI calls,
+        # and timeline backfill may be slow, but should never delay the first
+        # usable air picture after a container restart.
+        try:
+            state.refresh_adsb()
+        except Exception as e:
+            log.warning("ADS-B refresh failed (keeping previous tracks): %s", e)
+            state.set_source_status("adsb", "error", detail="Aircraft feed unavailable; retaining the last result")
         if now - last_s >= social_every:
             try:
                 state.refresh_social()
@@ -473,11 +481,6 @@ def run_loop(state: FusionState, gdelt_every=900, adsb_every=60, windows=2, prim
                     state.backfill.extend(circles)
             except Exception as e:
                 log.warning("backfill failed: %s", e)
-        try:
-            state.refresh_adsb()
-        except Exception as e:
-            log.warning("ADS-B refresh failed (keeping previous tracks): %s", e)
-            state.set_source_status("adsb", "error", detail="Aircraft feed unavailable; retaining the last result")
         try:
             state.fuse()
             state.save()
