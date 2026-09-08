@@ -25,7 +25,7 @@ log = logging.getLogger(__name__)
 HEADERS = {"User-Agent": "Mozilla/5.0 (ParsonsOfInterest-MultiINT hackathon)"}
 
 # Public channels that are active and preview-enabled (checked 2026-09-08). Extend freely.
-DEFAULT_CHANNELS = ["intelslava", "Middle_East_Spectator"]   # preview-enabled and active as of 2026-09-08
+DEFAULT_CHANNELS = ["intelslava", "Middle_East_Spectator", "iswnews", "eskannews_com"]   # preview-enabled and active as of 2026-09-08
 
 # Minimal gazetteer for the Gulf scenario; (lat, lon). Extend per scenario.
 GAZETTEER = {
