@@ -27,8 +27,8 @@ Pipeline (`fusion/`):
 3. **Spatial/temporal correlation** — every event with severity ≥ 0.35 is matched against aircraft
    within 75 km and 4 h. Score = proximity × event severity (CAMEO root, Goldstein, tone,
    mentions) × aircraft weight (military, low altitude, emergency squawk).
-4. **Knowledge graph** — `networkx` MultiDiGraph with node kinds `event / actor / location /
-   aircraft / source` and edge kinds `INVOLVES / LOCATED_AT / REPORTED_BY / NEAR / CO_LOCATED`.
+4. **Knowledge graph** — Neo4j stores persistent `event / actor / location / aircraft /
+   observation / source` nodes and `INVOLVES / LOCATED_AT / REPORTED_BY / NEAR / CO_LOCATED` edges.
 5. **Dashboard** — FastAPI (`app/server.py`) serving a Leaflet map, a D3 force graph, and a ranked
    alert table with click-through to the source article.
 
@@ -38,13 +38,18 @@ All commands run from this folder (`fusion-engine/`):
 
 ```bash
 cd fusion-engine
+cp .env.example .env  # set NEO4J_PASSWORD before starting the database
 pip install -r requirements.txt
+docker compose up -d
 python -m fusion.pipeline            # one-shot: fetch, fuse, print top alerts, write data/snapshot.json
 uvicorn app.server:app --port 8000   # dashboard at http://localhost:8000 (streams in background)
 ```
 
-First start takes a few minutes: two GDELT windows (~6 MB GKG each) are downloaded and cached
-under `data/gdelt/`.
+The Compose service runs Neo4j with named `neo4j_data` and `neo4j_logs` volumes. It binds Browser
+(`7474`) and Bolt (`7687`) only to localhost. The application loads credentials from `.env`.
+`docker compose down` preserves
+the graph; `docker compose down -v` removes it. First ingestion takes a few minutes: two GDELT
+windows (~6 MB GKG each) are downloaded and cached under `data/gdelt/`.
 
 API: `/api/status`, `/api/alerts`, `/api/events?conflict_only=true`, `/api/aircraft`,
 `/api/graph`, `/api/entity/{id}`, `POST /api/refresh`.
@@ -85,8 +90,9 @@ feed such as aisstream.io labeled as current.
 
 - Add a third INT: DroneRF signatures or OpenCellID cell-tower density as the "RF/EM" layer;
   NOAA AIS for maritime.
-- Replace `networkx` with Neo4j (driver already in requirements of the dev box) for persistent
-  graph queries.
+- Neo4j is the persistent fusion graph. Each ADS-B pull creates timestamped `AirObservation`
+  nodes, then materializes `NEAR` and `CO_LOCATED` relationships for that batch. Live and replay
+  API projections query Neo4j directly.
 - LLM summarization of each alert's corroborating articles (Claude API) into an analyst BLUF.
 - Track history: persist ADS-B snapshots to detect loitering / orbit patterns, not just presence.
 - Social stream (Telegram/X) ingest for true "social media spike" detection.

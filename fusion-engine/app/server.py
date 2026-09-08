@@ -40,28 +40,22 @@ def index():
 
 @app.get("/api/status")
 def status():
-    snap = state.snapshot()
-    return {"updated": snap["updated"], "gdelt_window": snap["gdelt_window"], "counts": snap["counts"]}
+    return state.api_status()
 
 
 @app.get("/api/alerts")
 def alerts(limit: int = Query(100, le=2000), min_score: float = 0.0):
-    with state.lock:
-        out = [a.to_dict() for a in state.alerts if a.score >= min_score][:limit]
-    return out
+    return state.api_alerts(min_score, limit)
 
 
 @app.get("/api/events")
 def events(conflict_only: bool = False, limit: int = Query(3000, le=20000)):
-    with state.lock:
-        ev = [e.to_dict() for e in state.events + state.social if (e.is_conflict or not conflict_only)]
-    return ev[:limit]
+    return state.api_events(conflict_only, limit)
 
 
 @app.get("/api/aircraft")
 def aircraft(military_only: bool = False):
-    with state.lock:
-        return [t.to_dict() for t in state.tracks if (t.military or not military_only)]
+    return state.api_aircraft(military_only)
 
 
 @app.get("/api/firms")
@@ -71,9 +65,9 @@ def firms():
 
 
 @app.get("/api/graph")
-def graph():
-    with state.lock:
-        return state.graph or {"nodes": [], "links": [], "stats": {}}
+def graph(max_nodes: int = Query(220, ge=25, le=500), max_links: int = Query(400, ge=50, le=1000)):
+    """Compact graph projection for the browser; Neo4j retains the full graph."""
+    return state.api_graph(max_nodes=max_nodes, max_links=max_links)
 
 
 @app.post("/api/refresh")
@@ -90,15 +84,18 @@ def refresh():
 
 @app.get("/api/entity/{node_id:path}")
 def entity(node_id: str):
-    """Neighbourhood of one graph node (for click-through in the UI)."""
-    with state.lock:
-        g = state.graph
-    nodes = {n["id"]: n for n in g.get("nodes", [])}
-    if node_id not in nodes:
+    """Neo4j neighbourhood of one graph node (for click-through in the UI)."""
+    result = state.api_entity(node_id)
+    if result is None:
         return JSONResponse({"error": "unknown node"}, status_code=404)
-    links = [l for l in g.get("links", []) if node_id in (l["source"], l["target"])]
-    nbr = {l["source"] if l["target"] == node_id else l["target"] for l in links}
-    return {"node": nodes[node_id], "links": links, "neighbors": [nodes[n] for n in nbr if n in nodes]}
+    return result
+
+
+@app.on_event("shutdown")
+def _shutdown():
+    state.close()
+    for replay in _replays.values():
+        replay.store.close()
 
 
 # ---------------- areas of interest (circles) ----------------

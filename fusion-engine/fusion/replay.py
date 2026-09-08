@@ -12,8 +12,8 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .correlate import correlate, graph_to_json
 from .ingest_gdelt import OsintEvent
+from .store import make_store
 from .ingest_telegram import SocialPost, social_to_event
 from .replay_adsb import load_tracks, snapshot_at, track_polylines
 from .replay_gdelt import HORMUZ_BBOX, HORMUZ_KW, load_day
@@ -61,7 +61,7 @@ def _nearest_scene(dets: list[dict], t: float, max_age_h: float = 72.0) -> tuple
 
 
 class ReplayState:
-    def __init__(self, scenario_id: str):
+    def __init__(self, scenario_id: str, store=None):
         self.sc = dict(SCENARIOS[scenario_id], id=scenario_id)
         self.day = self.sc["day"]
         self.events: list[OsintEvent] = []
@@ -71,6 +71,7 @@ class ReplayState:
         self.loaded = False
         self.lock = threading.Lock()
         self._cache: dict[int, dict] = {}
+        self.store = store or make_store()
         d = datetime.strptime(self.day, "%Y-%m-%d").replace(tzinfo=timezone.utc)
         self.t_min = d.timestamp()
         self.t_max = self.t_min + 86400 - 1
@@ -134,15 +135,20 @@ class ReplayState:
         ev = [e for e in self.events
               if t - lookback_min * 60 <= datetime.fromisoformat(e.ts).timestamp() <= t]
         tr = snapshot_at(self.tracks, t) if self.tracks else []
-        G, alerts = correlate(ev, tr, radius_km=radius_km, window_min=lookback_min, min_severity=0.3)
+        batch_id = f"replay:{self.sc['id']}:{key}"
+        event_ids = [event.id for event in ev]
+        self.store.ingest(ev, tr, batch_id)
+        alerts = self.store.correlate(event_ids, batch_id, radius_km, lookback_min, min_severity=0.3)
+        stored_events = self.store.events(event_ids, limit=20000)
+        stored_tracks = self.store.aircraft(batch_id)
         out = {
             "t": t, "t_iso": t_iso.isoformat(),
-            "counts": {"events": len(ev), "conflict_events": sum(e.is_conflict for e in ev),
-                       "tracks": len(tr), "military_tracks": sum(x.military for x in tr), "alerts": len(alerts)},
-            "events": [e.to_dict() for e in ev],
-            "tracks": [x.to_dict() for x in tr],
+            "counts": {"events": len(stored_events), "conflict_events": sum(e["is_conflict"] for e in stored_events),
+                       "tracks": len(stored_tracks), "military_tracks": sum(x["military"] for x in stored_tracks), "alerts": len(alerts)},
+            "events": stored_events,
+            "tracks": stored_tracks,
             "alerts": [a.to_dict() for a in alerts[:300]],
-            "graph": graph_to_json(G, max_nodes=800),
+            "graph": self.store.graph(event_ids, batch_id, max_nodes=220, max_links=400),
             "tails": track_polylines(self.tracks, t - tail_min * 60, t) if self.tracks else [],
             # thermal anomalies seen in the last 12 h (satellite passes are ~2x/day)
             "firms": [h for h in self.firms if t - 12 * 3600 <= datetime.fromisoformat(h["ts"]).timestamp() <= t],
