@@ -58,6 +58,18 @@ def load_day(day: str, cache_dir: Path, bbox=None, keywords=(), with_gkg=True,
     return out
 
 
+
+def _data_root():
+    """data dir shared with the server: FUSION_DATA_DIR (from env or fusion-engine/.env), else ./data"""
+    import os
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+    except Exception:
+        pass
+    return Path(os.getenv("FUSION_DATA_DIR") or (Path(__file__).resolve().parent.parent / "data"))
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("day")
@@ -66,10 +78,10 @@ if __name__ == "__main__":
     ap.add_argument("--out", default=None)
     a = ap.parse_args()
     logging.basicConfig(level=logging.INFO)
-    root = Path(__file__).resolve().parent.parent
+    root = _data_root().parent  # data dir parent; see _data_root()
     bbox = tuple(float(x) for x in a.bbox.split(","))
-    evs = load_day(a.day, root / "data" / "gdelt", bbox, tuple(k for k in a.kw.split(",") if k))
-    out = Path(a.out) if a.out else root / "data" / "replay" / f"{a.day}_gdelt.json"
+    evs = load_day(a.day, _data_root() / "gdelt", bbox, tuple(k for k in a.kw.split(",") if k))
+    out = Path(a.out) if a.out else _data_root() / "replay" / f"{a.day}_gdelt.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps([e.to_dict() for e in evs]), encoding="utf-8")
     print(f"{len(evs)} events -> {out}")
