@@ -146,6 +146,18 @@ def add_region(r: RegionIn):
     return state.add_region(r.lat, r.lon, r.radius_nm, r.name)
 
 
+class RegionRename(BaseModel):
+    name: str
+
+
+@app.patch("/api/regions/{rid}")
+def rename_region(rid: str, body: RegionRename):
+    r = state.rename_region(rid, body.name)
+    if not r:
+        return JSONResponse({"error": "unknown region"}, status_code=404)
+    return r
+
+
 @app.delete("/api/regions/{rid}")
 def delete_region(rid: str):
     if not state.remove_region(rid):

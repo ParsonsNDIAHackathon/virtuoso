@@ -21,6 +21,7 @@ from .ingest_adsb import AirTrack, fetch_military, fetch_regions
 from .ingest_gdelt import OsintEvent, fetch_window
 from .ingest_telegram import DEFAULT_CHANNELS, fetch_latest, social_to_event
 from .ingest_firms import fetch as fetch_firms, novelty as firms_novelty
+from .backfill import Backfill
 
 log = logging.getLogger(__name__)
 try:
@@ -74,6 +75,8 @@ class FusionState:
     social: list[OsintEvent] = field(default_factory=list)
     firms: list[dict] = field(default_factory=list)
     history: list[dict] = field(default_factory=lambda: _load_history())   # per-fuse counts, persisted across restarts
+    backfill: Backfill = field(default_factory=lambda: Backfill(DATA / "gdelt", hours=float(os.getenv("FUSION_BACKFILL_H", "48"))), repr=False)
+    _seen: dict = field(default_factory=lambda: {"events": {}, "social": {}, "alerts": {}, "firms": {}, "tracks": {}}, repr=False)
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     # --- areas of interest ---
@@ -86,6 +89,15 @@ class FusionState:
             self.regions.append(r)
             save_regions(self.regions)
         return r
+
+    def rename_region(self, rid: str, name: str) -> dict | None:
+        with self.lock:
+            for r in self.regions:
+                if r["id"] == rid:
+                    r["name"] = name.strip()[:60] or r["name"]
+                    save_regions(self.regions)
+                    return dict(r)
+        return None
 
     def remove_region(self, rid: str) -> bool:
         with self.lock:
@@ -196,9 +208,28 @@ class FusionState:
             self.updated = datetime.now(timezone.utc).isoformat()
             self.alert_count = len(alerts)
             now_ts = datetime.now(timezone.utc).timestamp()
+            # levels (what is present now) and flows (first seen since the previous fuse) — the live
+            # timeline plots flows for events/posts/alerts/anomalies, levels for aircraft
+            primed = any(self._seen.values())            # False on the first fuse of this process
+            def first_seen(kind, ids):
+                seen = self._seen[kind]
+                new = [i for i in ids if i not in seen]
+                for i in ids:
+                    seen[i] = now_ts
+                if len(seen) > 300_000:                       # bound memory: forget ids older than 24 h
+                    for k in [k for k, t in seen.items() if now_ts - t > 86400]:
+                        seen.pop(k, None)
+                return len(new)
+            ev_new = first_seen("events", [e.id for e in self.events if e.is_conflict])
+            so_new = first_seen("social", [e.id for e in self.social])
+            al_new = first_seen("alerts", [a.id for a in alerts])
+            fi_new = first_seen("firms", [h["id"] for h in self.firms if h.get("novelty", 0) >= 0.9])
+            tr_new = first_seen("tracks", [t.hex for t in tr])
             point = {"t": now_ts, "events": len(self.events), "conflict": sum(e.is_conflict for e in self.events),
                      "social": len(self.social), "tracks": len(tr), "military": sum(t.military for t in tr),
-                     "alerts": len(alerts), "firms_new": sum(1 for h in self.firms if h.get("novelty", 0) >= 0.9)}
+                     "alerts": len(alerts), "firms_new": sum(1 for h in self.firms if h.get("novelty", 0) >= 0.9),
+                     "d_conflict": ev_new, "d_social": so_new, "d_alerts": al_new, "d_firms_new": fi_new, "d_tracks": tr_new,
+                     "primed": primed}
             self.history.append(point)
             self.history = [h for h in self.history if now_ts - h["t"] <= HISTORY_KEEP_H * 3600]
         try:
@@ -261,12 +292,16 @@ class FusionState:
             }
 
     def api_timeline(self, hours: float = 24.0) -> dict:
-        """Activity points for the last `hours` (0 = everything on disk)."""
-        cutoff = datetime.now(timezone.utc).timestamp() - hours * 3600 if hours > 0 else 0
+        """15-min bins for the last `hours`: GDELT/Telegram backfilled inside the drawn circles,
+        FIRMS novel anomalies, plus our own aircraft levels and correlation flows."""
+        hours = hours if hours > 0 else 24 * 7
         with self.lock:
-            pts = [h for h in self.history if h["t"] >= cutoff]
-            return {"step_min": 1, "hours": hours, "bins": pts,
-                    "since": min((h["t"] for h in self.history), default=None)}
+            hist, firms = list(self.history), list(self.firms)
+        bins = self.backfill.bins(hours, hist, firms)
+        return {"step_min": 15, "hours": hours, "bins": bins,
+                "backfill": {"status": self.backfill.progress, "hours": self.backfill.hours,
+                             "windows": len(self.backfill.gdelt)},
+                "since": min((h["t"] for h in hist), default=None)}
 
     def api_entity(self, node_id: str) -> dict | None:
         return self.store.entity(node_id)
@@ -372,6 +407,15 @@ def run_loop(state: FusionState, gdelt_every=900, adsb_every=60, windows=2, prim
                 state.store.prune(max_age_h=24.0)
             except Exception as e:
                 log.warning("store prune failed: %s", e)
+            try:
+                with state.lock:
+                    circles = list(state.regions)
+                if state.backfill.built_at is None:
+                    state.backfill.start(circles)
+                else:
+                    state.backfill.extend(circles)
+            except Exception as e:
+                log.warning("backfill failed: %s", e)
         try:
             state.refresh_adsb()
         except Exception as e:
