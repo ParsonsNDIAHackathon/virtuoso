@@ -40,9 +40,13 @@ All commands run from this folder (`fusion-engine/`):
 cd fusion-engine
 pip install -r requirements.txt
 cp .env.example .env                 # then add your keys (see "Keys" below)
-docker compose up -d                 # optional: Neo4j graph store (localhost:7474 / bolt 7687)
-uvicorn app.server:app --port 8001   # dashboard at http://localhost:8001 (serves immediately, fuses in background)
+docker compose up --build             # command console at http://localhost:8080
 ```
+
+`docker compose up` runs the React command console, FastAPI fusion API, and Neo4j on one private
+network. Only the console is published; it proxies `/api/*` to FastAPI. For frontend development,
+run `uvicorn app.server:app --port 8000` from this directory, then `npm install && npm run dev` in
+`frontend/`; Vite proxies the same API routes to the local FastAPI process.
 
 **Graph store selection** (`fusion/store.py`): at startup the engine probes Neo4j; if it answers, facts,
 observations and correlations are persisted there (`fusion/neo4j_store.py`, Cypher correlation,

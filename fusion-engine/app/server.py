@@ -7,18 +7,14 @@ from __future__ import annotations
 
 import logging
 import threading
-from pathlib import Path
-
 from fastapi import FastAPI, Query
-from fastapi.responses import FileResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
 
 from fusion.pipeline import FusionState, run_loop, run_once
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("app")
 
-STATIC = Path(__file__).parent / "static"
 app = FastAPI(title="Multi-INT Fusion Engine", version="0.1")
 state = FusionState()
 _worker: threading.Thread | None = None
@@ -31,11 +27,6 @@ def _startup():
     # The UI shows "warming up" until /api/status reports an `updated` timestamp.
     _worker = threading.Thread(target=run_loop, args=(state,), kwargs={"windows": 2, "primed": False}, daemon=True)
     _worker.start()
-
-
-@app.get("/")
-def index():
-    return FileResponse(STATIC / "index.html")
 
 
 @app.get("/api/status")
@@ -166,6 +157,3 @@ def replay_at(scenario: str, t: float, lookback_min: float = 120.0, radius_km: f
         return _replay(scenario).at(t, lookback_min=lookback_min, radius_km=radius_km)
     except KeyError:
         return JSONResponse({"error": "unknown scenario"}, status_code=404)
-
-
-app.mount("/static", StaticFiles(directory=STATIC), name="static")
