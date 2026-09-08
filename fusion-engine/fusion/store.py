@@ -34,25 +34,25 @@ class InMemoryStore:
 
     def __init__(self, keep: int = 60):
         self.keep = keep
-        self.events: dict[str, OsintEvent] = {}
+        self._events: dict[str, OsintEvent] = {}
         self.batches: "OrderedDict[str, dict]" = OrderedDict()
 
     def ingest(self, events: list[OsintEvent], tracks: list[AirTrack], batch_id: str):
         for e in events:
-            self.events[e.id] = e
+            self._events[e.id] = e
         self.batches[batch_id] = {"tracks": list(tracks), "alerts": [], "G": None, "gj": None}
         self.batches.move_to_end(batch_id)
         while len(self.batches) > self.keep:
             self.batches.popitem(last=False)
         # drop events no batch references any more (cheap bound on memory)
-        if len(self.events) > 200_000:
-            self.events.clear()
+        if len(self._events) > 200_000:
+            self._events.clear()
             for e in events:
-                self.events[e.id] = e
+                self._events[e.id] = e
 
     def correlate(self, event_ids, batch_id, radius_km, window_min, min_severity) -> list[Alert]:
         b = self.batches[batch_id]
-        ev = [self.events[i] for i in event_ids if i in self.events]
+        ev = [self._events[i] for i in event_ids if i in self._events]
         G, alerts = mem_correlate(ev, b["tracks"], radius_km=radius_km, window_min=window_min, min_severity=min_severity)
         b["G"], b["alerts"], b["gj"] = G, alerts, None
         return alerts
@@ -68,7 +68,7 @@ class InMemoryStore:
     def events(self, event_ids, conflict_only=False, limit=3000) -> list[dict]:
         out = []
         for i in event_ids:
-            e = self.events.get(i)
+            e = self._events.get(i)
             if e and (e.is_conflict or not conflict_only):
                 out.append(e.to_dict())
                 if len(out) >= limit:
