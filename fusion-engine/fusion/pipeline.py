@@ -74,6 +74,7 @@ class FusionState:
     social: list[OsintEvent] = field(default_factory=list)
     firms: list[dict] = field(default_factory=list)
     history: list[dict] = field(default_factory=lambda: _load_history())   # per-fuse counts, persisted across restarts
+    _seen: dict = field(default_factory=lambda: {"events": {}, "social": {}, "alerts": {}, "firms": {}, "tracks": {}}, repr=False)
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     # --- areas of interest ---
@@ -205,9 +206,28 @@ class FusionState:
             self.updated = datetime.now(timezone.utc).isoformat()
             self.alert_count = len(alerts)
             now_ts = datetime.now(timezone.utc).timestamp()
+            # levels (what is present now) and flows (first seen since the previous fuse) — the live
+            # timeline plots flows for events/posts/alerts/anomalies, levels for aircraft
+            primed = any(self._seen.values())            # False on the first fuse of this process
+            def first_seen(kind, ids):
+                seen = self._seen[kind]
+                new = [i for i in ids if i not in seen]
+                for i in ids:
+                    seen[i] = now_ts
+                if len(seen) > 300_000:                       # bound memory: forget ids older than 24 h
+                    for k in [k for k, t in seen.items() if now_ts - t > 86400]:
+                        seen.pop(k, None)
+                return len(new)
+            ev_new = first_seen("events", [e.id for e in self.events if e.is_conflict])
+            so_new = first_seen("social", [e.id for e in self.social])
+            al_new = first_seen("alerts", [a.id for a in alerts])
+            fi_new = first_seen("firms", [h["id"] for h in self.firms if h.get("novelty", 0) >= 0.9])
+            tr_new = first_seen("tracks", [t.hex for t in tr])
             point = {"t": now_ts, "events": len(self.events), "conflict": sum(e.is_conflict for e in self.events),
                      "social": len(self.social), "tracks": len(tr), "military": sum(t.military for t in tr),
-                     "alerts": len(alerts), "firms_new": sum(1 for h in self.firms if h.get("novelty", 0) >= 0.9)}
+                     "alerts": len(alerts), "firms_new": sum(1 for h in self.firms if h.get("novelty", 0) >= 0.9),
+                     "d_conflict": ev_new, "d_social": so_new, "d_alerts": al_new, "d_firms_new": fi_new, "d_tracks": tr_new,
+                     "primed": primed}
             self.history.append(point)
             self.history = [h for h in self.history if now_ts - h["t"] <= HISTORY_KEEP_H * 3600]
         try:

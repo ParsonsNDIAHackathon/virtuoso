@@ -52,6 +52,7 @@
     <option value="live">LIVE · global stream</option>
   </select>
   <button id="sources-btn" title="What every layer is, where it comes from, and what a marker means" style="background:#334155;color:#fff;border:0;padding:6px 12px;border-radius:6px;cursor:pointer;margin-left:8px">ⓘ Data sources</button>
+  <a href="/sources" title="Side by side: what LIVE pulls vs what the Hormuz REPLAY pulls" style="background:#334155;color:#fff;text-decoration:none;padding:6px 12px;border-radius:6px;margin-left:8px;font-size:13px">Live vs Replay</a>
   <button id="refresh">Refresh ADS-B + re-fuse</button>
 </header>
 <div id="sources-modal" style="display:none;position:fixed;inset:0;background:#000a;z-index:2000;align-items:center;justify-content:center" onclick="if(event.target===this)closeSources()">
@@ -375,7 +376,7 @@ function showEvent(e) { if ((e.source_domain||'').startsWith('t.me/')) { $('#det
 function showTrack(t) { $('#detail-body').innerHTML = `<b>${t.callsign||'(no callsign)'}</b> · ${t.registration||''} · ${t.ac_type||'?'} · ICAO ${t.hex}<br>${t.military?'MILITARY':'civil'} · ${t.alt_ft??'ground'} ft · ${t.gs_kt||'?'} kt · trk ${t.track_deg||'?'}° · squawk ${t.squawk||'–'}<br>source ${t.source} · rssi ${t.rssi} · msgs ${t.messages}<br>${t.ts}`; }
 
 // ---------- activity timeline (replaces the force graph) ----------
-const SERIES = [
+const SERIES = [   // replay: arrivals per 15-min bin
   {k:'conflict', label:'conflict OSINT events', color:'#ffb454'},
   {k:'social',   label:'Telegram posts',        color:'#f472b6'},
   {k:'tracks',   label:'aircraft',              color:'#4cc9f0'},
@@ -383,13 +384,23 @@ const SERIES = [
   {k:'firms_new',label:'new thermal anomalies', color:'#ef4444'},
   {k:'alerts',   label:'correlations',          color:'#a78bfa'},
 ];
+const SERIES_LIVE = [   // live: what arrived since the previous minute (flows), aircraft as a level
+  {k:'d_conflict',  label:'new conflict events /min (GDELT lands every 15 min)', color:'#ffb454'},
+  {k:'d_social',    label:'new Telegram posts /min',   color:'#f472b6'},
+  {k:'tracks',      label:'aircraft in coverage',      color:'#4cc9f0'},
+  {k:'military',    label:'military aircraft airborne',color:'#ff5c7a'},
+  {k:'d_firms_new', label:'new thermal anomalies /min',color:'#ef4444'},
+  {k:'d_alerts',    label:'new correlations /min',     color:'#a78bfa'},
+];
 function drawTimeline() {
   const el = $('#graph'); d3.select(el).selectAll('svg').remove();
   if (!TL || !TL.bins || !TL.bins.length) { $('#tl-legend').textContent = MODE==='live' ? 'no points in this window yet (one point per fuse, every 60 s; history persists across restarts)' : ''; return; }
   const W = el.clientWidth, H = el.clientHeight, m = {l:44, r:14, t:46, b:24};
   const bins = TL.bins;
-  const series = SERIES.filter(sr => bins.some(b => (b[sr.k]||0) > 0));
   const isReplay = MODE === 'replay';
+  // the first point after a cold start counts everything as new; hide that spike
+  const binsUse = isReplay ? bins : bins.map(b => b.primed === false ? {...b, d_conflict:0, d_social:0, d_alerts:0, d_firms_new:0, d_tracks:0} : b);
+  const series = (isReplay ? SERIES : SERIES_LIVE).filter(sr => binsUse.some(b => (b[sr.k]||0) > 0) || (!isReplay && sr.k.startsWith('d_')));
   const hrs = Number($('#tl-window').value||24);
   // live: never let a few minutes of fresh history hide as a sliver at the right edge — the window
   // starts at the first recorded point (minus a margin) when that is later than the selected window
@@ -403,13 +414,13 @@ function drawTimeline() {
   const svg = d3.select(el).append('svg').attr('width', W).attr('height', H);
   $('#tl-legend').innerHTML = series.map(sr=>`<i style="background:${sr.color}"></i>${sr.label}`).join('');
   series.forEach((sr, i) => {
-    const y0 = m.t + i*rowH, mx = d3.max(bins, b=>b[sr.k]||0) || 1;
+    const y0 = m.t + i*rowH, mx = d3.max(binsUse, b=>b[sr.k]||0) || 1;
     const y = d3.scaleLinear().domain([0, mx]).range([y0+rowH-2, y0+4]);
     svg.append('text').attr('x', m.l-6).attr('y', y0+rowH/2+4).attr('text-anchor','end').attr('fill', sr.color).attr('font-size', 10).text(mx);
-    svg.append('path').datum(bins).attr('fill', sr.color).attr('fill-opacity', .18).attr('stroke', sr.color).attr('stroke-width', 1.2)
+    svg.append('path').datum(binsUse).attr('fill', sr.color).attr('fill-opacity', .18).attr('stroke', sr.color).attr('stroke-width', 1.2)
       .attr('d', d3.area().x(b=>x(new Date(b.t*1000))).y0(y0+rowH-2).y1(b=>y(b[sr.k]||0)).curve(d3.curveMonotoneX));
     svg.append('line').attr('x1', m.l).attr('x2', W-m.r).attr('y1', y0+rowH-2).attr('y2', y0+rowH-2).attr('stroke', '#223052');
-    if (!isReplay || bins.length < 200) svg.append('g').selectAll('circle').data(bins).join('circle').attr('cx', b=>x(new Date(b.t*1000))).attr('cy', b=>y(b[sr.k]||0)).attr('r', 2).attr('fill', sr.color);
+    if (!isReplay || bins.length < 200) svg.append('g').selectAll('circle').data(binsUse).join('circle').attr('cx', b=>x(new Date(b.t*1000))).attr('cy', b=>y(b[sr.k]||0)).attr('r', 2).attr('fill', sr.color);
   });
   if (!isReplay) $('#tl-legend').innerHTML += `<span style="margin-left:14px;color:#e2e8f0">${bins.length} points since ${new Date(first).toISOString().slice(11,16)}Z (1/min, kept 7 days)</span>`;
   const span = (x.domain()[1]-x.domain()[0])/3600e3;
@@ -425,7 +436,7 @@ function drawTimeline() {
   const tip = $('#tip');
   svg.append('rect').attr('x', m.l).attr('y', m.t).attr('width', W-m.l-m.r).attr('height', H-m.t-m.b).attr('fill', 'transparent').style('cursor', isReplay?'pointer':'default')
     .on('mousemove', ev => { const [mx] = d3.pointer(ev); const t = x.invert(mx).getTime()/1000;
-      const b = bins.reduce((a,c)=>Math.abs(c.t-t)<Math.abs(a.t-t)?c:a, bins[0]);
+      const b = binsUse.reduce((a,c)=>Math.abs(c.t-t)<Math.abs(a.t-t)?c:a, binsUse[0]);
       tip.style.display='block'; tip.style.left=(mx+12)+'px'; tip.style.top=(ev.offsetY+12)+'px';
       tip.innerHTML = `<b>${new Date(b.t*1000).toISOString().slice(11,16)}Z</b> ` + series.map(sr=>`<span style="color:${sr.color}">${b[sr.k]||0} ${sr.label}</span>`).join(' · '); })
     .on('mouseleave', ()=> tip.style.display='none')
