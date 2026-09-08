@@ -14,7 +14,12 @@ services:
     env_file:
       - .env
     environment:
+      # These override .env inside the container: the graph store is the neo4j service on this
+      # network, the data dir is the bind mount below (a host FUSION_DATA_DIR path would not exist here),
+      # and the store probe stays automatic so a dev-only FUSION_STORE=memory does not bypass Neo4j.
       NEO4J_URI: bolt://neo4j:7687
+      FUSION_DATA_DIR: /app/data
+      FUSION_STORE: auto
     volumes:
       - ./data:/app/data
     expose:
