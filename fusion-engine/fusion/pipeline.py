@@ -74,10 +74,32 @@ class FusionState:
     store: object = field(default_factory=make_store, repr=False)
     social: list[OsintEvent] = field(default_factory=list)
     firms: list[dict] = field(default_factory=list)
+    # This is deliberately separate from record counts.  An empty result can be
+    # valid (for example, no new thermal pixels), while a source can also be
+    # waiting, unavailable, or missing configuration.
+    source_status: dict[str, dict] = field(default_factory=lambda: {
+        "gdelt": {"state": "starting", "label": "GDELT OSINT"},
+        "adsb": {"state": "starting", "label": "ADS-B aircraft"},
+        "firms": {"state": "starting", "label": "NASA FIRMS thermal"},
+        "telegram": {"state": "starting", "label": "Telegram previews"},
+        "fusion": {"state": "starting", "label": "Fusion correlations"},
+    })
     history: list[dict] = field(default_factory=lambda: _load_history())   # per-fuse counts, persisted across restarts
     backfill: Backfill = field(default_factory=lambda: Backfill(DATA / "gdelt", hours=float(os.getenv("FUSION_BACKFILL_H", "48"))), repr=False)
     _seen: dict = field(default_factory=lambda: {"events": {}, "social": {}, "alerts": {}, "firms": {}, "tracks": {}}, repr=False)
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    def set_source_status(self, source: str, state: str, *, count: int | None = None, detail: str | None = None):
+        """Publish source readiness without exposing secrets or raw provider errors."""
+        with self.lock:
+            current = self.source_status.get(source, {})
+            self.source_status[source] = {
+                **current,
+                "state": state,
+                "updated": datetime.now(timezone.utc).isoformat(),
+                **({"count": count} if count is not None else {}),
+                **({"detail": detail} if detail else {}),
+            }
 
     # --- areas of interest ---
     def add_region(self, lat: float, lon: float, radius_nm: float, name: str | None = None) -> dict:
@@ -129,15 +151,18 @@ class FusionState:
             self.conflict_event_count = sum(event.is_conflict for event in all_events)
         log.info("GDELT: %d geocoded events (%d conflict) from %d window(s)",
                  len(all_ev), sum(e.is_conflict for e in all_ev), windows)
+        self.set_source_status("gdelt", "ready", count=len(all_ev), detail=f"{windows} × 15-minute window")
 
     def refresh_social(self, channels=None):
         """Poll public Telegram channel previews; keep the last 6 h of geolocated posts."""
         posts = []
+        failures = 0
         for ch in channels or DEFAULT_CHANNELS:
             try:
                 posts += fetch_latest(ch)
             except Exception as e:
                 log.warning("telegram %s failed: %s", ch, e)
+                failures += 1
         cutoff = datetime.now(timezone.utc).timestamp() - 6 * 3600
         fresh = [social_to_event(p) for p in posts
                  if p.lat is not None and datetime.fromisoformat(p.ts).timestamp() >= cutoff]
@@ -149,6 +174,9 @@ class FusionState:
             self.event_ids = [event.id for event in all_events]
             self.conflict_event_count = sum(event.is_conflict for event in all_events)
         log.info("Telegram: %d posts polled, %d geolocated in last 6 h", len(posts), len(self.social))
+        state = "error" if failures and not posts else "partial" if failures else "ready"
+        detail = "Some channel previews were unavailable" if failures else "Public channel previews only"
+        self.set_source_status("telegram", state, count=len(self.social), detail=detail)
 
     def refresh_firms(self):
         """Latest 24 h of VIIRS thermal anomalies inside every area-of-interest circle, scored for
@@ -158,6 +186,7 @@ class FusionState:
             circles = list(self.regions)
         out = []
         seen = set()
+        failures: list[Exception] = []
         # rolling baseline: the two days before today (flare pixels wander ~1-2 km between passes,
         # so a single day a week earlier over-flags routine flares as new)
         base_day = (datetime.now(timezone.utc) - timedelta(days=2)).strftime("%Y-%m-%d")
@@ -171,6 +200,7 @@ class FusionState:
                 hs = firms_novelty(hs, base)
             except Exception as e:
                 log.warning("FIRMS %s failed: %s", r.get("name"), e)
+                failures.append(e)
                 continue
             for h in hs:
                 if h.id not in seen:
@@ -180,9 +210,24 @@ class FusionState:
             self.firms = out
         log.info("FIRMS live: %d hotspots in %d circles (%d novel)", len(out), len(circles),
                  sum(1 for h in out if h["novelty"] >= 0.9))
+        if failures and not out:
+            missing_key = any("FIRMS_MAP_KEY not set" in str(error) for error in failures)
+            detail = "Set FIRMS_MAP_KEY in .env to enable this source" if missing_key else "Thermal provider unavailable; the map may show cached data"
+            self.set_source_status("firms", "error", count=0, detail=detail)
+        else:
+            state = "partial" if failures else "ready"
+            detail = "Some AOIs could not be queried" if failures else "Latest 24 hours; novel against a two-day baseline"
+            self.set_source_status("firms", state, count=len(out), detail=detail)
 
     def refresh_adsb(self, regions=True):
+        # The public military endpoint returns first.  Publish it immediately
+        # instead of keeping the source in "starting" while six rate-limited
+        # AOI point requests run one after another.
         tracks = fetch_military()
+        with self.lock:
+            self.tracks = list(tracks)
+            self.military_track_count = sum(track.military for track in tracks)
+        self.set_source_status("adsb", "partial", count=len(tracks), detail="Military feed live; collecting configured AOI traffic")
         if regions:
             with self.lock:
                 circles = [(r["lat"], r["lon"], r.get("radius_nm", 250)) for r in self.regions]
@@ -193,6 +238,7 @@ class FusionState:
             self.tracks = tracks
             self.military_track_count = sum(track.military for track in tracks)
         log.info("ADS-B: %d tracks (%d military)", len(tracks), sum(t.military for t in tracks))
+        self.set_source_status("adsb", "ready", count=len(tracks), detail="Military feed plus configured AOIs")
 
     def fuse(self, radius_km=75.0, window_min=240.0):
         with self.lock:
@@ -241,6 +287,7 @@ class FusionState:
         log.info("FUSE: persisted %d events / %d tracks, %d alerts (top=%s)",
                  len(ev), len(tr), len(alerts),
                  alerts[0].score if alerts else None)
+        self.set_source_status("fusion", "ready", count=len(alerts), detail="Spatial and temporal correlations")
         return alerts
 
     def close(self):
@@ -279,6 +326,7 @@ class FusionState:
                 "updated": self.updated,
                 "gdelt_window": self.gdelt_stamp,
                 "store": getattr(self.store, "name", "?"),
+                "sources": {name: dict(value) for name, value in self.source_status.items()},
                 "counts": {
                     "events": len(self.event_ids),
                     "conflict_events": self.conflict_event_count,
@@ -393,16 +441,19 @@ def run_loop(state: FusionState, gdelt_every=900, adsb_every=60, windows=2, prim
                 last_s = now
             except Exception as e:
                 log.warning("social refresh failed: %s", e)
+                state.set_source_status("telegram", "error", detail="Telegram previews unavailable; retaining the last result")
         if now - last_g >= gdelt_every:
             try:
                 state.refresh_gdelt(windows=windows)
                 last_g = now
             except Exception as e:
                 log.warning("GDELT refresh failed (keeping previous events): %s", e)
+                state.set_source_status("gdelt", "error", detail="OSINT feed unavailable; retaining the last result")
             try:
                 state.refresh_firms()
             except Exception as e:
                 log.warning("FIRMS refresh failed: %s", e)
+                state.set_source_status("firms", "error", detail="Thermal provider unavailable; the map may show cached data")
             try:
                 state.store.prune(max_age_h=24.0)
             except Exception as e:
@@ -420,11 +471,13 @@ def run_loop(state: FusionState, gdelt_every=900, adsb_every=60, windows=2, prim
             state.refresh_adsb()
         except Exception as e:
             log.warning("ADS-B refresh failed (keeping previous tracks): %s", e)
+            state.set_source_status("adsb", "error", detail="Aircraft feed unavailable; retaining the last result")
         try:
             state.fuse()
             state.save()
         except Exception as e:
             log.exception("fuse failed: %s", e)
+            state.set_source_status("fusion", "error", detail="Correlation pass failed; retaining the last result")
         time.sleep(adsb_every)
 
 

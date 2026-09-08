@@ -1,0 +1,15 @@
+@import url('https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600;700&family=Geist:wght@400;500;600;700&display=swap');
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root { --canvas: 116 20% 6%; --panel: 120 16% 10%; --line: 112 13% 22%; --ink: 75 18% 88%; --muted: 92 8% 58%; --command: 43 93% 59%; --critical: 1 70% 54%; }
+* { box-sizing: border-box; }
+html, body, #root { min-width: 320px; min-height: 100%; margin: 0; }
+body { color: hsl(var(--ink)); background: hsl(var(--canvas)); font-family: Geist, Arial, sans-serif; }
+body::before { content: ""; position: fixed; inset: 0; pointer-events: none; opacity: .18; background-image: linear-gradient(hsl(var(--line) / .18) 1px, transparent 1px), linear-gradient(90deg, hsl(var(--line) / .12) 1px, transparent 1px); background-size: 32px 32px; }
+.leaflet-container { background: #101710; font-family: Geist, Arial, sans-serif; }
+.dark-tiles { filter: grayscale(.95) sepia(.22) hue-rotate(22deg) brightness(.55) contrast(1.15); }
+.leaflet-control-layers, .leaflet-bar a { background: hsl(var(--panel)) !important; color: hsl(var(--ink)) !important; border-color: hsl(var(--line)) !important; }
+.leaflet-control-layers { color: hsl(var(--ink)); }
+.scrollbar { scrollbar-color: hsl(var(--line)) transparent; }

@@ -1,9 +1,38 @@
 services:
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "${FUSION_PORT:-8080}:80"
+    depends_on:
+      api:
+        condition: service_started
+
+  api:
+    build:
+      context: .
+    env_file:
+      - .env
+    environment:
+      # These override .env inside the container: the graph store is the neo4j service on this
+      # network, the data dir is the bind mount below (a host FUSION_DATA_DIR path would not exist here),
+      # and the store probe stays automatic so a dev-only FUSION_STORE=memory does not bypass Neo4j.
+      NEO4J_URI: bolt://neo4j:7687
+      FUSION_DATA_DIR: /app/data
+      FUSION_STORE: auto
+    volumes:
+      - ./data:/app/data
+    expose:
+      - "8000"
+    depends_on:
+      neo4j:
+        condition: service_healthy
+
   neo4j:
     image: neo4j:2026.07.1
-    ports:
-      - "127.0.0.1:7474:7474"
-      - "127.0.0.1:7687:7687"
+    expose:
+      - "7474"
+      - "7687"
     environment:
       NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:?Set NEO4J_PASSWORD in .env}
     volumes:

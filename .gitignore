@@ -3,5 +3,7 @@ __pycache__/
 .pytest_cache/
 .env
 .venv/
-data/
-**/data/
+**/data/*
+!**/data/curated/
+**/data/curated/*
+!**/data/curated/*.json
