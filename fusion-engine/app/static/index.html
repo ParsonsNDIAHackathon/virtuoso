@@ -20,7 +20,7 @@
   main { display:grid; grid-template-columns: 1fr 420px; grid-template-rows: 1fr 300px; gap:8px; padding:8px; min-height:0 }
   #map { grid-row:1; grid-column:1; border:1px solid var(--line); border-radius:8px }
   #graph { grid-row:2; grid-column:1; border:1px solid var(--line); border-radius:8px; background:var(--panel); position:relative; overflow:hidden }
-  #tl-legend { position:absolute; top:8px; right:12px; font-size:11px; color:var(--mute) } #tl-legend i { display:inline-block; width:10px; height:3px; margin:0 4px 0 10px; vertical-align:middle }
+  #tl-legend { position:absolute; top:26px; left:12px; right:12px; font-size:11px; color:var(--mute); white-space:nowrap; overflow:hidden; text-overflow:ellipsis } #tl-legend i { display:inline-block; width:10px; height:3px; margin:0 4px 0 10px; vertical-align:middle }
   #side { grid-row:1/3; grid-column:2; display:flex; flex-direction:column; gap:8px; min-height:0 }
   .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px; overflow:auto }
   .panel h2 { font-size:12px; text-transform:uppercase; color:var(--mute); margin:0 0 8px }
@@ -101,6 +101,7 @@
         <button id="draw-btn" style="margin-left:auto;background:#1e3a8a;color:#fff;border:0;border-radius:6px;padding:3px 10px;cursor:pointer">✎ Draw circle</button>
         <label style="font-weight:400;text-transform:none;color:var(--mute)"><input type="checkbox" id="aoi-filter"> filter view to circles</label>
       </h2>
+      <div style="color:var(--mute);margin:-2px 0 6px;font-size:11px">A circle adds a live <b>aircraft</b> query (adsb.lol, 60 s) and a <b>thermal-anomaly</b> query (NASA FIRMS, 15 min) for that area; the military feed, GDELT and Telegram are global already. Tick "filter view" to hide everything outside your circles. Click a name to rename, ✕ to remove.</div>
       <div id="draw-hint" style="display:none;color:var(--osint);margin-bottom:6px">Press on the map at the centre, drag out to the radius, release. Esc cancels.</div>
       <div id="draw-form" style="display:none;gap:6px;align-items:center;margin-bottom:6px">
         <input id="draw-name" placeholder="Area name" style="flex:1;background:#0b1220;color:#fff;border:1px solid #334;border-radius:4px;padding:3px 6px">
@@ -175,8 +176,19 @@ async function loadRegions() {
   const tb = $('#region-rows'); tb.innerHTML = '';
   REGIONS.forEach(r => {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td style="cursor:pointer;color:${r.user?'#34d399':'#ffb454'}">${r.name}</td><td>${r.lat.toFixed(2)}, ${r.lon.toFixed(2)}</td><td>${r.radius_nm} nm</td><td><button data-id="${r.id}" style="background:none;border:0;color:#ff5c7a;cursor:pointer" title="remove">✕</button></td>`;
-    tr.firstChild.onclick = () => map.fitBounds(L.circle([r.lat,r.lon],{radius:r.radius_nm*NM_KM*1000}).addTo(map).getBounds());
+    tr.innerHTML = `<td style="cursor:text;color:${r.user?'#34d399':'#ffb454'}" title="click to rename · double-click to zoom"><span class="rname">${r.name}</span></td><td>${r.lat.toFixed(2)}, ${r.lon.toFixed(2)}</td><td>${r.radius_nm} nm</td><td><button data-id="${r.id}" style="background:none;border:0;color:#ff5c7a;cursor:pointer" title="remove">✕</button></td>`;
+    const cell = tr.firstChild, span = cell.querySelector('.rname');
+    cell.ondblclick = () => map.fitBounds(L.circle([r.lat,r.lon],{radius:r.radius_nm*NM_KM*1000}).getBounds());
+    cell.onclick = () => {
+      if (cell.querySelector('input')) return;
+      const inp = document.createElement('input'); inp.value = r.name; inp.style.cssText = 'width:95%;background:#0b1220;color:#fff;border:1px solid #334;border-radius:3px;padding:1px 4px';
+      span.replaceWith(inp); inp.focus(); inp.select();
+      const done = async (save) => { const name = inp.value.trim();
+        if (save && name && name !== r.name) { await fetch('/api/regions/'+r.id, {method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name})}); }
+        await loadRegions(); };
+      inp.onkeydown = e => { if (e.key === 'Enter') done(true); if (e.key === 'Escape') done(false); };
+      inp.onblur = () => done(true);
+    };
     tr.querySelector('button').onclick = async () => { await fetch('/api/regions/'+r.id, {method:'DELETE'}); await loadRegions(); drawMap(); drawAlerts(); };
     tb.appendChild(tr);
   });
@@ -374,12 +386,17 @@ const SERIES = [
 function drawTimeline() {
   const el = $('#graph'); d3.select(el).selectAll('svg').remove();
   if (!TL || !TL.bins || !TL.bins.length) { $('#tl-legend').textContent = MODE==='live' ? 'no points in this window yet (one point per fuse, every 60 s; history persists across restarts)' : ''; return; }
-  const W = el.clientWidth, H = el.clientHeight, m = {l:44, r:14, t:30, b:24};
+  const W = el.clientWidth, H = el.clientHeight, m = {l:44, r:14, t:46, b:24};
   const bins = TL.bins;
   const series = SERIES.filter(sr => bins.some(b => (b[sr.k]||0) > 0));
   const isReplay = MODE === 'replay';
   const hrs = Number($('#tl-window').value||24);
-  const liveDom = hrs > 0 ? [new Date(Date.now()-hrs*3600e3), new Date()] : d3.extent(bins, b=>new Date(b.t*1000));
+  // live: never let a few minutes of fresh history hide as a sliver at the right edge — the window
+  // starts at the first recorded point (minus a margin) when that is later than the selected window
+  const first = d3.min(bins, b=>b.t*1000), now = Date.now();
+  let start = hrs > 0 ? now - hrs*3600e3 : first - 5*60e3;
+  if (first - 5*60e3 > start) start = Math.max(first - 5*60e3, now - Math.max(15*60e3, (now-first)*1.15));
+  const liveDom = [new Date(start), new Date(now)];
   const x = d3.scaleTime().domain(isReplay ? [new Date(RCFG.t_min*1000), new Date((RCFG.t_max+1)*1000)] : liveDom).range([m.l, W-m.r]);
   // each series normalised to its own max so a 1,500-aircraft line does not flatten 20 posts; tooltip shows real counts
   const rowH = (H - m.t - m.b) / series.length;
@@ -392,7 +409,9 @@ function drawTimeline() {
     svg.append('path').datum(bins).attr('fill', sr.color).attr('fill-opacity', .18).attr('stroke', sr.color).attr('stroke-width', 1.2)
       .attr('d', d3.area().x(b=>x(new Date(b.t*1000))).y0(y0+rowH-2).y1(b=>y(b[sr.k]||0)).curve(d3.curveMonotoneX));
     svg.append('line').attr('x1', m.l).attr('x2', W-m.r).attr('y1', y0+rowH-2).attr('y2', y0+rowH-2).attr('stroke', '#223052');
+    if (!isReplay || bins.length < 200) svg.append('g').selectAll('circle').data(bins).join('circle').attr('cx', b=>x(new Date(b.t*1000))).attr('cy', b=>y(b[sr.k]||0)).attr('r', 2).attr('fill', sr.color);
   });
+  if (!isReplay) $('#tl-legend').innerHTML += `<span style="margin-left:14px;color:#e2e8f0">${bins.length} points since ${new Date(first).toISOString().slice(11,16)}Z (1/min, kept 7 days)</span>`;
   const span = (x.domain()[1]-x.domain()[0])/3600e3;
   svg.append('g').attr('transform', `translate(0,${H-m.b+2})`).call(d3.axisBottom(x).ticks(8).tickFormat(d3.utcFormat(span > 36 ? '%m-%d %H:%MZ' : '%H:%MZ'))).attr('color', '#8b9bb8').attr('font-size', 10);
   // radar scene markers (replay)

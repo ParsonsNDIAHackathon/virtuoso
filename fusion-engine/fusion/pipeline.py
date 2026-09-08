@@ -87,6 +87,15 @@ class FusionState:
             save_regions(self.regions)
         return r
 
+    def rename_region(self, rid: str, name: str) -> dict | None:
+        with self.lock:
+            for r in self.regions:
+                if r["id"] == rid:
+                    r["name"] = name.strip()[:60] or r["name"]
+                    save_regions(self.regions)
+                    return dict(r)
+        return None
+
     def remove_region(self, rid: str) -> bool:
         with self.lock:
             n = len(self.regions)
