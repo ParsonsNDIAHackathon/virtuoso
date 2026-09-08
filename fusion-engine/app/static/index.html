@@ -348,7 +348,7 @@ function drawTimeline() {
   // radar scene markers (replay)
   (TL.sar_scenes||[]).forEach(sc => { const px = x(new Date(sc.t*1000));
     svg.append('line').attr('x1', px).attr('x2', px).attr('y1', m.t-6).attr('y2', H-m.b).attr('stroke', '#e2e8f0').attr('stroke-dasharray', '3 3');
-    svg.append('text').attr('x', px+3).attr('y', m.t-8).attr('fill', '#e2e8f0').attr('font-size', 10).text(`radar ${sc.n} ships`); });
+    svg.append('text').attr('x', px+3).attr('y', H-m.b-4).attr('fill', '#e2e8f0').attr('font-size', 10).text(`radar ${sc.n} ships`); });
   // cursor at the scrubber time (replay)
   if (isReplay) { const t = RCFG.t_min + Number($('#rb-t').value); const px = x(new Date(t*1000));
     svg.append('line').attr('x1', px).attr('x2', px).attr('y1', m.t-4).attr('y2', H-m.b).attr('stroke', '#fff').attr('stroke-width', 1.5); }
