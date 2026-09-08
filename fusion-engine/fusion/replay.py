@@ -38,6 +38,9 @@ SCENARIOS = {
         "center": (26.0, 55.5),
         "zoom": 7,
         "notes": "Aug 17: MINOAN DIGNITY (bulk carrier) struck exiting Hormuz, one seafarer killed; AMARA (products tanker) reported detained. Aug 18: US-Iran ceasefire expiry, Iranian missile fire toward UAE.",
+        # analyst-reviewed records (observatory notebook); served by /evidence, never correlated
+        "curated": {"seed": str(ROOT / "data" / "curated" / "hormuz-incident-seed.json"),
+                    "leads": str(ROOT / "data" / "curated" / "social-source-leads.json")},
         "sources": [
             ("Vessel hit by projectile while exiting Strait of Hormuz", "https://shipandbunker.com/news/emea/178048-vessel-hit-by-projectile-while-exiting-strait-of-hormuz"),
             ("Ship attacked in Hormuz as US-Iran ceasefire expiry risks prolonged conflict", "https://www.cnbcafrica.com/2026/ship-attacked-in-hormuz-strait-as-u-s-iran-ceasefire-expiry-risks-prolonged-conflict"),
@@ -214,6 +217,17 @@ class ReplayState:
             self._cache.clear()
         self._cache[key] = out
         return out
+
+    def evidence(self) -> dict | None:
+        """Curated manual evidence attached to this scenario (None if the scenario has none).
+        Loaded fresh from the committed JSON; never mixed into events, tracks or alerts."""
+        cfg = self.sc.get("curated")
+        if not cfg:
+            return None
+        from .curated import load_bundle
+        b = load_bundle(cfg["seed"], cfg["leads"])
+        b["window"] = {"t_min": self.t_min, "t_max": self.t_max, "label": self.sc.get("title")}
+        return b
 
     def timeline(self, step_min: int = 15) -> dict:
         """Per-bin activity across every source for the scrubber strip:
