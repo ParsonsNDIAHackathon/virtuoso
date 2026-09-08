@@ -1,4 +1,4 @@
-import type { Alert, Entity, Event, Evidence, Firms, Graph, Region, ReplayConfig, ReplayScenario, ReplaySnapshot, Status, Timeline, Track, Viewport } from "./types";
+import type { Alert, Entity, Event, Evidence, Firms, Graph, LinkPreview, Region, ReplayConfig, ReplayScenario, ReplaySnapshot, Status, Timeline, Track, Viewport } from "./types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, init);
@@ -27,4 +27,5 @@ export const api = {
   replayAt: (id: string, time: number) => request<ReplaySnapshot>(`/api/replay/${id}/at?t=${time}`),
   replayTimeline: (id: string) => request<Timeline>(`/api/replay/${id}/timeline`),
   evidence: (id: string) => request<Evidence>(`/api/replay/${id}/evidence`),
+  preview: (url: string) => request<LinkPreview>(`/api/preview?url=${encodeURIComponent(url)}`),
 };
