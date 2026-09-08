@@ -121,7 +121,20 @@ class ReplayState:
             "n_aircraft": len(self.tracks), "n_military": sum(1 for a in self.tracks.values() if a["military"]),
             "adsb_available": bool(self.tracks), "n_firms": len(self.firms), "n_sar": len(self.sar),
             "sar_scenes": sorted({d["ts"] for d in self.sar}),
+            "sar_summary": self._sar_summary(),
         }
+
+    def _sar_summary(self, core=(26.0, 55.8, 27.0, 56.9)) -> list[dict]:
+        """Per radar scene: total ship detections and how many sit in the strait core box, so the UI
+        can state the before/after change in plain words."""
+        la0, lo0, la1, lo1 = core
+        out = {}
+        for d in self.sar:
+            o = out.setdefault(d["ts"], {"ts": d["ts"], "n": 0, "core": 0, "scene": d["scene"][:32]})
+            o["n"] += 1
+            if la0 <= d["lat"] <= la1 and lo0 <= d["lon"] <= lo1:
+                o["core"] += 1
+        return [out[k] for k in sorted(out)]
 
     def at(self, t: float, lookback_min: float = 120.0, radius_km: float = 75.0, tail_min: float = 30.0) -> dict:
         """Fused picture at instant t (epoch seconds). Events from the prior lookback window, aircraft

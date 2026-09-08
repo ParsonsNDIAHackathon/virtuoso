@@ -210,7 +210,8 @@ async function enterReplay(id) {
   $('#rb-src').textContent = (RCFG.adsb_available ? `GDELT ${RCFG.n_events} events · adsb.lol archive ${RCFG.n_aircraft} aircraft (${RCFG.n_military} mil)` : `GDELT ${RCFG.n_events} events · ADS-B archive NOT LOADED`) + ` · FIRMS ${RCFG.n_firms||0} · Sentinel-1 ${RCFG.n_sar||0} ships/${(RCFG.sar_scenes||[]).length} scenes`;
   map.setView(sc.center, sc.zoom); setGibs(sc.day);
   const [la0,lo0,la1,lo1] = sc.bbox; L.rectangle([[la0,lo0],[la1,lo1]], {color:'#ffb454', weight:1, fill:false, dashArray:'4 4'}).addTo(map);
-  if (sc.sources && sc.sources.length) $('#detail-body').innerHTML = `<b>${sc.title}</b><br>${sc.notes||''}<br><b>Key reporting from the day (GDELT-indexed):</b><br>` + sc.sources.map(([t,u]) => `• <a href="${u}" target="_blank">${t}</a>`).join('<br>');
+  const sarSum = (RCFG.sar_summary||[]).map(x => `${x.ts.slice(0,16).replace('T',' ')}Z: ${x.n} ships in scene, <b>${x.core}</b> in the strait core`).join('<br>');
+  if (sc.sources && sc.sources.length) $('#detail-body').innerHTML = `<b>${sc.title}</b><br>${sc.notes||''}<br>` + (sarSum ? `<b>Sentinel-1 radar vessel counts (real, dates as imaged):</b><br>${sarSum}<br>` : '') + `<b>Key reporting from the day (GDELT-indexed):</b><br>` + sc.sources.map(([t,u]) => `• <a href="${u}" target="_blank">${t}</a>`).join('<br>');
   TL = await fetch(`/api/replay/${id}/timeline`).then(r=>r.json());
   await loadReplay();
 }
@@ -346,7 +347,7 @@ function drawTimeline() {
   });
   svg.append('g').attr('transform', `translate(0,${H-m.b+2})`).call(d3.axisBottom(x).ticks(8).tickFormat(d3.utcFormat('%H:%MZ'))).attr('color', '#8b9bb8').attr('font-size', 10);
   // radar scene markers (replay)
-  (TL.sar_scenes||[]).forEach(sc => { const px = x(new Date(sc.t*1000));
+  (TL.sar_scenes||[]).filter(sc => { const [a,b] = x.domain(); const d = new Date(sc.t*1000); return d >= a && d <= b; }).forEach(sc => { const px = x(new Date(sc.t*1000));
     svg.append('line').attr('x1', px).attr('x2', px).attr('y1', m.t-6).attr('y2', H-m.b).attr('stroke', '#e2e8f0').attr('stroke-dasharray', '3 3');
     svg.append('text').attr('x', px+3).attr('y', H-m.b-4).attr('fill', '#e2e8f0').attr('font-size', 10).text(`radar ${sc.n} ships`); });
   // cursor at the scrubber time (replay)
