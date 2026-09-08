@@ -61,7 +61,7 @@ def extract_bbox(archive_dir: Path, bbox=HORMUZ_BBOX, out: Path | None = None,
                  margin_deg: float = 0.5, max_members: int | None = None) -> dict:
     """Stream the split tar, keep aircraft with any position inside bbox (+margin). Returns
     {hex: {meta..., points: [[t_epoch, lat, lon, alt_ft|None|'ground', gs, track, flight, source], ...]}}."""
-    parts = sorted(p for p in Path(archive_dir).iterdir() if ".tar." in p.name)
+    parts = sorted(p for p in Path(archive_dir).iterdir() if re.search(r"\.tar\.[a-z]{2}$", p.name))
     if not parts:
         raise FileNotFoundError(f"no .tar.* parts in {archive_dir}")
     la0, lo0, la1, lo1 = bbox

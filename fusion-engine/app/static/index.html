@@ -66,6 +66,7 @@
   <div id="side">
     <div class="panel legend" style="flex:0 0 auto">
       <span><i style="background:var(--osint)"></i>OSINT event</span>
+      <span><i style="background:#f472b6;border-radius:0;transform:rotate(45deg)"></i>Telegram post</span>
       <span><i style="background:var(--mil)"></i>Military aircraft</span>
       <span><i style="background:var(--air)"></i>Civil aircraft</span>
       <span><i style="background:var(--actor)"></i>Actor</span>
@@ -96,6 +97,12 @@
 const $ = s => document.querySelector(s);
 const map = L.map('map', {worldCopyJump:true}).setView([35, 10], 2);
 L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {attribution:'© OpenStreetMap contributors', maxZoom:18, className:'dark-tiles'}).addTo(map);
+let gibs = null;   // NASA GIBS VIIRS true-color for the scenario day (no auth), added in replay mode
+function setGibs(day) {
+  if (gibs) { map.removeLayer(gibs); gibs = null; }
+  if (!day) return;
+  gibs = L.tileLayer(`https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/VIIRS_SNPP_CorrectedReflectance_TrueColor/default/${day}/GoogleMapsCompatible_Level9/{z}/{y}/{x}.jpg`, {maxNativeZoom:9, maxZoom:18, opacity:.85, attribution:'NASA GIBS VIIRS ' + day}).addTo(map);
+}
 const layers = { regions:L.layerGroup().addTo(map), events:L.layerGroup().addTo(map), air:L.layerGroup().addTo(map), links:L.layerGroup().addTo(map) };
 L.control.layers(null, {'Areas of interest':layers.regions, 'OSINT events':layers.events, 'Aircraft':layers.air, 'Correlation links':layers.links}).addTo(map);
 
@@ -182,11 +189,12 @@ async function enterReplay(id) {
   $('#replaybar').style.display = 'flex'; $('#refresh').hidden = true; $('#graph-refresh').hidden = true;
   $('#rb-title').textContent = sc.title; $('#rb-notes').textContent = sc.notes || '';
   $('#rb-src').textContent = RCFG.adsb_available ? `GDELT ${RCFG.n_events} events · adsb.lol archive ${RCFG.n_aircraft} aircraft (${RCFG.n_military} mil)` : `GDELT ${RCFG.n_events} events · ADS-B archive NOT LOADED`;
-  map.setView(sc.center, sc.zoom);
+  map.setView(sc.center, sc.zoom); setGibs(sc.day);
   const [la0,lo0,la1,lo1] = sc.bbox; L.rectangle([[la0,lo0],[la1,lo1]], {color:'#ffb454', weight:1, fill:false, dashArray:'4 4'}).addTo(map);
+  if (sc.sources && sc.sources.length) $('#detail-body').innerHTML = `<b>${sc.title}</b><br>${sc.notes||''}<br><b>Key reporting from the day (GDELT-indexed):</b><br>` + sc.sources.map(([t,u]) => `• <a href="${u}" target="_blank">${t}</a>`).join('<br>');
   await loadReplay();
 }
-function exitReplay() { MODE='live'; stopPlay(); $('#replaybar').style.display = 'none'; $('#refresh').hidden = false; $('#graph-refresh').hidden = false; graphLoaded = false; map.setView([35,10],2); loadLive({refreshGraph:true}); }
+function exitReplay() { MODE='live'; stopPlay(); setGibs(null); $('#replaybar').style.display = 'none'; $('#refresh').hidden = false; $('#graph-refresh').hidden = false; graphLoaded = false; map.setView([35,10],2); loadLive({refreshGraph:true}); }
 function stopPlay(){ playing=false; clearInterval(playTimer); $('#rb-play').textContent='▶ Play'; }
 $('#rb-play').onclick = () => {
   if (playing) return stopPlay();
@@ -247,8 +255,11 @@ function drawMap() {
       .bindTooltip(`${tl.callsign||tl.r||tl.hex} ${tl.t||''} · last 30 min`));
   DATA.events.filter(e=>inAOI(e.lat,e.lon)).forEach(e => {
     evById[e.id] = e;
-    const m = L.circleMarker([e.lat, e.lon], {radius:e.is_conflict?5:3, color:e.is_conflict?'#ffb454':'#a16207', fillOpacity:e.is_conflict?.8:.5, weight:1}).addTo(layers.events);
-    m.bindTooltip(`${e.root_label}: ${e.place}`); m.on('click', ()=>showEvent(e));
+    const social = (e.source_domain||'').startsWith('t.me/');
+    const m = social
+      ? L.marker([e.lat, e.lon], {icon: L.divIcon({className:'', html:`<div style="width:10px;height:10px;transform:rotate(45deg);background:${e.is_conflict?'#f472b6':'#9d174d'};border:1px solid #0b1220"></div>`, iconSize:[10,10]})}).addTo(layers.events)
+      : L.circleMarker([e.lat, e.lon], {radius:e.is_conflict?5:3, color:e.is_conflict?'#ffb454':'#a16207', fillOpacity:e.is_conflict?.8:.5, weight:1}).addTo(layers.events);
+    m.bindTooltip(social ? `Telegram ${e.source_domain.slice(5)}: ${e.place}` : `${e.root_label}: ${e.place}`); m.on('click', ()=>showEvent(e));
   });
   DATA.tracks.filter(t=>inAOI(t.lat,t.lon)).forEach(t => {
     const m = L.circleMarker([t.lat, t.lon], {radius:t.military?4:2.5, color:t.military?'#ff5c7a':'#4cc9f0', fillOpacity:.8, weight:1}).addTo(layers.air);
@@ -283,7 +294,8 @@ function showAlert(a) {
     <b>Themes</b> ${(e.themes||[]).slice(0,6).join(', ')||'–'}<br>
     Δ ${a.distance_km} km · Δt ${a.dt_min} min · <a href="${e.url}" target="_blank">source article</a>`;
 }
-function showEvent(e) { $('#detail-body').innerHTML = `<b>${e.root_label}</b> · ${e.place} (${e.country})<br>${[e.actor1,e.actor2].filter(Boolean).join(' → ')}<br>Goldstein ${e.goldstein} · tone ${e.tone.toFixed(1)} · mentions ${e.num_mentions} · ${e.source_domain}<br>Themes: ${(e.themes||[]).slice(0,8).join(', ')}<br><a href="${e.url}" target="_blank">article</a>`; }
+function showEvent(e) { if ((e.source_domain||'').startsWith('t.me/')) { $('#detail-body').innerHTML = `<b>Telegram · ${e.source_domain.slice(5)}</b> · ${e.place}<br>${(e.themes||[]).join(', ')||'–'} · ~${e.num_mentions}k views<br><a href="${e.url}" target="_blank">open post</a>`; return; }
+  $('#detail-body').innerHTML = `<b>${e.root_label}</b> · ${e.place} (${e.country})<br>${[e.actor1,e.actor2].filter(Boolean).join(' → ')}<br>Goldstein ${e.goldstein} · tone ${e.tone.toFixed(1)} · mentions ${e.num_mentions} · ${e.source_domain}<br>Themes: ${(e.themes||[]).slice(0,8).join(', ')}<br><a href="${e.url}" target="_blank">article</a>`; }
 function showTrack(t) { $('#detail-body').innerHTML = `<b>${t.callsign||'(no callsign)'}</b> · ${t.registration||''} · ${t.ac_type||'?'} · ICAO ${t.hex}<br>${t.military?'MILITARY':'civil'} · ${t.alt_ft??'ground'} ft · ${t.gs_kt||'?'} kt · trk ${t.track_deg||'?'}° · squawk ${t.squawk||'–'}<br>source ${t.source} · rssi ${t.rssi} · msgs ${t.messages}<br>${t.ts}`; }
 
 // ---------- force graph ----------

@@ -139,8 +139,14 @@ class Neo4jStore:
 
         track_rows = []
         for track in tracks:
+            track_props = asdict(track)
             track_rows.append({
-                "id": f"{track.id}|{track.ts}", "aircraft_id": track.id, "props": asdict(track),
+                # An aircraft is a durable identity; an observation is one
+                # position report in a specific ingest batch.  Keep their IDs
+                # distinct so repeated pulls cannot violate the observation
+                # uniqueness constraint.
+                "id": f"{batch_id}|{track.id}", "aircraft_id": track.id, "props": track_props,
+                "observation_props": {key: value for key, value in track_props.items() if key != "id"},
                 "observed_at": _dt(track.ts), "lat": track.lat, "lon": track.lon,
                 "grid": _grid(track.lat, track.lon), "weight": aircraft_weight(track), "batch_id": batch_id,
             })
@@ -151,7 +157,8 @@ class Neo4jStore:
                 MERGE (a:Aircraft {id: row.aircraft_id})
                 SET a += row.props, a.label = coalesce(row.props.callsign, row.props.registration, row.props.hex)
                 MERGE (o:AirObservation {id: row.id})
-                SET o += row.props, o.observed_at = row.observed_at, o.position = point({latitude: row.lat, longitude: row.lon}),
+                SET o += row.observation_props, o.aircraft_id = row.aircraft_id,
+                    o.observed_at = row.observed_at, o.position = point({latitude: row.lat, longitude: row.lon}),
                     o.grid = row.grid, o.weight = row.weight, o.batch_id = row.batch_id
                 MERGE (a)-[:OBSERVED_AS]->(o)
                 """, rows=track_rows,
@@ -241,12 +248,19 @@ class Neo4jStore:
             return []
         records = self._query(
             """
-            MATCH (:Aircraft)-[:OBSERVED_AS]->(o:AirObservation {batch_id: $batch_id})
+            MATCH (a:Aircraft)-[:OBSERVED_AS]->(o:AirObservation {batch_id: $batch_id})
             WHERE $military_only = false OR o.military = true
-            RETURN o ORDER BY o.military DESC, o.hex
+            RETURN o, a.id AS aircraft_id ORDER BY o.military DESC, o.hex
             """, batch_id=batch_id, military_only=military_only,
         )
-        return [{key: value for key, value in dict(record["o"]).items() if key in TRACK_FIELDS} for record in records]
+        out = []
+        for record in records:
+            track = {key: value for key, value in dict(record["o"]).items() if key in TRACK_FIELDS}
+            # API clients join alert.aircraft_id to track.id.  The Neo4j node's
+            # own ID is intentionally an observation ID, not that aircraft ID.
+            track["id"] = record["aircraft_id"]
+            out.append(track)
+        return out
 
     def graph(self, event_ids: list[str], batch_id: str | None, max_nodes: int = 220,
               max_links: int = 400) -> dict:

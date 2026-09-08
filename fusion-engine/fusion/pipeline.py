@@ -18,6 +18,7 @@ from pathlib import Path
 from .neo4j_store import Neo4jStore
 from .ingest_adsb import AirTrack, fetch_military, fetch_regions
 from .ingest_gdelt import OsintEvent, fetch_window
+from .ingest_telegram import DEFAULT_CHANNELS, fetch_latest, social_to_event
 
 log = logging.getLogger(__name__)
 DATA = Path(__file__).resolve().parent.parent / "data"
@@ -63,6 +64,7 @@ class FusionState:
     alert_count: int = 0
     regions: list[dict] = field(default_factory=load_regions)
     store: Neo4jStore = field(default_factory=Neo4jStore, repr=False)
+    social: list[OsintEvent] = field(default_factory=list)
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     # --- areas of interest ---
@@ -101,10 +103,31 @@ class FusionState:
         with self.lock:
             self.gdelt_stamp = stamp
             self.events = all_ev
-            self.event_ids = [event.id for event in all_ev]
-            self.conflict_event_count = sum(event.is_conflict for event in all_ev)
+            all_events = self.events + self.social
+            self.event_ids = [event.id for event in all_events]
+            self.conflict_event_count = sum(event.is_conflict for event in all_events)
         log.info("GDELT: %d geocoded events (%d conflict) from %d window(s)",
                  len(all_ev), sum(e.is_conflict for e in all_ev), windows)
+
+    def refresh_social(self, channels=None):
+        """Poll public Telegram channel previews; keep the last 6 h of geolocated posts."""
+        posts = []
+        for ch in channels or DEFAULT_CHANNELS:
+            try:
+                posts += fetch_latest(ch)
+            except Exception as e:
+                log.warning("telegram %s failed: %s", ch, e)
+        cutoff = datetime.now(timezone.utc).timestamp() - 6 * 3600
+        fresh = [social_to_event(p) for p in posts
+                 if p.lat is not None and datetime.fromisoformat(p.ts).timestamp() >= cutoff]
+        with self.lock:
+            have = {e.id for e in self.social}
+            self.social = [e for e in self.social
+                           if datetime.fromisoformat(e.ts).timestamp() >= cutoff] + [e for e in fresh if e.id not in have]
+            all_events = self.events + self.social
+            self.event_ids = [event.id for event in all_events]
+            self.conflict_event_count = sum(event.is_conflict for event in all_events)
+        log.info("Telegram: %d posts polled, %d geolocated in last 6 h", len(posts), len(self.social))
 
     def refresh_adsb(self, regions=True):
         tracks = fetch_military()
@@ -121,12 +144,14 @@ class FusionState:
 
     def fuse(self, radius_km=75.0, window_min=240.0):
         with self.lock:
-            ev, tr = list(self.events), list(self.tracks)
-            event_ids = list(self.event_ids)
+            ev, tr = list(self.events) + list(self.social), list(self.tracks)
+            event_ids = [event.id for event in ev]
         batch_id = f"live:{uuid.uuid4().hex}"
         self.store.ingest(ev, tr, batch_id)
         alerts = self.store.correlate(event_ids, batch_id, radius_km, window_min, min_severity=0.35)
         with self.lock:
+            self.event_ids = event_ids
+            self.conflict_event_count = sum(event.is_conflict for event in ev)
             self.batch_id = batch_id
             self.updated = datetime.now(timezone.utc).isoformat()
             self.alert_count = len(alerts)
@@ -223,20 +248,31 @@ def _prev_window(stamp: str) -> str:
 
 def run_once(state: FusionState, windows=2) -> FusionState:
     state.refresh_gdelt(windows=windows)
+    try:
+        state.refresh_social()
+    except Exception as e:
+        log.warning("social refresh failed: %s", e)
     state.refresh_adsb()
     state.fuse()
     state.save()
     return state
 
 
-def run_loop(state: FusionState, gdelt_every=900, adsb_every=60, windows=2, primed=True):
+def run_loop(state: FusionState, gdelt_every=900, adsb_every=60, windows=2, primed=True, social_every=300):
     """Background loop: ADS-B every minute, GDELT every 15 minutes, re-fuse after each.
     primed=True means run_once() already populated state, so the first tick waits."""
     last_g = time.time() if primed else 0.0
+    last_s = last_g
     if primed:
         time.sleep(adsb_every)
     while True:
         now = time.time()
+        if now - last_s >= social_every:
+            try:
+                state.refresh_social()
+                last_s = now
+            except Exception as e:
+                log.warning("social refresh failed: %s", e)
         if now - last_g >= gdelt_every:
             try:
                 state.refresh_gdelt(windows=windows)
@@ -266,5 +302,5 @@ if __name__ == "__main__":
         run_loop(st, windows=args.windows)
     else:
         run_once(st, windows=args.windows)
-        for a in st.alerts[:15]:
-            print(f"{a.score:.3f}  {a.aircraft_label:26s} {a.distance_km:6.1f} km  {a.event_label[:60]}")
+        for a in st.api_alerts(limit=15):
+            print(f"{a['score']:.3f}  {a['aircraft_label']:26s} {a['distance_km']:6.1f} km  {a['event_label'][:60]}")
