@@ -38,6 +38,12 @@ def index():
     return FileResponse(STATIC / "index.html")
 
 
+@app.get("/sources")
+def sources_page():
+    """Side-by-side explanation of what LIVE and REPLAY each pull, from where, and how much."""
+    return FileResponse(STATIC / "sources.html")
+
+
 @app.get("/api/status")
 def status():
     return state.api_status()
