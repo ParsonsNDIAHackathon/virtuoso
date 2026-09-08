@@ -1,0 +1,17 @@
+{
+  "source": "gdelt",
+  "anchor": "2026-08-14T12:00:00Z",
+  "start": "2026-08-14T00:00:00Z",
+  "end": "2026-08-15T00:00:00Z",
+  "latitude": 26.57,
+  "longitude": 56.25,
+  "radius_km": 300.0,
+  "keyword_mode": "all",
+  "keywords": [
+    "shipping",
+    "tanker",
+    "drone",
+    "iran"
+  ],
+  "records": 198
+}
