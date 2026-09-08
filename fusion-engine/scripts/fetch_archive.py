@@ -55,23 +55,42 @@ def _fetch_range(url: str, path: Path, start: int, end: int, lock: threading.Loc
 
 
 def fetch(url: str, size: int, dest: Path, threads: int, lock: threading.Lock, progress: dict) -> None:
-    have = dest.stat().st_size if dest.exists() else 0
-    if have >= size:
+    """Resumable: a sidecar <name>.ranges.json records the contiguous prefix that was present
+    before the file was pre-sized, plus every completed range, so restarts skip finished work."""
+    import json
+    side = dest.with_name(dest.name + ".ranges.json")
+    if side.exists():
+        st = json.loads(side.read_text())
+    else:
+        have = dest.stat().st_size if dest.exists() else 0
+        st = {"prefix": min(have, size), "done": []}
+        side.write_text(json.dumps(st))
+    if st.get("complete"):
         log.info("%s already complete", dest.name)
         with lock:
             progress["done"] += size
         return
-    # Pre-size the file so ranges can be written in place. Existing prefix bytes are kept.
-    with open(dest, "ab") as f:
+    with open(dest, "ab") as f:                       # pre-size so ranges write in place
         f.truncate(size)
+    done = set(st["done"])
+    ranges = [(s, min(s + CHUNK, size) - 1) for s in range(st["prefix"], size, CHUNK)]
+    todo = [r for r in ranges if r[0] not in done]
     with lock:
-        progress["done"] += have
-    ranges = [(s, min(s + CHUNK, size) - 1) for s in range(have, size, CHUNK)]
-    log.info("%s: %d MB present, %d ranges of %d MB to fetch", dest.name, have // 2**20, len(ranges), CHUNK // 2**20)
+        progress["done"] += st["prefix"] + sum(e - s + 1 for s, e in ranges if s in done)
+    log.info("%s: prefix %d MB, %d/%d ranges remaining", dest.name, st["prefix"] // 2**20, len(todo), len(ranges))
+
+    def one(s, e):
+        _fetch_range(url, dest, s, e, lock, progress)
+        with lock:
+            st["done"].append(s)
+            side.write_text(json.dumps(st))
+
     with ThreadPoolExecutor(threads) as ex:
-        futs = [ex.submit(_fetch_range, url, dest, s, e, lock, progress) for s, e in ranges]
+        futs = [ex.submit(one, s, e) for s, e in todo]
         for fu in as_completed(futs):
             fu.result()
+    st["complete"] = True
+    side.write_text(json.dumps(st))
 
 
 def main():
