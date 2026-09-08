@@ -66,7 +66,7 @@
     <div class="panel legend" style="flex:0 0 auto">
       <span><i style="background:var(--osint)"></i>OSINT event</span>
       <span><i style="background:#f472b6;border-radius:0;transform:rotate(45deg)"></i>Telegram post</span>
-      <span><i style="background:#fdba74"></i>Thermal anomaly</span>
+      <span><i style="width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-bottom:9px solid #ef4444;border-radius:0;background:none"></i>Thermal anomaly (▲ bright = new vs baseline)</span>
       <span><i style="border:2px solid #e2e8f0;background:transparent;border-radius:2px"></i>Radar ship</span>
       <span><i style="background:var(--mil)"></i>Military aircraft</span>
       <span><i style="background:var(--air)"></i>Civil aircraft</span>
@@ -225,7 +225,9 @@ function drawMap() {
   ['events','air','links','firms','sar'].forEach(k=>layers[k].clearLayers());
   (DATA.firms||[]).forEach(h => {
     const novel = (h.novelty||0) >= 0.9;
-    L.circleMarker([h.lat, h.lon], {radius: novel?5:2.5, color: novel?'#fb923c':'#7c2d12', fillColor: novel?'#fdba74':'#7c2d12', fillOpacity:.8, weight:1}).addTo(layers.firms)
+    // flame glyph: red triangle, larger + glowing when the hotspot is absent on the baseline day
+    L.marker([h.lat, h.lon], {icon: L.divIcon({className:'', iconSize:[14,14], iconAnchor:[7,9],
+        html:`<div style="width:0;height:0;border-left:${novel?7:4}px solid transparent;border-right:${novel?7:4}px solid transparent;border-bottom:${novel?13:8}px solid ${novel?'#ef4444':'#991b1b'};${novel?'filter:drop-shadow(0 0 4px #f87171);':''}opacity:${novel?1:.75}"></div>`})}).addTo(layers.firms)
       .bindTooltip(`${novel?'NEW ':''}thermal anomaly ${h.ts.slice(11,16)}Z · ${h.frp} MW · ${h.satellite} ${h.daynight==='N'?'night':'day'}${novel?' · not present on baseline day':''}`);
   });
   (DATA.sar||[]).forEach(d => {
