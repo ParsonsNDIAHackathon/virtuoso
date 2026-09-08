@@ -78,7 +78,8 @@
       <span><i style="background:var(--osint)"></i>OSINT event</span>
       <span><i style="background:#f472b6;border-radius:0;transform:rotate(45deg)"></i>Telegram post</span>
       <span><i style="width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-bottom:9px solid #ef4444;border-radius:0;background:none"></i>Thermal anomaly (▲ bright = new vs baseline)</span>
-      <span><i style="border:2px solid #e2e8f0;background:transparent;border-radius:2px"></i>Radar ship</span>
+      <span><i style="border:2px solid #e2e8f0;background:transparent;border-radius:2px"></i>Radar ship (nearest pass)</span>
+      <span><i style="border:2px solid #fbbf24;background:transparent;border-radius:2px"></i>Radar ship (strait pass, other day)</span>
       <span><i style="background:var(--mil)"></i>Military aircraft</span>
       <span><i style="background:var(--air)"></i>Civil aircraft</span>
       <span><i style="background:var(--actor)"></i>Actor</span>
@@ -192,12 +193,12 @@ async function load() { return MODE === 'live' ? loadLive() : loadReplay(); }
 async function loadReplay() {
   const t = RCFG.t_min + Number($('#rb-t').value);
   const r = await fetch(`/api/replay/${SC}/at?t=${t}`).then(r=>r.json());
-  DATA = { events:r.events, tracks:r.tracks, alerts:r.alerts, graph:r.graph, tails:r.tails||[], firms:r.firms||[], sar:r.sar||[], sarScene:r.sar_scene||null };
+  DATA = { events:r.events, tracks:r.tracks, alerts:r.alerts, graph:r.graph, tails:r.tails||[], firms:r.firms||[], sar:r.sar||[], sarScene:r.sar_scene||null, sarCore:r.sar_core||[], sarCoreScene:r.sar_core_scene||null };
   $('#s-ev').textContent = r.counts.events; $('#s-conf').textContent = r.counts.conflict_events;
   $('#s-tr').textContent = r.counts.tracks; $('#s-mil').textContent = r.counts.military_tracks;
   $('#s-al').textContent = r.counts.alerts; $('#s-win').textContent = 'replay';
   $('#s-upd').textContent = r.t_iso.slice(11,16) + 'Z'; $('#rb-time').textContent = r.t_iso.slice(0,16).replace('T',' ') + ' UTC';
-  $('#sar-note').textContent = DATA.sarScene ? `Sentinel-1: ${DATA.sarScene.n} ships · ${DATA.sarScene.label} (${DATA.sarScene.ts.slice(0,16).replace('T',' ')}Z)` : 'Sentinel-1: no radar scene within 3 days';
+  $('#sar-note').textContent = (DATA.sarScene ? `Sentinel-1: ${DATA.sarScene.n} ships · ${DATA.sarScene.label} (${DATA.sarScene.ts.slice(0,16).replace('T',' ')}Z)` : 'Sentinel-1: no radar scene within 3 days') + (DATA.sarCoreScene && (!DATA.sarScene || DATA.sarCoreScene.ts !== DATA.sarScene.ts) ? ` · strait core: ${DATA.sarCoreScene.n} ships, ${DATA.sarCoreScene.label} (${DATA.sarCoreScene.ts.slice(0,16).replace('T',' ')}Z)` : '');
   drawMap(); drawAlerts(); drawTimeline();
 }
 
@@ -262,6 +263,11 @@ function drawMap() {
     L.marker([h.lat, h.lon], {icon: L.divIcon({className:'', iconSize:[14,14], iconAnchor:[7,9],
         html:`<div style="width:0;height:0;border-left:${novel?7:4}px solid transparent;border-right:${novel?7:4}px solid transparent;border-bottom:${novel?13:8}px solid ${novel?'#ef4444':'#991b1b'};${novel?'filter:drop-shadow(0 0 4px #f87171);':''}opacity:${novel?1:.75}"></div>`})}).addTo(layers.firms)
       .bindTooltip(`${novel?'NEW ':''}thermal anomaly ${h.ts.slice(11,16)}Z · ${h.frp} MW · ${h.satellite} ${h.daynight==='N'?'night':'day'}${novel?' · not present on baseline day':''}`);
+  });
+  // strait-core scene (may be from another day): amber outline so its age is visually distinct
+  if (DATA.sarCoreScene && (!DATA.sarScene || DATA.sarCoreScene.ts !== DATA.sarScene.ts)) (DATA.sarCore||[]).forEach(d => {
+    L.marker([d.lat, d.lon], {icon: L.divIcon({className:'', html:`<div style="width:${d.length_m>=150?11:7}px;height:${d.length_m>=150?11:7}px;border:2px solid #fbbf24;border-radius:2px;opacity:.85"></div>`, iconSize:[11,11]})}).addTo(layers.sar)
+      .bindTooltip(`Radar ship (strait scene ${DATA.sarCoreScene.ts.slice(0,16).replace('T',' ')}Z · ${DATA.sarCoreScene.label}) · ~${d.length_m} m`);
   });
   (DATA.sar||[]).forEach(d => {
     const big = d.length_m >= 150;

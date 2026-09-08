@@ -124,6 +124,16 @@ class ReplayState:
             "sar_summary": self._sar_summary(),
         }
 
+    def _core_dets(self, core=(26.0, 55.8, 27.0, 56.9)) -> list[dict]:
+        """Detections from scenes that image the strait core (scene must have >= 20 core detections)."""
+        la0, lo0, la1, lo1 = core
+        per = {}
+        for d in self.sar:
+            if la0 <= d["lat"] <= la1 and lo0 <= d["lon"] <= lo1:
+                per[d["ts"]] = per.get(d["ts"], 0) + 1
+        ok = {ts for ts, n in per.items() if n >= 20}
+        return [d for d in self.sar if d["ts"] in ok]
+
     def _sar_summary(self, core=(26.0, 55.8, 27.0, 56.9)) -> list[dict]:
         """Per radar scene: total ship detections and how many sit in the strait core box, so the UI
         can state the before/after change in plain words."""
@@ -168,6 +178,9 @@ class ReplayState:
             # radar ship detections from the most recent scene at or before t (within 12 h)
             "sar": (sar := _nearest_scene(self.sar, t))[0],
             "sar_scene": sar[1],
+            # the scene closest in time that actually images the strait core (may be days away)
+            "sar_core": (sc := _nearest_scene(self._core_dets(), t, max_age_h=96.0))[0],
+            "sar_core_scene": sc[1],
         }
         if len(self._cache) > 200:
             self._cache.clear()
