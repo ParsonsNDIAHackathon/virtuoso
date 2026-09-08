@@ -27,12 +27,9 @@ _worker: threading.Thread | None = None
 @app.on_event("startup")
 def _startup():
     global _worker
-    # First fuse synchronously so the dashboard has data, then keep streaming in the background.
-    try:
-        run_once(state, windows=2)
-    except Exception as e:
-        log.exception("initial fuse failed: %s", e)
-    _worker = threading.Thread(target=run_loop, args=(state,), kwargs={"windows": 2}, daemon=True)
+    # Serve immediately; the first fuse runs in the background (primed=False -> fetch now).
+    # The UI shows "warming up" until /api/status reports an `updated` timestamp.
+    _worker = threading.Thread(target=run_loop, args=(state,), kwargs={"windows": 2, "primed": False}, daemon=True)
     _worker.start()
 
 

@@ -44,12 +44,23 @@ SCENARIOS = {
 }
 
 
+def _latest_scene(dets: list[dict], t: float, max_age_h: float = 12.0) -> list[dict]:
+    times = sorted({datetime.fromisoformat(d["ts"]).timestamp() for d in dets})
+    past = [x for x in times if x <= t and t - x <= max_age_h * 3600]
+    if not past:
+        return []
+    best = max(past)
+    return [d for d in dets if datetime.fromisoformat(d["ts"]).timestamp() == best]
+
+
 class ReplayState:
     def __init__(self, scenario_id: str):
         self.sc = dict(SCENARIOS[scenario_id], id=scenario_id)
         self.day = self.sc["day"]
         self.events: list[OsintEvent] = []
         self.tracks: dict[str, dict] = {}
+        self.firms: list[dict] = []
+        self.sar: list[dict] = []
         self.loaded = False
         self.lock = threading.Lock()
         self._cache: dict[int, dict] = {}
@@ -75,6 +86,12 @@ class ReplayState:
                 social = [social_to_event(p) for p in posts if p.lat is not None]
                 self.events += social
                 log.info("replay %s: +%d geolocated Telegram posts (%d total posts)", self.day, len(social), len(posts))
+            fpath = DATA / "replay" / f"{self.day}_firms.json"
+            if fpath.exists():
+                self.firms = json.loads(fpath.read_text(encoding="utf-8"))
+            spath = DATA / "replay" / f"{self.day}_sar.json"
+            if spath.exists():
+                self.sar = json.loads(spath.read_text(encoding="utf-8"))
             apath = DATA / "replay" / f"{self.day}_adsb.json"
             if apath.exists():
                 self.tracks = load_tracks(apath)
@@ -89,7 +106,8 @@ class ReplayState:
             "scenario": self.sc, "t_min": self.t_min, "t_max": self.t_max,
             "n_events": len(self.events), "n_conflict": sum(e.is_conflict for e in self.events),
             "n_aircraft": len(self.tracks), "n_military": sum(1 for a in self.tracks.values() if a["military"]),
-            "adsb_available": bool(self.tracks),
+            "adsb_available": bool(self.tracks), "n_firms": len(self.firms), "n_sar": len(self.sar),
+            "sar_scenes": sorted({d["ts"] for d in self.sar}),
         }
 
     def at(self, t: float, lookback_min: float = 120.0, radius_km: float = 75.0, tail_min: float = 30.0) -> dict:
@@ -114,6 +132,10 @@ class ReplayState:
             "alerts": [a.to_dict() for a in alerts[:300]],
             "graph": graph_to_json(G, max_nodes=800),
             "tails": track_polylines(self.tracks, t - tail_min * 60, t) if self.tracks else [],
+            # thermal anomalies seen in the last 12 h (satellite passes are ~2x/day)
+            "firms": [h for h in self.firms if t - 12 * 3600 <= datetime.fromisoformat(h["ts"]).timestamp() <= t],
+            # radar ship detections from the most recent scene at or before t (within 12 h)
+            "sar": _latest_scene(self.sar, t),
         }
         if len(self._cache) > 200:
             self._cache.clear()

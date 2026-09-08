@@ -66,6 +66,8 @@
     <div class="panel legend" style="flex:0 0 auto">
       <span><i style="background:var(--osint)"></i>OSINT event</span>
       <span><i style="background:#f472b6;border-radius:0;transform:rotate(45deg)"></i>Telegram post</span>
+      <span><i style="background:#fdba74"></i>Thermal anomaly</span>
+      <span><i style="border:2px solid #e2e8f0;background:transparent;border-radius:2px"></i>Radar ship</span>
       <span><i style="background:var(--mil)"></i>Military aircraft</span>
       <span><i style="background:var(--air)"></i>Civil aircraft</span>
       <span><i style="background:var(--actor)"></i>Actor</span>
@@ -102,10 +104,10 @@ function setGibs(day) {
   if (!day) return;
   gibs = L.tileLayer(`https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/VIIRS_SNPP_CorrectedReflectance_TrueColor/default/${day}/GoogleMapsCompatible_Level9/{z}/{y}/{x}.jpg`, {maxNativeZoom:9, maxZoom:18, opacity:.85, attribution:'NASA GIBS VIIRS ' + day}).addTo(map);
 }
-const layers = { regions:L.layerGroup().addTo(map), events:L.layerGroup().addTo(map), air:L.layerGroup().addTo(map), links:L.layerGroup().addTo(map) };
-L.control.layers(null, {'Areas of interest':layers.regions, 'OSINT events':layers.events, 'Aircraft':layers.air, 'Correlation links':layers.links}).addTo(map);
+const layers = { regions:L.layerGroup().addTo(map), sar:L.layerGroup().addTo(map), firms:L.layerGroup().addTo(map), events:L.layerGroup().addTo(map), air:L.layerGroup().addTo(map), links:L.layerGroup().addTo(map) };
+L.control.layers(null, {'Areas of interest':layers.regions, 'Radar ship detections':layers.sar, 'Thermal anomalies (FIRMS)':layers.firms, 'OSINT events':layers.events, 'Aircraft':layers.air, 'Correlation links':layers.links}).addTo(map);
 
-let DATA = { events:[], tracks:[], alerts:[], graph:{nodes:[],links:[]}, tails:[] };
+let DATA = { events:[], tracks:[], alerts:[], graph:{nodes:[],links:[]}, tails:[], firms:[], sar:[] };
 let MODE = 'live', SC = null, RCFG = null, playing = false, playTimer = null;
 let REGIONS = [];
 const NM_KM = 1.852;
@@ -171,7 +173,7 @@ async function load() { return MODE === 'live' ? loadLive() : loadReplay(); }
 async function loadReplay() {
   const t = RCFG.t_min + Number($('#rb-t').value);
   const r = await fetch(`/api/replay/${SC}/at?t=${t}`).then(r=>r.json());
-  DATA = { events:r.events, tracks:r.tracks, alerts:r.alerts, graph:r.graph, tails:r.tails||[] };
+  DATA = { events:r.events, tracks:r.tracks, alerts:r.alerts, graph:r.graph, tails:r.tails||[], firms:r.firms||[], sar:r.sar||[] };
   $('#s-ev').textContent = r.counts.events; $('#s-conf').textContent = r.counts.conflict_events;
   $('#s-tr').textContent = r.counts.tracks; $('#s-mil').textContent = r.counts.military_tracks;
   $('#s-al').textContent = r.counts.alerts; $('#s-win').textContent = 'replay';
@@ -185,7 +187,7 @@ async function enterReplay(id) {
   const sc = RCFG.scenario;
   $('#replaybar').style.display = 'flex'; $('#refresh').hidden = true;
   $('#rb-title').textContent = sc.title; $('#rb-notes').textContent = sc.notes || '';
-  $('#rb-src').textContent = RCFG.adsb_available ? `GDELT ${RCFG.n_events} events · adsb.lol archive ${RCFG.n_aircraft} aircraft (${RCFG.n_military} mil)` : `GDELT ${RCFG.n_events} events · ADS-B archive NOT LOADED`;
+  $('#rb-src').textContent = (RCFG.adsb_available ? `GDELT ${RCFG.n_events} events · adsb.lol archive ${RCFG.n_aircraft} aircraft (${RCFG.n_military} mil)` : `GDELT ${RCFG.n_events} events · ADS-B archive NOT LOADED`) + ` · FIRMS ${RCFG.n_firms||0} · Sentinel-1 ${RCFG.n_sar||0} ships/${(RCFG.sar_scenes||[]).length} scenes`;
   map.setView(sc.center, sc.zoom); setGibs(sc.day);
   const [la0,lo0,la1,lo1] = sc.bbox; L.rectangle([[la0,lo0],[la1,lo1]], {color:'#ffb454', weight:1, fill:false, dashArray:'4 4'}).addTo(map);
   if (sc.sources && sc.sources.length) $('#detail-body').innerHTML = `<b>${sc.title}</b><br>${sc.notes||''}<br><b>Key reporting from the day (GDELT-indexed):</b><br>` + sc.sources.map(([t,u]) => `• <a href="${u}" target="_blank">${t}</a>`).join('<br>');
@@ -210,17 +212,27 @@ async function loadLive() {
     fetch('/api/alerts?limit=300').then(r=>r.json()),
     fetch('/api/graph').then(r=>r.json()),
   ]);
-  DATA = { events:ev, tracks:tr, alerts:al, graph:gr, tails:[] };
+  DATA = { events:ev, tracks:tr, alerts:al, graph:gr, tails:[], firms:[], sar:[] };
   $('#s-ev').textContent = st.counts.events; $('#s-conf').textContent = st.counts.conflict_events;
   $('#s-tr').textContent = st.counts.tracks; $('#s-mil').textContent = st.counts.military_tracks;
   $('#s-al').textContent = st.counts.alerts; $('#s-win').textContent = fmtWin(st.gdelt_window);
-  $('#s-upd').textContent = st.updated ? new Date(st.updated).toLocaleTimeString() : '–';
+  $('#s-upd').textContent = st.updated ? new Date(st.updated).toLocaleTimeString() : 'warming up… (first fuse takes ~2 min)';
   drawMap(); drawAlerts(); drawGraph();
 }
 const fmtWin = w => w ? `${w.slice(0,4)}-${w.slice(4,6)}-${w.slice(6,8)} ${w.slice(8,10)}:${w.slice(10,12)}Z` : '–';
 
 function drawMap() {
-  ['events','air','links'].forEach(k=>layers[k].clearLayers());
+  ['events','air','links','firms','sar'].forEach(k=>layers[k].clearLayers());
+  (DATA.firms||[]).forEach(h => {
+    const novel = (h.novelty||0) >= 0.9;
+    L.circleMarker([h.lat, h.lon], {radius: novel?5:2.5, color: novel?'#fb923c':'#7c2d12', fillColor: novel?'#fdba74':'#7c2d12', fillOpacity:.8, weight:1}).addTo(layers.firms)
+      .bindTooltip(`${novel?'NEW ':''}thermal anomaly ${h.ts.slice(11,16)}Z · ${h.frp} MW · ${h.satellite} ${h.daynight==='N'?'night':'day'}${novel?' · not present on baseline day':''}`);
+  });
+  (DATA.sar||[]).forEach(d => {
+    const big = d.length_m >= 150;
+    L.marker([d.lat, d.lon], {icon: L.divIcon({className:'', html:`<div style="width:${big?12:8}px;height:${big?12:8}px;border:2px solid #e2e8f0;background:${big?'#e2e8f0aa':'transparent'};border-radius:2px"></div>`, iconSize:[12,12]})}).addTo(layers.sar)
+      .bindTooltip(`Radar ship detection · ~${d.length_m} m · contrast ${d.contrast} · Sentinel-1 ${d.ts.slice(11,16)}Z`);
+  });
   const evById = {};
   (DATA.tails||[]).forEach(tl => L.polyline(tl.coords, {color: tl.military?'#ff5c7a':'#4cc9f0', weight:1, opacity:.45}).addTo(layers.air)
       .bindTooltip(`${tl.callsign||tl.r||tl.hex} ${tl.t||''} · last 30 min`));
