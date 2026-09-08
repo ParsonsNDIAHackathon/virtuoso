@@ -57,7 +57,7 @@
   <span>GDELT 2.0 <span style="color:#8b9bb8">every 15 min</span></span> ·
   <span>adsb.lol ADS-B <span style="color:#8b9bb8">every 60 s, global military + drawn circles</span></span> ·
   <span>Telegram <span style="color:#8b9bb8">every 5 min</span></span> ·
-  <span>NASA FIRMS <span style="color:#8b9bb8">every 15 min, novelty vs 7 days ago</span></span>
+  <span>NASA FIRMS <span style="color:#8b9bb8">every 15 min, novelty vs previous 2 days</span></span>
   <span id="live-note" style="margin-left:auto;color:#e2e8f0"></span>
 </div>
 <div id="replaybar" style="display:none;align-items:center;gap:12px;padding:6px 16px;background:#0f172a;border-bottom:1px solid #223052;font-size:12px">
@@ -261,7 +261,8 @@ function drawMap() {
   // thermal anomalies: small flat triangles, no glow. Routine flares only appear when zoomed in
   // (zoom >= 7); new-vs-baseline anomalies show at every zoom but stay small.
   const z = map.getZoom();
-  (DATA.firms||[]).filter(h => (h.novelty||0) >= 0.9 || z >= 7).forEach(h => {
+  // world view (zoom < 5): only strong new anomalies (>= 10 MW) so wildfire seasons do not carpet the map
+  (DATA.firms||[]).filter(h => ((h.novelty||0) >= 0.9 && (z >= 5 || (h.frp||0) >= 10)) || z >= 7).forEach(h => {
     const novel = (h.novelty||0) >= 0.9;
     const sz = novel ? (z >= 7 ? 5 : 3.5) : 3;
     L.marker([h.lat, h.lon], {icon: L.divIcon({className:'', iconSize:[sz*2, sz*2], iconAnchor:[sz, sz*1.4],
