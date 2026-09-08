@@ -121,6 +121,7 @@ function setGibs(day) {
   if (wasOn) gibs.addTo(map);
 }
 map.on('overlayadd', e => { if (e.layer === gibs) gibsOn = true; });
+let _zt; map.on('zoomend', () => { clearTimeout(_zt); _zt = setTimeout(drawMap, 150); });
 map.on('overlayremove', e => { if (e.layer === gibs) gibsOn = false; });
 const layers = { regions:L.layerGroup().addTo(map), sar:L.layerGroup().addTo(map), firms:L.layerGroup().addTo(map), events:L.layerGroup().addTo(map), air:L.layerGroup().addTo(map), links:L.layerGroup().addTo(map) };
 const layerCtl = L.control.layers(null, {'Areas of interest':layers.regions, 'Radar ship detections':layers.sar, 'Thermal anomalies (FIRMS)':layers.firms, 'OSINT events':layers.events, 'Aircraft':layers.air, 'Correlation links':layers.links}).addTo(map);
@@ -257,11 +258,14 @@ const fmtWin = w => w ? `${w.slice(0,4)}-${w.slice(4,6)}-${w.slice(6,8)} ${w.sli
 
 function drawMap() {
   ['events','air','links','firms','sar'].forEach(k=>layers[k].clearLayers());
-  (DATA.firms||[]).forEach(h => {
+  // thermal anomalies: small flat triangles, no glow. Routine flares only appear when zoomed in
+  // (zoom >= 7); new-vs-baseline anomalies show at every zoom but stay small.
+  const z = map.getZoom();
+  (DATA.firms||[]).filter(h => (h.novelty||0) >= 0.9 || z >= 7).forEach(h => {
     const novel = (h.novelty||0) >= 0.9;
-    // flame glyph: red triangle, larger + glowing when the hotspot is absent on the baseline day
-    L.marker([h.lat, h.lon], {icon: L.divIcon({className:'', iconSize:[14,14], iconAnchor:[7,9],
-        html:`<div style="width:0;height:0;border-left:${novel?7:4}px solid transparent;border-right:${novel?7:4}px solid transparent;border-bottom:${novel?13:8}px solid ${novel?'#ef4444':'#991b1b'};${novel?'filter:drop-shadow(0 0 4px #f87171);':''}opacity:${novel?1:.75}"></div>`})}).addTo(layers.firms)
+    const sz = novel ? (z >= 7 ? 5 : 3.5) : 3;
+    L.marker([h.lat, h.lon], {icon: L.divIcon({className:'', iconSize:[sz*2, sz*2], iconAnchor:[sz, sz*1.4],
+        html:`<div style="width:0;height:0;border-left:${sz}px solid transparent;border-right:${sz}px solid transparent;border-bottom:${sz*1.8}px solid ${novel?'#f87171':'#7f1d1d'};opacity:${novel?.9:.6}"></div>`})}).addTo(layers.firms)
       .bindTooltip(`${novel?'NEW ':''}thermal anomaly ${h.ts.slice(11,16)}Z · ${h.frp} MW · ${h.satellite} ${h.daynight==='N'?'night':'day'}${novel?' · not present on baseline day':''}`);
   });
   // strait-core scene (may be from another day): amber outline so its age is visually distinct
