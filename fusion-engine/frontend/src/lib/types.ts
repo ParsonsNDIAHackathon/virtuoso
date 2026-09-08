@@ -28,6 +28,7 @@ export type Graph = { nodes: GraphNode[]; links: GraphLink[] };
 export type Status = {
   counts: { events: number; conflict_events: number; tracks: number; military_tracks: number; alerts: number; social?: number; firms?: number; firms_novel?: number };
   updated?: string; gdelt_window?: string; store?: string;
+  sources?: Record<string, { state: "starting" | "ready" | "partial" | "error"; label?: string; updated?: string; count?: number; detail?: string }>;
 };
 
 export type ReplayScenario = { id: string; title: string; notes?: string; center: [number, number]; zoom: number; day: string; bbox: [number, number, number, number]; sources?: [string, string][] };

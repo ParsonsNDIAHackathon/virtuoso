@@ -7,8 +7,17 @@ import { distanceKm } from "../lib/utils";
 const NM_KM = 1.852;
 const renderer = L.canvas({ padding: .5 });
 const eventColor = "#eab85a";
+const LAYER_LABELS: Record<keyof LayerState, string> = { events: "OSINT", tracks: "ADS-B", firms: "Thermal", sar: "SAR", links: "Links", imagery: "Imagery" };
 const clusterIcon = (count: number, color: string) => L.divIcon({ className: "", iconSize: [34, 34], iconAnchor: [17, 17], html: `<span style="display:grid;place-items:center;width:34px;height:34px;border-radius:50%;border:2px solid ${color};background:#101710e8;color:${color};font:600 10px monospace">${count > 999 ? "999+" : count}</span>` });
 const planeIcons = new Map<string, L.DivIcon>();
+const thermalIcons = new Map<string, L.DivIcon>();
+
+function thermalIcon(novel: boolean) {
+  const key = novel ? "novel" : "routine"; const cached = thermalIcons.get(key); if (cached) return cached;
+  const color = novel ? "#f87171" : "#8d2b24";
+  const icon = L.divIcon({ className: "", iconSize: [18, 18], iconAnchor: [9, 14], html: `<svg viewBox="0 0 24 24" width="18" height="18" style="display:block;color:${color};filter:drop-shadow(0 0 2px #101710)" aria-label="${novel ? "new" : "routine"} thermal anomaly"><path fill="currentColor" stroke="#101710" stroke-width="1.5" d="M12 2 22 21H2L12 2z"/><path fill="#101710" d="M11 8h2v7h-2zm0 9h2v2h-2z"/></svg>` });
+  thermalIcons.set(key, icon); return icon;
+}
 
 function aircraftKind(type?: string) {
   const code = (type || "").toUpperCase();
@@ -30,7 +39,7 @@ function planeIcon(track: Track) {
     fighter: '<path d="M16 2 28 29 16 23 4 29 16 2z"/><path d="M16 8v15" stroke="#101710" stroke-width="1.5"/>',
     helicopter: '<path d="M10 17h12l4 4H7l3-4z"/><circle cx="16" cy="16" r="4" fill="none" stroke="currentColor" stroke-width="2"/><path d="M16 12V4M5 5h22M16 4l-4 3m4-3 4 3M8 21l-3 6m15-6 3 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>',
   };
-  const icon = L.divIcon({ className: "", iconSize: [22, 22], iconAnchor: [11, 11], html: `<svg viewBox="0 0 32 32" width="22" height="22" style="display:block;color:${color};filter:drop-shadow(0 0 2px #101710);transform:rotate(${heading}deg);transform-origin:center" aria-label="${kind} aircraft">${shapes[kind]}</svg>` });
+  const icon = L.divIcon({ className: "", iconSize: [22, 22], iconAnchor: [11, 11], html: `<svg viewBox="0 0 32 32" width="22" height="22" fill="currentColor" style="display:block;color:${color};filter:drop-shadow(0 0 2px #101710);transform:rotate(${heading}deg);transform-origin:center" aria-label="${kind} aircraft">${shapes[kind]}</svg>` });
   planeIcons.set(key, icon); return icon;
 }
 
@@ -78,6 +87,12 @@ function TrackLayer({ values, zoom, onSelect }: { values: Track[]; zoom: number;
   return <>{groups.map((group, index) => group.items.length === 1 && zoom >= 6 ? <Marker key={`track-${group.items[0].id}`} position={[group.lat, group.lon]} icon={planeIcon(group.items[0])} eventHandlers={{ click: () => onSelect(detail(group.items[0])) }} /> : group.items.length === 1 ? <CircleMarker key={`track-point-${group.items[0].id}`} center={[group.lat, group.lon]} renderer={renderer} radius={4} pathOptions={{ color: group.items[0].military ? "#df5e55" : "#5cc7da", fillOpacity: .8, weight: 1 }} eventHandlers={{ click: () => onSelect(detail(group.items[0])) }} /> : <Marker key={`track-cluster-${index}`} position={[group.lat, group.lon]} icon={clusterIcon(group.items.length, "#5cc7da")} eventHandlers={{ click: () => map.setView([group.lat, group.lon], Math.min(zoom + 2, 9)) }} />)}</>;
 }
 
+function ThermalLayer({ values, zoom, onSelect }: { values: Firms[]; zoom: number; onSelect: (detail: MapDetail) => void }) {
+  const map = useMap(); const groups = useMemo(() => cluster(values, zoom), [values, zoom]);
+  const detail = (item: Firms): MapDetail => { const novel = (item.novelty ?? 0) >= .9; return { title: `${novel ? "NEW " : "Routine "}thermal anomaly`, lines: [`${item.ts.slice(0, 16)}Z · ${item.frp ?? "?"} MW`, `${item.satellite ?? "?"} ${item.daynight === "N" ? "night" : "day"}`, novel ? "Absent from the two-day baseline." : "Present in the two-day baseline." ] }; };
+  return <>{groups.map((group, index) => { const item = group.items[0]; const novel = (item.novelty ?? 0) >= .9; return group.items.length === 1 && zoom >= 5 ? <Marker key={`thermal-${item.lat}-${item.lon}-${item.ts}`} position={[group.lat, group.lon]} icon={thermalIcon(novel)} eventHandlers={{ click: () => onSelect(detail(item)) }} /> : group.items.length === 1 ? <CircleMarker key={`thermal-point-${item.lat}-${item.lon}-${item.ts}`} center={[group.lat, group.lon]} renderer={renderer} radius={novel ? 4 : 3} pathOptions={{ color: novel ? "#f87171" : "#8d2b24", fillOpacity: .8, weight: 1 }} eventHandlers={{ click: () => onSelect(detail(item)) }} /> : <Marker key={`thermal-cluster-${index}`} position={[group.lat, group.lon]} icon={clusterIcon(group.items.length, "#f87171")} eventHandlers={{ click: () => map.setView([group.lat, group.lon], Math.min(zoom + 2, 9)) }} />; })}</>;
+}
+
 export function OperationalMap({ events, tracks, alerts, firms, sar, sarCore, tails, regions, layers, viewport, filterAoi, drawing, focus, satelliteDay, replayBounds, onDraft, onSelect, onViewport, onLayerToggle }: Props) {
   const include = (lat: number, lon: number) => !filterAoi || regions.length === 0 || regions.some((region) => distanceKm(lat, lon, region.lat, region.lon) <= region.radius_nm * NM_KM);
   const imagery = satelliteDay ?? new Date(Date.now() - 86400000).toISOString().slice(0, 10);
@@ -87,7 +102,7 @@ export function OperationalMap({ events, tracks, alerts, firms, sar, sarCore, ta
   return <div className="relative h-full w-full"><MapContainer center={[35, 10]} zoom={2} worldCopyJump className="h-full w-full"><FocusMap focus={focus} /><ViewportReporter onViewport={onViewport} /><AreaDrawer enabled={drawing} onDraft={onDraft} /><TileLayer className="dark-tiles" url="https://tile.openstreetmap.org/{z}/{x}/{y}.png" attribution="© OpenStreetMap contributors" maxZoom={18} />
     {layers.imagery && <TileLayer url={`https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/VIIRS_SNPP_CorrectedReflectance_TrueColor/default/${imagery}/GoogleMapsCompatible_Level9/{z}/{y}/{x}.jpg`} attribution={`NASA GIBS VIIRS ${imagery}`} maxNativeZoom={9} maxZoom={18} opacity={.85} />}
     {regions.map((region) => <Circle key={region.id} center={[region.lat, region.lon]} radius={region.radius_nm * NM_KM * 1000} renderer={renderer} pathOptions={{ color: region.user ? "#94c973" : eventColor, weight: 1.2, dashArray: "6 4", fillOpacity: .04 }} />)}
-    {layers.firms && <ClusterLayer values={firms} zoom={viewport.zoom} color="#df5e55" onSelect={onSelect} renderPoint={(item) => ({ title: `${(item.novelty ?? 0) >= .9 ? "NEW " : ""}Thermal anomaly`, lines: [`${item.ts.slice(0, 16)}Z · ${item.frp ?? "?"} MW`, `${item.satellite ?? "?"} ${item.daynight === "N" ? "night" : "day"}`] })} />}
+    {layers.firms && <ThermalLayer values={firms} zoom={viewport.zoom} onSelect={onSelect} />}
     {layers.sar && <ClusterLayer values={sarCore} zoom={viewport.zoom} color="#f2bb57" onSelect={onSelect} renderPoint={(item) => ({ title: "Radar ship · strait-core scene", lines: [`~${item.length_m ?? "?"} m`, `Sentinel-1 ${item.ts.slice(0, 16)}Z`] })} />}
     {layers.sar && <ClusterLayer values={sar} zoom={viewport.zoom} color="#e5e7df" onSelect={onSelect} renderPoint={(item) => ({ title: "Radar ship detection", lines: [`~${item.length_m ?? "?"} m · contrast ${item.contrast ?? "?"}`, `Sentinel-1 ${item.ts.slice(0, 16)}Z`] })} />}
     {layers.events && <ClusterLayer values={filteredEvents} zoom={viewport.zoom} color={eventColor} onSelect={onSelect} renderPoint={(item) => ({ title: item.source_domain?.startsWith("t.me/") ? `Telegram · ${item.source_domain.slice(5)}` : item.root_label, lines: [item.place, `Goldstein ${item.goldstein ?? "–"} · tone ${item.tone?.toFixed(1) ?? "–"}`, `Themes: ${item.themes?.slice(0, 8).join(", ") || "–"}`], href: item.url, hrefLabel: "Open source" })} />}
@@ -95,5 +110,5 @@ export function OperationalMap({ events, tracks, alerts, firms, sar, sarCore, ta
     {layers.tracks && tails.map((tail, index) => <Polyline key={`tail-${index}`} positions={tail.coords} renderer={renderer} pathOptions={{ color: tail.military ? "#df5e55" : "#5cc7da", weight: 1, opacity: .45 }} />)}
     {layers.links && alerts.filter((item) => include(item.lat, item.lon)).slice(0, 75).flatMap((alert) => { const track = trackById.get(alert.aircraft_id); return track ? [<Polyline key={`${alert.aircraft_id}-${alert.event_id}`} positions={[[alert.lat, alert.lon], [track.lat, track.lon]]} renderer={renderer} pathOptions={{ color: alert.score > .5 ? "#df5e55" : eventColor, weight: 1 + 3 * alert.score, opacity: .7 }} />] : []; })}
     {replayBounds && <Rectangle bounds={[[replayBounds[0], replayBounds[1]], [replayBounds[2], replayBounds[3]]]} renderer={renderer} pathOptions={{ color: eventColor, weight: 1, fill: false, dashArray: "4 4" }} />}
-  </MapContainer><div className="absolute right-3 top-3 z-[1000] grid grid-cols-2 gap-1 border border-line bg-panel/95 p-1">{(Object.keys(layers) as Array<keyof LayerState>).map((layer) => <button key={layer} onClick={() => onLayerToggle(layer)} className={`border px-2 py-1 font-mono text-[9px] uppercase ${layers[layer] ? "border-command/50 text-command" : "border-line text-muted"}`}>{layer}</button>)}</div></div>;
+  </MapContainer><div className="absolute right-3 top-3 z-[1000] grid grid-cols-2 gap-1 border border-line bg-panel/95 p-1">{(Object.keys(layers) as Array<keyof LayerState>).map((layer) => <button key={layer} onClick={() => onLayerToggle(layer)} className={`border px-2 py-1 font-mono text-[9px] uppercase ${layers[layer] ? "border-command/50 text-command" : "border-line text-muted"}`}>{LAYER_LABELS[layer]}</button>)}</div></div>;
 }
