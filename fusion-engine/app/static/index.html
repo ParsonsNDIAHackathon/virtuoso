@@ -76,7 +76,7 @@
   <span id="rb-notes" style="color:#8b9bb8;max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
   <button id="rb-play" style="background:#1e3a8a;color:#fff;border:0;border-radius:6px;padding:4px 10px;cursor:pointer">▶ Play</button>
   <select id="rb-speed" style="background:#1e293b;color:#fff;border:1px solid #334;border-radius:6px;padding:3px 6px"><option value="60">1 min/s</option><option value="300" selected>5 min/s</option><option value="900">15 min/s</option></select>
-  <input id="rb-t" type="range" min="0" max="86340" step="60" value="43200" style="flex:1">
+  <input id="rb-t" type="range" min="0" max="86340" step="60" value="43200" style="flex:1" title="drag to any minute of the replay window">
   <b id="rb-time" style="min-width:150px;text-align:right;font-variant-numeric:tabular-nums"></b>
   <span id="rb-src" style="color:#8b9bb8">sources: GDELT 2.0 · adsb.lol archive (ODbL)</span>
   <span id="sar-note" style="color:#e2e8f0"></span>
@@ -242,6 +242,7 @@ async function loadReplay() {
   $('#s-tr').textContent = r.counts.tracks; $('#s-mil').textContent = r.counts.military_tracks;
   $('#s-al').textContent = r.counts.alerts; $('#s-win').textContent = 'replay';
   $('#s-upd').textContent = r.t_iso.slice(11,16) + 'Z'; $('#rb-time').textContent = r.t_iso.slice(0,16).replace('T',' ') + ' UTC';
+  if (gibsDay !== r.t_iso.slice(0,10)) setGibs(r.t_iso.slice(0,10));
   $('#sar-note').textContent = (DATA.sarScene ? `Sentinel-1: ${DATA.sarScene.n} ships · ${DATA.sarScene.label} (${DATA.sarScene.ts.slice(0,16).replace('T',' ')}Z)` : 'Sentinel-1: no radar scene within 3 days') + (DATA.sarCoreScene && (!DATA.sarScene || DATA.sarCoreScene.ts !== DATA.sarScene.ts) ? ` · strait core: ${DATA.sarCoreScene.n} ships, ${DATA.sarCoreScene.label} (${DATA.sarCoreScene.ts.slice(0,16).replace('T',' ')}Z)` : '');
   drawMap(); drawAlerts(); drawTimeline();
 }
@@ -252,6 +253,9 @@ async function enterReplay(id) {
   const sc = RCFG.scenario;
   $('#replaybar').style.display = 'flex'; $('#livebar').style.display = 'none'; $('#refresh').hidden = true;
   $('#rb-title').textContent = sc.title; $('#rb-notes').textContent = sc.notes || '';
+  const span = Math.round(RCFG.t_max - RCFG.t_min); $('#rb-t').max = span - 59; if (Number($('#rb-t').value) > span) $('#rb-t').value = Math.floor(span/2/60)*60;
+  const ll = RCFG.layers_loaded || {}; const missing = (RCFG.days||[]).filter(d => !(ll.adsb||[]).includes(d));
+  if (missing.length) $('#rb-src').textContent += ` · aircraft missing for ${missing.join(', ')}`;
   $('#rb-src').textContent = (RCFG.adsb_available ? `GDELT ${RCFG.n_events} events · adsb.lol archive ${RCFG.n_aircraft} aircraft (${RCFG.n_military} mil)` : `GDELT ${RCFG.n_events} events · ADS-B archive NOT LOADED`) + ` · FIRMS ${RCFG.n_firms||0} · Sentinel-1 ${RCFG.n_sar||0} ships/${(RCFG.sar_scenes||[]).length} scenes`;
   map.setView(sc.center, sc.zoom); setGibs(sc.day);
   const [la0,lo0,la1,lo1] = sc.bbox; L.rectangle([[la0,lo0],[la1,lo1]], {color:'#ffb454', weight:1, fill:false, dashArray:'4 4'}).addTo(map);
@@ -266,6 +270,7 @@ $('#rb-play').onclick = () => {
   if (playing) return stopPlay();
   playing = true; $('#rb-play').textContent='❚❚ Pause';
   playTimer = setInterval(async () => { const s=$('#rb-t'); let v=Number(s.value)+Number($('#rb-speed').value); if (v>Number(s.max)) { v=Number(s.max); stopPlay(); } s.value=v; await loadReplay(); }, 1000);
+  // (scrubber max is set per scenario window in enterReplay)
 };
 let _st; $('#rb-t').oninput = () => { const t=RCFG.t_min+Number($('#rb-t').value); $('#rb-time').textContent=new Date(t*1000).toISOString().slice(0,16).replace('T',' ')+' UTC'; clearTimeout(_st); _st=setTimeout(loadReplay, 250); };
 $('#mode').onchange = e => e.target.value==='live' ? exitReplay() : enterReplay(e.target.value);
@@ -439,7 +444,7 @@ function drawTimeline() {
       tip.innerHTML = `<b>${new Date(b.t*1000).toISOString().slice(11,16)}Z</b> ` + series.map(sr=>`<span style="color:${sr.color}">${b[sr.k]||0} ${sr.label}</span>`).join(' · '); })
     .on('mouseleave', ()=> tip.style.display='none')
     .on('click', ev => { if (!isReplay) return; const [mx] = d3.pointer(ev); const t = x.invert(mx).getTime()/1000;
-      $('#rb-t').value = Math.max(0, Math.min(86340, Math.round((t - RCFG.t_min)/60)*60)); loadReplay(); });
+      $('#rb-t').value = Math.max(0, Math.min(Number($('#rb-t').max), Math.round((t - RCFG.t_min)/60)*60)); loadReplay(); });
 }
 
 $('#refresh').onclick = async () => { $('#refresh').textContent='Refreshing…'; await fetch('/api/refresh',{method:'POST'}); await load(); $('#refresh').textContent='Refresh ADS-B + re-fuse'; };
