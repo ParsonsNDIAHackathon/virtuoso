@@ -31,10 +31,12 @@ export type Status = {
 };
 
 export type ReplayScenario = { id: string; title: string; notes?: string; center: [number, number]; zoom: number; day: string; bbox: [number, number, number, number]; sources?: [string, string][] };
-export type ReplayConfig = { scenario: ReplayScenario; t_min: number; t_max: number; n_events: number; n_aircraft: number; n_military: number; n_firms?: number; n_sar?: number; adsb_available?: boolean };
-export type ReplaySnapshot = { events: Event[]; tracks: Track[]; alerts: Alert[]; graph: Graph; tails?: Tail[]; firms?: Firms[]; sar?: Sar[]; sar_scene?: { n: number; label: string; ts: string }; counts: Status["counts"]; t_iso: string };
+export type ReplayConfig = { scenario: ReplayScenario; t_min: number; t_max: number; n_events: number; n_aircraft: number; n_military: number; n_firms?: number; n_sar?: number; adsb_available?: boolean; sar_scenes?: string[]; sar_summary?: Array<{ ts: string; n: number; core: number; scene: string }> };
+export type ReplaySnapshot = { events: Event[]; tracks: Track[]; alerts: Alert[]; graph: Graph; tails?: Tail[]; firms?: Firms[]; sar?: Sar[]; sar_scene?: { n: number; label: string; ts: string }; sar_core?: Sar[]; sar_core_scene?: { n: number; label: string; ts: string }; counts: Status["counts"]; t_iso: string };
 export type Entity = { neighbors?: Array<{ kind: string; label: string }> };
 
 export type LivePicture = { status: Status; events: Event[]; tracks: Track[]; alerts: Alert[]; firms: Firms[] };
 
 export type Viewport = { west: number; south: number; east: number; north: number; zoom: number };
+export type TimelineBin = { t: number; events: number; conflict: number; social: number; tracks: number; military: number; alerts?: number; firms_new: number };
+export type Timeline = { bins: TimelineBin[]; step_min: number; hours?: number; t_min?: number; sar_scenes?: Array<{ t: number; ts: string; n: number }> };

@@ -14,7 +14,7 @@ export type LayerState = { events: boolean; tracks: boolean; firms: boolean; sar
 type Cluster<T> = { lat: number; lon: number; items: T[] };
 type Point = { lat: number; lon: number };
 type Props = {
-  events: Event[]; tracks: Track[]; alerts: Alert[]; firms: Firms[]; sar: Sar[]; tails: Tail[]; regions: Region[]; layers: LayerState; viewport: Viewport;
+  events: Event[]; tracks: Track[]; alerts: Alert[]; firms: Firms[]; sar: Sar[]; sarCore: Sar[]; tails: Tail[]; regions: Region[]; layers: LayerState; viewport: Viewport;
   filterAoi: boolean; drawing: boolean; focus?: [number, number, number]; satelliteDay?: string; replayBounds?: [number, number, number, number];
   onDraft: (draft: Omit<Region, "id">) => void; onSelect: (detail: MapDetail) => void; onViewport: (viewport: Viewport) => void; onLayerToggle: (layer: keyof LayerState) => void;
 };
@@ -47,7 +47,7 @@ function ClusterLayer<T extends Point>({ values, zoom, color, renderPoint, onSel
   return <>{groups.map((group, index) => group.items.length === 1 ? <CircleMarker key={`point-${index}-${group.items[0].lat}-${group.items[0].lon}`} center={[group.lat, group.lon]} renderer={renderer} radius={4} pathOptions={{ color, fillColor: color, fillOpacity: .8, weight: 1 }} eventHandlers={{ click: () => onSelect(renderPoint(group.items[0])) }} /> : <Marker key={`cluster-${index}`} position={[group.lat, group.lon]} icon={clusterIcon(group.items.length, color)} eventHandlers={{ click: () => map.setView([group.lat, group.lon], Math.min(zoom + 2, 9)) }} />)}</>;
 }
 
-export function OperationalMap({ events, tracks, alerts, firms, sar, tails, regions, layers, viewport, filterAoi, drawing, focus, satelliteDay, replayBounds, onDraft, onSelect, onViewport, onLayerToggle }: Props) {
+export function OperationalMap({ events, tracks, alerts, firms, sar, sarCore, tails, regions, layers, viewport, filterAoi, drawing, focus, satelliteDay, replayBounds, onDraft, onSelect, onViewport, onLayerToggle }: Props) {
   const include = (lat: number, lon: number) => !filterAoi || regions.length === 0 || regions.some((region) => distanceKm(lat, lon, region.lat, region.lon) <= region.radius_nm * NM_KM);
   const imagery = satelliteDay ?? new Date(Date.now() - 86400000).toISOString().slice(0, 10);
   const trackById = useMemo(() => new Map(tracks.map((track) => [track.id, track])), [tracks]);
@@ -57,6 +57,7 @@ export function OperationalMap({ events, tracks, alerts, firms, sar, tails, regi
     {layers.imagery && <TileLayer url={`https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/VIIRS_SNPP_CorrectedReflectance_TrueColor/default/${imagery}/GoogleMapsCompatible_Level9/{z}/{y}/{x}.jpg`} attribution={`NASA GIBS VIIRS ${imagery}`} maxNativeZoom={9} maxZoom={18} opacity={.85} />}
     {regions.map((region) => <Circle key={region.id} center={[region.lat, region.lon]} radius={region.radius_nm * NM_KM * 1000} renderer={renderer} pathOptions={{ color: region.user ? "#94c973" : eventColor, weight: 1.2, dashArray: "6 4", fillOpacity: .04 }} />)}
     {layers.firms && <ClusterLayer values={firms} zoom={viewport.zoom} color="#df5e55" onSelect={onSelect} renderPoint={(item) => ({ title: `${(item.novelty ?? 0) >= .9 ? "NEW " : ""}Thermal anomaly`, lines: [`${item.ts.slice(0, 16)}Z · ${item.frp ?? "?"} MW`, `${item.satellite ?? "?"} ${item.daynight === "N" ? "night" : "day"}`] })} />}
+    {layers.sar && <ClusterLayer values={sarCore} zoom={viewport.zoom} color="#f2bb57" onSelect={onSelect} renderPoint={(item) => ({ title: "Radar ship · strait-core scene", lines: [`~${item.length_m ?? "?"} m`, `Sentinel-1 ${item.ts.slice(0, 16)}Z`] })} />}
     {layers.sar && <ClusterLayer values={sar} zoom={viewport.zoom} color="#e5e7df" onSelect={onSelect} renderPoint={(item) => ({ title: "Radar ship detection", lines: [`~${item.length_m ?? "?"} m · contrast ${item.contrast ?? "?"}`, `Sentinel-1 ${item.ts.slice(0, 16)}Z`] })} />}
     {layers.events && <ClusterLayer values={filteredEvents} zoom={viewport.zoom} color={eventColor} onSelect={onSelect} renderPoint={(item) => ({ title: item.source_domain?.startsWith("t.me/") ? `Telegram · ${item.source_domain.slice(5)}` : item.root_label, lines: [item.place, `Goldstein ${item.goldstein ?? "–"} · tone ${item.tone?.toFixed(1) ?? "–"}`, `Themes: ${item.themes?.slice(0, 8).join(", ") || "–"}`], href: item.url, hrefLabel: "Open source" })} />}
     {layers.tracks && <ClusterLayer values={filteredTracks} zoom={viewport.zoom} color="#5cc7da" onSelect={onSelect} renderPoint={(item) => ({ title: item.callsign || "Unidentified aircraft", lines: [`${item.registration || ""} · ${item.ac_type || "?"} · ICAO ${item.hex || "?"}`, `${item.military ? "MILITARY" : "Civil"} · ${item.alt_ft ?? "ground"} ft · ${item.gs_kt ?? "?"} kt`, `source ${item.source ?? "?"} · ${item.ts ?? ""}`] })} />}

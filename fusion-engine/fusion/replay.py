@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,8 +20,13 @@ from .replay_adsb import load_tracks, snapshot_at, track_polylines
 from .replay_gdelt import HORMUZ_BBOX, HORMUZ_KW, load_day
 
 log = logging.getLogger(__name__)
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+except Exception:
+    pass
 ROOT = Path(__file__).resolve().parent.parent
-DATA = ROOT / "data"
+DATA = Path(os.getenv("FUSION_DATA_DIR") or (ROOT / "data"))
 
 SCENARIOS = {
     "hormuz-2026-08-18": {
@@ -121,7 +127,30 @@ class ReplayState:
             "n_aircraft": len(self.tracks), "n_military": sum(1 for a in self.tracks.values() if a["military"]),
             "adsb_available": bool(self.tracks), "n_firms": len(self.firms), "n_sar": len(self.sar),
             "sar_scenes": sorted({d["ts"] for d in self.sar}),
+            "sar_summary": self._sar_summary(),
         }
+
+    def _core_dets(self, core=(26.0, 55.8, 27.0, 56.9)) -> list[dict]:
+        """Detections from scenes that image the strait core (scene must have >= 20 core detections)."""
+        la0, lo0, la1, lo1 = core
+        per = {}
+        for d in self.sar:
+            if la0 <= d["lat"] <= la1 and lo0 <= d["lon"] <= lo1:
+                per[d["ts"]] = per.get(d["ts"], 0) + 1
+        ok = {ts for ts, n in per.items() if n >= 20}
+        return [d for d in self.sar if d["ts"] in ok]
+
+    def _sar_summary(self, core=(26.0, 55.8, 27.0, 56.9)) -> list[dict]:
+        """Per radar scene: total ship detections and how many sit in the strait core box, so the UI
+        can state the before/after change in plain words."""
+        la0, lo0, la1, lo1 = core
+        out = {}
+        for d in self.sar:
+            o = out.setdefault(d["ts"], {"ts": d["ts"], "n": 0, "core": 0, "scene": d["scene"][:32]})
+            o["n"] += 1
+            if la0 <= d["lat"] <= la1 and lo0 <= d["lon"] <= lo1:
+                o["core"] += 1
+        return [out[k] for k in sorted(out)]
 
     def at(self, t: float, lookback_min: float = 120.0, radius_km: float = 75.0, tail_min: float = 30.0) -> dict:
         """Fused picture at instant t (epoch seconds). Events from the prior lookback window, aircraft
@@ -155,19 +184,55 @@ class ReplayState:
             # radar ship detections from the most recent scene at or before t (within 12 h)
             "sar": (sar := _nearest_scene(self.sar, t))[0],
             "sar_scene": sar[1],
+            # the scene closest in time that actually images the strait core (may be days away)
+            "sar_core": (sc := _nearest_scene(self._core_dets(), t, max_age_h=96.0))[0],
+            "sar_core_scene": sc[1],
         }
         if len(self._cache) > 200:
             self._cache.clear()
         self._cache[key] = out
         return out
 
-    def timeline(self, step_min: int = 15) -> list[dict]:
-        """Event volume per step for the scrubber histogram."""
+    def timeline(self, step_min: int = 15) -> dict:
+        """Per-bin activity across every source for the scrubber strip:
+        events (all / conflict), Telegram posts, aircraft and military aircraft with a position in the
+        bin, new thermal anomalies (novelty >= 0.9), plus radar scene times as markers."""
         self.load()
-        bins: dict[int, dict] = {}
+        step = step_min * 60
+        n = int(86400 // step)
+        bins = [{"t": self.t_min + i * step, "events": 0, "conflict": 0, "social": 0,
+                 "tracks": 0, "military": 0, "firms_new": 0} for i in range(n)]
+
+        def idx(ts):
+            i = int((ts - self.t_min) // step)
+            return i if 0 <= i < n else None
+
         for e in self.events:
-            b = int((datetime.fromisoformat(e.ts).timestamp() - self.t_min) // (step_min * 60))
-            d = bins.setdefault(b, {"t": self.t_min + b * step_min * 60, "events": 0, "conflict": 0})
-            d["events"] += 1
-            d["conflict"] += int(e.is_conflict)
-        return [bins[k] for k in sorted(bins)]
+            i = idx(datetime.fromisoformat(e.ts).timestamp())
+            if i is None:
+                continue
+            if e.source_domain.startswith("t.me/"):
+                bins[i]["social"] += 1
+            else:
+                bins[i]["events"] += 1
+                bins[i]["conflict"] += int(e.is_conflict)
+        seen = [set() for _ in range(n)]
+        mil = [set() for _ in range(n)]
+        for hexid, a in self.tracks.items():
+            for p in a["points"]:
+                i = idx(p[0])
+                if i is not None:
+                    seen[i].add(hexid)
+                    if a.get("military"):
+                        mil[i].add(hexid)
+        for i in range(n):
+            bins[i]["tracks"] = len(seen[i])
+            bins[i]["military"] = len(mil[i])
+        for h in self.firms:
+            i = idx(datetime.fromisoformat(h["ts"]).timestamp())
+            if i is not None and h.get("novelty", 0) >= 0.9:
+                bins[i]["firms_new"] += 1
+        scenes = sorted({d["ts"] for d in self.sar})
+        return {"step_min": step_min, "t_min": self.t_min, "bins": bins,
+                "sar_scenes": [{"ts": ts, "t": datetime.fromisoformat(ts).timestamp(),
+                                "n": sum(1 for d in self.sar if d["ts"] == ts)} for ts in scenes]}

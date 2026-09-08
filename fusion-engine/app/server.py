@@ -78,6 +78,12 @@ def aircraft(military_only: bool = False, limit: int = Query(3000, ge=1, le=2000
     return _in_view(state.api_aircraft(military_only), bbox, limit)
 
 
+@app.get("/api/timeline")
+def timeline(hours: float = Query(24.0, ge=0, le=24 * 30)):
+    """Per-fuse activity counts for the last `hours` (0 = all persisted history)."""
+    return state.api_timeline(hours)
+
+
 @app.get("/api/firms")
 def firms(limit: int = Query(3000, ge=1, le=20000), bbox: str | None = None):
     with state.lock:
