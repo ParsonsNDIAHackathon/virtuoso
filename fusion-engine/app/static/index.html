@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Multi-INT Fusion Engine · Parsons of Interest</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+<style>
+  :root { --bg:#0b1220; --panel:#111a2e; --line:#223052; --fg:#e6edf7; --mute:#8b9bb8;
+          --osint:#ffb454; --air:#4cc9f0; --mil:#ff5c7a; --actor:#a78bfa; --loc:#34d399; --src:#64748b; }
+  * { box-sizing:border-box }
+  body { margin:0; background:var(--bg); color:var(--fg); font:13px/1.4 system-ui,Segoe UI,Roboto,sans-serif; height:100vh; display:grid;
+         grid-template-rows:48px auto 1fr; }
+  header { display:flex; align-items:center; gap:18px; padding:0 16px; background:var(--panel); border-bottom:1px solid var(--line) }
+  header h1 { font-size:15px; margin:0; letter-spacing:.5px }
+  header .stat { color:var(--mute) } header .stat b { color:var(--fg) }
+  header button { margin-left:auto; background:#1e3a8a; color:#fff; border:0; padding:6px 12px; border-radius:6px; cursor:pointer }
+  main { display:grid; grid-template-columns: 1fr 420px; grid-template-rows: 1fr 300px; gap:8px; padding:8px; min-height:0 }
+  #map { grid-row:1; grid-column:1; border:1px solid var(--line); border-radius:8px }
+  #graph { grid-row:2; grid-column:1; border:1px solid var(--line); border-radius:8px; background:var(--panel); position:relative }
+  #side { grid-row:1/3; grid-column:2; display:flex; flex-direction:column; gap:8px; min-height:0 }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px; overflow:auto }
+  .panel h2 { font-size:12px; text-transform:uppercase; color:var(--mute); margin:0 0 8px }
+  #alerts { flex:1 }
+  table { width:100%; border-collapse:collapse } td,th { padding:4px 6px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top }
+  th { color:var(--mute); font-weight:600; font-size:11px }
+  tr.alert { cursor:pointer } tr.alert:hover { background:#1a2540 }
+  .score { font-weight:700; padding:1px 6px; border-radius:4px; background:#3b2a12; color:var(--osint) }
+  .score.hi { background:#4a1020; color:var(--mil) }
+  #detail { height:220px; font-size:12px } #detail a { color:var(--air) }
+  .legend span { display:inline-block; margin-right:10px } .legend i { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:4px }
+  .leaflet-container { background:#0b1220 }
+  .dark-tiles { filter: invert(1) hue-rotate(180deg) brightness(.85) contrast(.9) saturate(.5) }
+  #gtitle { position:absolute; top:8px; left:12px; color:var(--mute); font-size:11px; text-transform:uppercase }
+  .tip { position:absolute; pointer-events:none; background:#000c; color:#fff; padding:4px 8px; border-radius:4px; font-size:11px; display:none }
+</style>
+</head>
+<body>
+<header>
+  <h1>MULTI-INT FUSION ENGINE</h1>
+  <span class="stat">OSINT events <b id="s-ev">–</b> (<b id="s-conf">–</b> conflict)</span>
+  <span class="stat">Air tracks <b id="s-tr">–</b> (<b id="s-mil">–</b> mil)</span>
+  <span class="stat">Correlations <b id="s-al">–</b></span>
+  <span class="stat">GDELT window <b id="s-win">–</b></span>
+  <span class="stat">Updated <b id="s-upd">–</b></span>
+  <select id="mode" style="margin-left:auto;background:#1e293b;color:#fff;border:1px solid #334;border-radius:6px;padding:5px 8px">
+    <option value="live">LIVE · global stream</option>
+  </select>
+  <button id="refresh">Refresh ADS-B + re-fuse</button>
+</header>
+<div id="replaybar" style="display:none;align-items:center;gap:12px;padding:6px 16px;background:#0f172a;border-bottom:1px solid #223052;font-size:12px">
+  <b id="rb-title" style="color:#ffb454"></b>
+  <span id="rb-notes" style="color:#8b9bb8;max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
+  <button id="rb-play" style="background:#1e3a8a;color:#fff;border:0;border-radius:6px;padding:4px 10px;cursor:pointer">▶ Play</button>
+  <select id="rb-speed" style="background:#1e293b;color:#fff;border:1px solid #334;border-radius:6px;padding:3px 6px"><option value="60">1 min/s</option><option value="300" selected>5 min/s</option><option value="900">15 min/s</option></select>
+  <input id="rb-t" type="range" min="0" max="86340" step="60" value="43200" style="flex:1">
+  <b id="rb-time" style="min-width:150px;text-align:right;font-variant-numeric:tabular-nums"></b>
+  <span id="rb-src" style="color:#8b9bb8">sources: GDELT 2.0 · adsb.lol archive (ODbL)</span>
+</div>
+<main>
+  <div id="map"></div>
+  <div id="graph"><div id="gtitle">Knowledge graph · alert neighbourhoods + top actors</div><div class="tip" id="tip"></div></div>
+  <div id="side">
+    <div class="panel legend" style="flex:0 0 auto">
+      <span><i style="background:var(--osint)"></i>OSINT event</span>
+      <span><i style="background:var(--mil)"></i>Military aircraft</span>
+      <span><i style="background:var(--air)"></i>Civil aircraft</span>
+      <span><i style="background:var(--actor)"></i>Actor</span>
+      <span><i style="background:var(--loc)"></i>Location</span>
+    </div>
+    <div class="panel" id="regions-panel" style="flex:0 0 auto;max-height:190px">
+      <h2 style="display:flex;align-items:center;gap:8px">Areas of interest
+        <button id="draw-btn" style="margin-left:auto;background:#1e3a8a;color:#fff;border:0;border-radius:6px;padding:3px 10px;cursor:pointer">✎ Draw circle</button>
+        <label style="font-weight:400;text-transform:none;color:var(--mute)"><input type="checkbox" id="aoi-filter"> filter view to circles</label>
+      </h2>
+      <div id="draw-hint" style="display:none;color:var(--osint);margin-bottom:6px">Press on the map at the centre, drag out to the radius, release. Esc cancels.</div>
+      <div id="draw-form" style="display:none;gap:6px;align-items:center;margin-bottom:6px">
+        <input id="draw-name" placeholder="Area name" style="flex:1;background:#0b1220;color:#fff;border:1px solid #334;border-radius:4px;padding:3px 6px">
+        <span id="draw-radius" style="color:var(--mute)"></span>
+        <button id="draw-save" style="background:#166534;color:#fff;border:0;border-radius:4px;padding:3px 10px;cursor:pointer">Save</button>
+        <button id="draw-cancel" style="background:#3f1d2e;color:#fff;border:0;border-radius:4px;padding:3px 10px;cursor:pointer">Cancel</button>
+      </div>
+      <table><thead><tr><th>Name</th><th>Centre</th><th>Radius</th><th></th></tr></thead><tbody id="region-rows"></tbody></table>
+    </div>
+    <div class="panel" id="alerts">
+      <h2>Ranked correlations (aircraft ↔ OSINT event)</h2>
+      <table><thead><tr><th>Score</th><th>Aircraft</th><th>Event</th><th>km</th></tr></thead><tbody id="alert-rows"></tbody></table>
+    </div>
+    <div class="panel" id="detail"><h2>Detail</h2><div id="detail-body">Click an alert, marker, or graph node.</div></div>
+  </div>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const map = L.map('map', {worldCopyJump:true}).setView([35, 10], 2);
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {attribution:'© OpenStreetMap contributors', maxZoom:18, className:'dark-tiles'}).addTo(map);
+const layers = { regions:L.layerGroup().addTo(map), events:L.layerGroup().addTo(map), air:L.layerGroup().addTo(map), links:L.layerGroup().addTo(map) };
+L.control.layers(null, {'Areas of interest':layers.regions, 'OSINT events':layers.events, 'Aircraft':layers.air, 'Correlation links':layers.links}).addTo(map);
+
+let DATA = { events:[], tracks:[], alerts:[], graph:{nodes:[],links:[]}, tails:[] };
+let MODE = 'live', SC = null, RCFG = null, playing = false, playTimer = null;
+let REGIONS = [];
+const NM_KM = 1.852;
+const distKm = (a,b,c,d) => { const R=6371, p=Math.PI/180, x=Math.sin((c-a)*p/2)**2 + Math.cos(a*p)*Math.cos(c*p)*Math.sin((d-b)*p/2)**2; return 2*R*Math.asin(Math.sqrt(x)); };
+const inAOI = (lat,lon) => !$('#aoi-filter').checked || !REGIONS.length || REGIONS.some(r => distKm(lat,lon,r.lat,r.lon) <= r.radius_nm*NM_KM);
+
+async function loadRegions() {
+  REGIONS = await fetch('/api/regions').then(r=>r.json());
+  layers.regions.clearLayers();
+  REGIONS.forEach(r => {
+    L.circle([r.lat, r.lon], {radius:r.radius_nm*NM_KM*1000, color:r.user?'#34d399':'#ffb454', weight:1.2, dashArray:'6 4', fillOpacity:.04}).addTo(layers.regions)
+      .bindTooltip(`${r.name} · ${r.radius_nm} nm (${Math.round(r.radius_nm*NM_KM)} km)`);
+  });
+  const tb = $('#region-rows'); tb.innerHTML = '';
+  REGIONS.forEach(r => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td style="cursor:pointer;color:${r.user?'#34d399':'#ffb454'}">${r.name}</td><td>${r.lat.toFixed(2)}, ${r.lon.toFixed(2)}</td><td>${r.radius_nm} nm</td><td><button data-id="${r.id}" style="background:none;border:0;color:#ff5c7a;cursor:pointer" title="remove">✕</button></td>`;
+    tr.firstChild.onclick = () => map.fitBounds(L.circle([r.lat,r.lon],{radius:r.radius_nm*NM_KM*1000}).addTo(map).getBounds());
+    tr.querySelector('button').onclick = async () => { await fetch('/api/regions/'+r.id, {method:'DELETE'}); await loadRegions(); drawMap(); drawAlerts(); };
+    tb.appendChild(tr);
+  });
+}
+
+// --- Redfin-style circle draw: press at centre, drag radius, release ---
+let drawing = false, drawCenter = null, drawShape = null;
+function setDrawing(on) {
+  drawing = on; $('#draw-hint').style.display = on ? 'block' : 'none';
+  $('#draw-btn').textContent = on ? '✕ Cancel' : '✎ Draw circle';
+  map.getContainer().style.cursor = on ? 'crosshair' : '';
+  if (on) map.dragging.disable(); else map.dragging.enable();
+  if (!on && drawShape) { map.removeLayer(drawShape); drawShape = null; }
+  drawCenter = null;
+}
+$('#draw-btn').onclick = () => setDrawing(!drawing);
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && drawing) setDrawing(false); });
+map.on('mousedown', e => { if (!drawing) return; drawCenter = e.latlng; drawShape = L.circle(e.latlng, {radius:1000, color:'#34d399', weight:2, fillOpacity:.08}).addTo(map); });
+map.on('mousemove', e => { if (!drawing || !drawCenter) return; const km = distKm(drawCenter.lat, drawCenter.lng, e.latlng.lat, e.latlng.lng); drawShape.setRadius(Math.max(km,1)*1000); drawShape.bindTooltip(`${(km/NM_KM).toFixed(0)} nm · ${km.toFixed(0)} km`).openTooltip(e.latlng); });
+let pending = null;
+map.on('mouseup', e => {
+  if (!drawing || !drawCenter) return;
+  const km = distKm(drawCenter.lat, drawCenter.lng, e.latlng.lat, e.latlng.lng);
+  const nm = Math.min(250, Math.max(5, Math.round(km/NM_KM)));
+  pending = {lat:drawCenter.lat, lon:drawCenter.lng, radius_nm:nm};
+  const shape = drawShape; drawShape = null;            // keep the preview circle on screen while naming
+  setDrawing(false); pending.shape = shape;
+  $('#draw-form').style.display = 'flex'; $('#draw-radius').textContent = `${nm} nm`;
+  $('#draw-name').value = `AOI ${pending.lat.toFixed(1)}, ${pending.lon.toFixed(1)}`; $('#draw-name').focus(); $('#draw-name').select();
+});
+function endPending() { if (pending && pending.shape) map.removeLayer(pending.shape); pending = null; $('#draw-form').style.display = 'none'; }
+$('#draw-cancel').onclick = endPending;
+$('#draw-save').onclick = async () => {
+  if (!pending) return;
+  const body = {lat:pending.lat, lon:pending.lon, radius_nm:pending.radius_nm, name:$('#draw-name').value || undefined};
+  endPending();
+  await fetch('/api/regions', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  await loadRegions(); drawMap(); drawAlerts();
+};
+$('#draw-name').addEventListener('keydown', e => { if (e.key==='Enter' || e.keyCode===13) { e.preventDefault(); $('#draw-save').click(); } });
+$('#aoi-filter').onchange = () => { drawMap(); drawAlerts(); };
+
+async function load() { return MODE === 'live' ? loadLive() : loadReplay(); }
+
+async function loadReplay() {
+  const t = RCFG.t_min + Number($('#rb-t').value);
+  const r = await fetch(`/api/replay/${SC}/at?t=${t}`).then(r=>r.json());
+  DATA = { events:r.events, tracks:r.tracks, alerts:r.alerts, graph:r.graph, tails:r.tails||[] };
+  $('#s-ev').textContent = r.counts.events; $('#s-conf').textContent = r.counts.conflict_events;
+  $('#s-tr').textContent = r.counts.tracks; $('#s-mil').textContent = r.counts.military_tracks;
+  $('#s-al').textContent = r.counts.alerts; $('#s-win').textContent = 'replay';
+  $('#s-upd').textContent = r.t_iso.slice(11,16) + 'Z'; $('#rb-time').textContent = r.t_iso.slice(0,16).replace('T',' ') + ' UTC';
+  drawMap(); drawAlerts(); drawGraph();
+}
+
+async function enterReplay(id) {
+  SC = id; MODE = 'replay';
+  RCFG = await fetch(`/api/replay/${id}/config`).then(r=>r.json());
+  const sc = RCFG.scenario;
+  $('#replaybar').style.display = 'flex'; $('#refresh').hidden = true;
+  $('#rb-title').textContent = sc.title; $('#rb-notes').textContent = sc.notes || '';
+  $('#rb-src').textContent = RCFG.adsb_available ? `GDELT ${RCFG.n_events} events · adsb.lol archive ${RCFG.n_aircraft} aircraft (${RCFG.n_military} mil)` : `GDELT ${RCFG.n_events} events · ADS-B archive NOT LOADED`;
+  map.setView(sc.center, sc.zoom);
+  const [la0,lo0,la1,lo1] = sc.bbox; L.rectangle([[la0,lo0],[la1,lo1]], {color:'#ffb454', weight:1, fill:false, dashArray:'4 4'}).addTo(map);
+  await loadReplay();
+}
+function exitReplay() { MODE='live'; stopPlay(); $('#replaybar').style.display = 'none'; $('#refresh').hidden = false; map.setView([35,10],2); loadLive(); }
+function stopPlay(){ playing=false; clearInterval(playTimer); $('#rb-play').textContent='▶ Play'; }
+$('#rb-play').onclick = () => {
+  if (playing) return stopPlay();
+  playing = true; $('#rb-play').textContent='❚❚ Pause';
+  playTimer = setInterval(async () => { const s=$('#rb-t'); let v=Number(s.value)+Number($('#rb-speed').value); if (v>Number(s.max)) { v=Number(s.max); stopPlay(); } s.value=v; await loadReplay(); }, 1000);
+};
+let _st; $('#rb-t').oninput = () => { const t=RCFG.t_min+Number($('#rb-t').value); $('#rb-time').textContent=new Date(t*1000).toISOString().slice(0,16).replace('T',' ')+' UTC'; clearTimeout(_st); _st=setTimeout(loadReplay, 250); };
+$('#mode').onchange = e => e.target.value==='live' ? exitReplay() : enterReplay(e.target.value);
+fetch('/api/replay/scenarios').then(r=>r.json()).then(list => list.forEach(sc => { const o=document.createElement('option'); o.value=sc.id; o.textContent='REPLAY · '+sc.title; $('#mode').appendChild(o); }));
+
+async function loadLive() {
+  const [st, ev, tr, al, gr] = await Promise.all([
+    fetch('/api/status').then(r=>r.json()),
+    fetch('/api/events?conflict_only=true').then(r=>r.json()),
+    fetch('/api/aircraft').then(r=>r.json()),
+    fetch('/api/alerts?limit=300').then(r=>r.json()),
+    fetch('/api/graph').then(r=>r.json()),
+  ]);
+  DATA = { events:ev, tracks:tr, alerts:al, graph:gr, tails:[] };
+  $('#s-ev').textContent = st.counts.events; $('#s-conf').textContent = st.counts.conflict_events;
+  $('#s-tr').textContent = st.counts.tracks; $('#s-mil').textContent = st.counts.military_tracks;
+  $('#s-al').textContent = st.counts.alerts; $('#s-win').textContent = fmtWin(st.gdelt_window);
+  $('#s-upd').textContent = st.updated ? new Date(st.updated).toLocaleTimeString() : '–';
+  drawMap(); drawAlerts(); drawGraph();
+}
+const fmtWin = w => w ? `${w.slice(0,4)}-${w.slice(4,6)}-${w.slice(6,8)} ${w.slice(8,10)}:${w.slice(10,12)}Z` : '–';
+
+function drawMap() {
+  ['events','air','links'].forEach(k=>layers[k].clearLayers());
+  const evById = {};
+  (DATA.tails||[]).forEach(tl => L.polyline(tl.coords, {color: tl.military?'#ff5c7a':'#4cc9f0', weight:1, opacity:.45}).addTo(layers.air)
+      .bindTooltip(`${tl.callsign||tl.r||tl.hex} ${tl.t||''} · last 30 min`));
+  DATA.events.filter(e=>inAOI(e.lat,e.lon)).forEach(e => {
+    evById[e.id] = e;
+    const m = L.circleMarker([e.lat, e.lon], {radius:e.is_conflict?5:3, color:e.is_conflict?'#ffb454':'#a16207', fillOpacity:e.is_conflict?.8:.5, weight:1}).addTo(layers.events);
+    m.bindTooltip(`${e.root_label}: ${e.place}`); m.on('click', ()=>showEvent(e));
+  });
+  DATA.tracks.filter(t=>inAOI(t.lat,t.lon)).forEach(t => {
+    const m = L.circleMarker([t.lat, t.lon], {radius:t.military?4:2.5, color:t.military?'#ff5c7a':'#4cc9f0', fillOpacity:.8, weight:1}).addTo(layers.air);
+    m.bindTooltip(`${t.callsign||t.registration||t.hex} ${t.ac_type||''} ${t.alt_ft??'ground'} ft`); m.on('click', ()=>showTrack(t));
+  });
+  const trById = Object.fromEntries(DATA.tracks.map(t=>[t.id,t]));
+  DATA.alerts.filter(a=>inAOI(a.lat,a.lon)).slice(0,150).forEach(a => {
+    const t = trById[a.aircraft_id]; if (!t) return;
+    L.polyline([[a.lat,a.lon],[t.lat,t.lon]], {color: a.score>0.5?'#ff5c7a':'#ffb454', weight: 1+3*a.score, opacity:.7}).addTo(layers.links)
+     .bindTooltip(`${a.score.toFixed(2)} · ${a.aircraft_label} ↔ ${a.event_label}`);
+  });
+}
+
+function drawAlerts() {
+  const tb = $('#alert-rows'); tb.innerHTML = '';
+  DATA.alerts.filter(a=>inAOI(a.lat,a.lon)).forEach(a => {
+    const tr = document.createElement('tr'); tr.className = 'alert';
+    tr.innerHTML = `<td><span class="score ${a.score>0.5?'hi':''}">${a.score.toFixed(2)}</span></td>
+      <td>${a.aircraft_label}</td><td>${a.event_label.slice(0,70)}</td><td>${a.distance_km}</td>`;
+    tr.onclick = () => { map.setView([a.lat, a.lon], 8); showAlert(a); };
+    tb.appendChild(tr);
+  });
+}
+
+function showAlert(a) {
+  const e = DATA.events.find(x=>x.id===a.event_id) || {}; const t = DATA.tracks.find(x=>x.id===a.aircraft_id) || {};
+  $('#detail-body').innerHTML = `
+    <b>Correlation score ${a.score.toFixed(3)}</b> — ${a.reason}<br>
+    <b>Aircraft</b> ${a.aircraft_label} · reg ${t.registration||'?'} · ${t.alt_ft??'ground'} ft · ${t.gs_kt||'?'} kt · ${t.military?'MILITARY':'civil'} · src ${t.source||'?'}<br>
+    <b>Event</b> ${a.event_label} · Goldstein ${e.goldstein} · tone ${(e.tone||0).toFixed(1)} · mentions ${e.num_mentions}<br>
+    <b>Actors</b> ${[e.actor1,e.actor2].filter(Boolean).join(' / ')||'–'} · <b>Persons</b> ${(e.persons||[]).slice(0,4).join(', ')||'–'} · <b>Orgs</b> ${(e.orgs||[]).slice(0,4).join(', ')||'–'}<br>
+    <b>Themes</b> ${(e.themes||[]).slice(0,6).join(', ')||'–'}<br>
+    Δ ${a.distance_km} km · Δt ${a.dt_min} min · <a href="${e.url}" target="_blank">source article</a>`;
+}
+function showEvent(e) { $('#detail-body').innerHTML = `<b>${e.root_label}</b> · ${e.place} (${e.country})<br>${[e.actor1,e.actor2].filter(Boolean).join(' → ')}<br>Goldstein ${e.goldstein} · tone ${e.tone.toFixed(1)} · mentions ${e.num_mentions} · ${e.source_domain}<br>Themes: ${(e.themes||[]).slice(0,8).join(', ')}<br><a href="${e.url}" target="_blank">article</a>`; }
+function showTrack(t) { $('#detail-body').innerHTML = `<b>${t.callsign||'(no callsign)'}</b> · ${t.registration||''} · ${t.ac_type||'?'} · ICAO ${t.hex}<br>${t.military?'MILITARY':'civil'} · ${t.alt_ft??'ground'} ft · ${t.gs_kt||'?'} kt · trk ${t.track_deg||'?'}° · squawk ${t.squawk||'–'}<br>source ${t.source} · rssi ${t.rssi} · msgs ${t.messages}<br>${t.ts}`; }
+
+// ---------- force graph ----------
+const color = {event:'#ffb454', aircraft:'#4cc9f0', actor:'#a78bfa', location:'#34d399', source:'#64748b'};
+function drawGraph() {
+  const el = $('#graph'); d3.select(el).selectAll('svg').remove();
+  const W = el.clientWidth, H = el.clientHeight;
+  const g = DATA.graph; if (!g.nodes.length) return;
+  const nodes = g.nodes.map(n=>({...n})); const ids = new Set(nodes.map(n=>n.id));
+  const links = g.links.filter(l=>ids.has(l.source)&&ids.has(l.target)).map(l=>({...l}));
+  const svg = d3.select(el).append('svg').attr('width',W).attr('height',H);
+  const zoomG = svg.append('g');
+  svg.call(d3.zoom().scaleExtent([.2,6]).on('zoom', ev=>zoomG.attr('transform', ev.transform)));
+  const sim = d3.forceSimulation(nodes)
+    .force('link', d3.forceLink(links).id(d=>d.id).distance(l=>l.kind==='NEAR'?40:25).strength(.5))
+    .force('charge', d3.forceManyBody().strength(-60)).force('center', d3.forceCenter(W/2,H/2)).force('collide', d3.forceCollide(7));
+  const link = zoomG.append('g').selectAll('line').data(links).join('line')
+    .attr('stroke', l=>l.kind==='NEAR'?'#ff5c7a':'#334155').attr('stroke-width', l=>l.kind==='NEAR'?1+3*(l.score||0):.6).attr('stroke-opacity',.7);
+  const node = zoomG.append('g').selectAll('circle').data(nodes).join('circle')
+    .attr('r', d=>d.kind==='actor'?4+Math.min(d.mentions||0,20)/3 : d.kind==='event'?4+6*(d.severity||0) : 4)
+    .attr('fill', d=>d.kind==='aircraft'&&d.military?'#ff5c7a':color[d.kind]||'#999').attr('stroke','#0b1220').attr('stroke-width',.8)
+    .call(d3.drag().on('start',(e,d)=>{if(!e.active)sim.alphaTarget(.3).restart();d.fx=d.x;d.fy=d.y}).on('drag',(e,d)=>{d.fx=e.x;d.fy=e.y}).on('end',(e,d)=>{if(!e.active)sim.alphaTarget(0);d.fx=null;d.fy=null}))
+    .on('mousemove',(e,d)=>{const t=$('#tip'); t.style.display='block'; t.style.left=(e.offsetX+12)+'px'; t.style.top=(e.offsetY+12)+'px'; t.textContent=`${d.kind}: ${d.label}`})
+    .on('mouseleave',()=>$('#tip').style.display='none')
+    .on('click',(e,d)=>{ if(d.lat!=null) map.setView([d.lat,d.lon],7); fetch('/api/entity/'+encodeURIComponent(d.id)).then(r=>r.json()).then(x=>{
+        $('#detail-body').innerHTML = `<b>${d.kind.toUpperCase()}</b> ${d.label}<br>` + (x.neighbors||[]).map(n=>`<span style="color:${color[n.kind]}">●</span> ${n.kind}: ${n.label}`).join('<br>'); }); });
+  sim.on('tick', ()=>{ link.attr('x1',d=>d.source.x).attr('y1',d=>d.source.y).attr('x2',d=>d.target.x).attr('y2',d=>d.target.y); node.attr('cx',d=>d.x).attr('cy',d=>d.y); });
+}
+
+$('#refresh').onclick = async () => { $('#refresh').textContent='Refreshing…'; await fetch('/api/refresh',{method:'POST'}); await load(); $('#refresh').textContent='Refresh ADS-B + re-fuse'; };
+loadRegions().then(load); setInterval(()=>{ if (MODE==='live') loadLive(); }, 60000);
+let _rt; window.addEventListener('resize', ()=>{ clearTimeout(_rt); _rt=setTimeout(()=>{ map.invalidateSize(); drawGraph(); }, 200); });
+setTimeout(()=>map.invalidateSize(), 500);
+</script>
+</body>
+</html>
