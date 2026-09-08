@@ -30,11 +30,20 @@
   tr.alert { cursor:pointer } tr.alert:hover { background:#1a2540 }
   .score { font-weight:700; padding:1px 6px; border-radius:4px; background:#3b2a12; color:var(--osint) }
   .score.hi { background:#4a1020; color:var(--mil) }
-  #detail { height:220px; font-size:12px } #detail a { color:var(--air) }
+  #detail { height:220px; font-size:12px; overflow:auto } #detail a { color:var(--air) }
   .legend span { display:inline-block; margin-right:10px } .legend i { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:4px }
   .leaflet-container { background:#0b1220 }
   #sources-table i { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:5px; vertical-align:middle }
   #sources-table td { vertical-align:top; line-height:1.45 }
+  #curated .eyebrow { font-size:10px; letter-spacing:1px; color:#fbbf24; font-weight:700 }
+  #curated .banner { background:#3b2a12; border:1px solid #92400e; color:#fde68a; padding:6px 8px; border-radius:6px; font-size:11px; margin:6px 0 8px }
+  #curated .card { border:1px dashed #b45309; border-left:3px solid #f59e0b; border-radius:6px; padding:6px 8px; margin:6px 0; background:#161a14 }
+  #curated .chip { display:inline-block; font-size:10px; padding:1px 6px; border-radius:10px; background:#1f2937; color:#e5e7eb; margin-right:4px }
+  #curated .chip.cls { background:#4c1d95; color:#ede9fe }
+  #curated .muted { color:var(--mute) }
+  #curated button.seek { background:#1e3a8a; color:#fff; border:0; border-radius:4px; padding:2px 8px; cursor:pointer; font-size:11px }
+  #curated button.seek:disabled { background:#374151; color:#9ca3af; cursor:not-allowed }
+  #curated a { color:var(--air) }
   .dark-tiles { filter: invert(1) hue-rotate(180deg) brightness(.85) contrast(.9) saturate(.5) }
   #gtitle { position:absolute; top:8px; left:12px; color:var(--mute); font-size:11px; text-transform:uppercase }
   .tip { position:absolute; pointer-events:none; background:#000c; color:#fff; padding:4px 8px; border-radius:4px; font-size:11px; display:none }
@@ -116,11 +125,15 @@
       <h2>Ranked correlations (aircraft ↔ OSINT event)</h2>
       <table><thead><tr><th>Score</th><th>Aircraft</th><th>Event</th><th>km</th></tr></thead><tbody id="alert-rows"></tbody></table>
     </div>
-    <div class="panel" id="detail"><h2>Detail</h2><div id="detail-body">Click an alert, marker, or graph node.</div></div>
+    <div class="panel" id="detail"><h2>Detail</h2><div id="detail-body">Click an alert, marker, or graph node.</div>
+      <div id="curated" style="display:none;margin-top:12px;border-top:1px solid var(--line);padding-top:8px"></div></div>
   </div>
 </main>
 <script>
 const $ = s => document.querySelector(s);
+// Every string that originates from a source (claims, publishers, Telegram text, GDELT places/actors,
+// callsigns, user-typed region names) goes through esc() before it is inserted via innerHTML/tooltip.
+const esc = v => String(v ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 const map = L.map('map', {worldCopyJump:true, preferCanvas:true}).setView([35, 10], 2);
 const canvasR = L.canvas({padding:0.3});   // one <canvas> for every marker instead of thousands of DOM nodes
 L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {attribution:'© OpenStreetMap contributors', maxZoom:18, className:'dark-tiles'}).addTo(map);
@@ -172,12 +185,12 @@ async function loadRegions() {
   layers.regions.clearLayers();
   REGIONS.forEach(r => {
     L.circle([r.lat, r.lon], {radius:r.radius_nm*NM_KM*1000, color:r.user?'#34d399':'#ffb454', weight:1.2, dashArray:'6 4', fillOpacity:.04}).addTo(layers.regions)
-      .bindTooltip(`${r.name} · ${r.radius_nm} nm (${Math.round(r.radius_nm*NM_KM)} km)`);
+      .bindTooltip(`${esc(r.name)} · ${r.radius_nm} nm (${Math.round(r.radius_nm*NM_KM)} km)`);
   });
   const tb = $('#region-rows'); tb.innerHTML = '';
   REGIONS.forEach(r => {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td style="cursor:text;color:${r.user?'#34d399':'#ffb454'}" title="click to rename · double-click to zoom"><span class="rname">${r.name}</span></td><td>${r.lat.toFixed(2)}, ${r.lon.toFixed(2)}</td><td>${r.radius_nm} nm</td><td><button data-id="${r.id}" style="background:none;border:0;color:#ff5c7a;cursor:pointer" title="remove">✕</button></td>`;
+    tr.innerHTML = `<td style="cursor:text;color:${r.user?'#34d399':'#ffb454'}" title="click to rename · double-click to zoom"><span class="rname">${esc(r.name)}</span></td><td>${r.lat.toFixed(2)}, ${r.lon.toFixed(2)}</td><td>${r.radius_nm} nm</td><td><button data-id="${r.id}" style="background:none;border:0;color:#ff5c7a;cursor:pointer" title="remove">✕</button></td>`;
     const cell = tr.firstChild, span = cell.querySelector('.rname');
     cell.ondblclick = () => map.fitBounds(L.circle([r.lat,r.lon],{radius:r.radius_nm*NM_KM*1000}).getBounds());
     cell.onclick = () => {
@@ -256,11 +269,12 @@ async function enterReplay(id) {
   map.setView(sc.center, sc.zoom); setGibs(sc.day);
   const [la0,lo0,la1,lo1] = sc.bbox; L.rectangle([[la0,lo0],[la1,lo1]], {color:'#ffb454', weight:1, fill:false, dashArray:'4 4'}).addTo(map);
   const sarSum = (RCFG.sar_summary||[]).map(x => `${x.ts.slice(0,16).replace('T',' ')}Z: ${x.n} ships in scene, <b>${x.core}</b> in the strait core`).join('<br>');
-  if (sc.sources && sc.sources.length) $('#detail-body').innerHTML = `<b>${sc.title}</b><br>${sc.notes||''}<br>` + (sarSum ? `<b>Sentinel-1 radar vessel counts (real, dates as imaged):</b><br>${sarSum}<br>` : '') + `<b>Key reporting from the day (GDELT-indexed):</b><br>` + sc.sources.map(([t,u]) => `• <a href="${u}" target="_blank">${t}</a>`).join('<br>');
+  if (sc.sources && sc.sources.length) $('#detail-body').innerHTML = `<b>${sc.title}</b><br>${sc.notes||''}<br>` + (sarSum ? `<b>Sentinel-1 radar vessel counts (real, dates as imaged):</b><br>${sarSum}<br>` : '') + `<b>Key reporting from the day (GDELT-indexed):</b><br>` + sc.sources.map(([t,u]) => `• <a href="${esc(u)}" target="_blank" rel="noopener">${esc(t)}</a>`).join('<br>');
   TL = await fetch(`/api/replay/${id}/timeline`).then(r=>r.json());
   await loadReplay();
+  loadCurated(id);
 }
-function exitReplay() { MODE='live'; stopPlay(); setGibs(null); $('#livebar').style.display = 'flex'; $('#replaybar').style.display = 'none'; $('#refresh').hidden = false; map.setView([35,10],2); loadLive(); }
+function exitReplay() { MODE='live'; stopPlay(); setGibs(null); $('#curated').style.display='none'; $('#livebar').style.display = 'flex'; $('#replaybar').style.display = 'none'; $('#refresh').hidden = false; map.setView([35,10],2); loadLive(); }
 function stopPlay(){ playing=false; clearInterval(playTimer); $('#rb-play').textContent='▶ Play'; }
 $('#rb-play').onclick = () => {
   if (playing) return stopPlay();
@@ -329,24 +343,24 @@ function drawMap() {
   });
   const evById = {};
   (DATA.tails||[]).slice(0,300).forEach(tl => L.polyline(tl.coords, {renderer:canvasR, color: tl.military?'#ff5c7a':'#4cc9f0', weight:1, opacity:.45}).addTo(layers.air)
-      .bindTooltip(`${tl.callsign||tl.r||tl.hex} ${tl.t||''} · last 30 min`));
+      .bindTooltip(`${esc(tl.callsign||tl.r||tl.hex)} ${esc(tl.t||'')} · last 30 min`));
   DATA.events.filter(e=>inAOI(e.lat,e.lon)).forEach(e => {
     evById[e.id] = e;
     const social = (e.source_domain||'').startsWith('t.me/');
     const m = social
       ? L.circleMarker([e.lat, e.lon], {renderer:canvasR, radius:5, color:'#0b1220', fillColor:e.is_conflict?'#f472b6':'#9d174d', fillOpacity:.95, weight:1}).addTo(layers.events)
       : L.circleMarker([e.lat, e.lon], {renderer:canvasR, radius:e.is_conflict?5:3, color:e.is_conflict?'#ffb454':'#a16207', fillOpacity:e.is_conflict?.8:.5, weight:1}).addTo(layers.events);
-    m.bindTooltip(social ? `Telegram ${e.source_domain.slice(5)}: ${e.place}` : `${e.root_label}: ${e.place}`); m.on('click', ()=>showEvent(e));
+    m.bindTooltip(social ? `Telegram ${esc(e.source_domain.slice(5))}: ${esc(e.place)}` : `${esc(e.root_label)}: ${esc(e.place)}`); m.on('click', ()=>showEvent(e));
   });
   DATA.tracks.filter(t=>inAOI(t.lat,t.lon)).forEach(t => {
     const m = L.circleMarker([t.lat, t.lon], {renderer:canvasR, radius:t.military?4:2.5, color:t.military?'#ff5c7a':'#4cc9f0', fillOpacity:.8, weight:1}).addTo(layers.air);
-    m.bindTooltip(`${t.callsign||t.registration||t.hex} ${t.ac_type||''} ${t.alt_ft??'ground'} ft`); m.on('click', ()=>showTrack(t));
+    m.bindTooltip(`${esc(t.callsign||t.registration||t.hex)} ${esc(t.ac_type||'')} ${t.alt_ft??'ground'} ft`); m.on('click', ()=>showTrack(t));
   });
   const trById = Object.fromEntries(DATA.tracks.map(t=>[t.id,t]));
   DATA.alerts.filter(a=>inAOI(a.lat,a.lon)).slice(0,150).forEach(a => {
     const t = trById[a.aircraft_id]; if (!t) return;
     L.polyline([[a.lat,a.lon],[t.lat,t.lon]], {renderer:canvasR, color: a.score>0.5?'#ff5c7a':'#ffb454', weight: 1+3*a.score, opacity:.7}).addTo(layers.links)
-     .bindTooltip(`${a.score.toFixed(2)} · ${a.aircraft_label} ↔ ${a.event_label}`);
+     .bindTooltip(`${a.score.toFixed(2)} · ${esc(a.aircraft_label)} ↔ ${esc(a.event_label)}`);
   });
 }
 
@@ -355,7 +369,7 @@ function drawAlerts() {
   DATA.alerts.filter(a=>inAOI(a.lat,a.lon)).forEach(a => {
     const tr = document.createElement('tr'); tr.className = 'alert';
     tr.innerHTML = `<td><span class="score ${a.score>0.5?'hi':''}">${a.score.toFixed(2)}</span></td>
-      <td>${a.aircraft_label}</td><td>${a.event_label.slice(0,70)}</td><td>${a.distance_km}</td>`;
+      <td>${esc(a.aircraft_label)}</td><td>${esc(a.event_label.slice(0,70))}</td><td>${a.distance_km}</td>`;
     tr.onclick = () => { map.setView([a.lat, a.lon], 8); showAlert(a); };
     tb.appendChild(tr);
   });
@@ -364,16 +378,79 @@ function drawAlerts() {
 function showAlert(a) {
   const e = DATA.events.find(x=>x.id===a.event_id) || {}; const t = DATA.tracks.find(x=>x.id===a.aircraft_id) || {};
   $('#detail-body').innerHTML = `
-    <b>Correlation score ${a.score.toFixed(3)}</b> — ${a.reason}<br>
-    <b>Aircraft</b> ${a.aircraft_label} · reg ${t.registration||'?'} · ${t.alt_ft??'ground'} ft · ${t.gs_kt||'?'} kt · ${t.military?'MILITARY':'civil'} · src ${t.source||'?'}<br>
-    <b>Event</b> ${a.event_label} · Goldstein ${e.goldstein} · tone ${(e.tone||0).toFixed(1)} · mentions ${e.num_mentions}<br>
-    <b>Actors</b> ${[e.actor1,e.actor2].filter(Boolean).join(' / ')||'–'} · <b>Persons</b> ${(e.persons||[]).slice(0,4).join(', ')||'–'} · <b>Orgs</b> ${(e.orgs||[]).slice(0,4).join(', ')||'–'}<br>
-    <b>Themes</b> ${(e.themes||[]).slice(0,6).join(', ')||'–'}<br>
-    Δ ${a.distance_km} km · Δt ${a.dt_min} min · <a href="${e.url}" target="_blank">source article</a>`;
+    <b>Correlation score ${a.score.toFixed(3)}</b> — ${esc(a.reason)}<br>
+    <b>Aircraft</b> ${esc(a.aircraft_label)} · reg ${esc(t.registration||'?')} · ${t.alt_ft??'ground'} ft · ${t.gs_kt||'?'} kt · ${t.military?'MILITARY':'civil'} · src ${esc(t.source||'?')}<br>
+    <b>Event</b> ${esc(a.event_label)} · Goldstein ${e.goldstein} · tone ${(e.tone||0).toFixed(1)} · mentions ${e.num_mentions}<br>
+    <b>Actors</b> ${esc([e.actor1,e.actor2].filter(Boolean).join(' / ')||'–')} · <b>Persons</b> ${esc((e.persons||[]).slice(0,4).join(', ')||'–')} · <b>Orgs</b> ${esc((e.orgs||[]).slice(0,4).join(', ')||'–')}<br>
+    <b>Themes</b> ${esc((e.themes||[]).slice(0,6).join(', ')||'–')}<br>
+    Δ ${a.distance_km} km · Δt ${a.dt_min} min · <a href="${esc(e.url)}" target="_blank" rel="noopener">source article</a>`;
 }
-function showEvent(e) { if ((e.source_domain||'').startsWith('t.me/')) { $('#detail-body').innerHTML = `<b>Telegram · ${e.source_domain.slice(5)}</b> · ${e.place}<br>${(e.themes||[]).join(', ')||'–'} · ~${e.num_mentions}k views<br><a href="${e.url}" target="_blank">open post</a>`; return; }
-  $('#detail-body').innerHTML = `<b>${e.root_label}</b> · ${e.place} (${e.country})<br>${[e.actor1,e.actor2].filter(Boolean).join(' → ')}<br>Goldstein ${e.goldstein} · tone ${e.tone.toFixed(1)} · mentions ${e.num_mentions} · ${e.source_domain}<br>Themes: ${(e.themes||[]).slice(0,8).join(', ')}<br><a href="${e.url}" target="_blank">article</a>`; }
-function showTrack(t) { $('#detail-body').innerHTML = `<b>${t.callsign||'(no callsign)'}</b> · ${t.registration||''} · ${t.ac_type||'?'} · ICAO ${t.hex}<br>${t.military?'MILITARY':'civil'} · ${t.alt_ft??'ground'} ft · ${t.gs_kt||'?'} kt · trk ${t.track_deg||'?'}° · squawk ${t.squawk||'–'}<br>source ${t.source} · rssi ${t.rssi} · msgs ${t.messages}<br>${t.ts}`; }
+function showEvent(e) { if ((e.source_domain||'').startsWith('t.me/')) { $('#detail-body').innerHTML = `<b>Telegram · ${esc(e.source_domain.slice(5))}</b> · ${esc(e.place)}<br>${esc((e.themes||[]).join(', ')||'–')} · ~${e.num_mentions}k views<br><a href="${esc(e.url)}" target="_blank" rel="noopener">open post</a>`; return; }
+  $('#detail-body').innerHTML = `<b>${esc(e.root_label)}</b> · ${esc(e.place)} (${esc(e.country)})<br>${esc([e.actor1,e.actor2].filter(Boolean).join(' → '))}<br>Goldstein ${e.goldstein} · tone ${e.tone.toFixed(1)} · mentions ${e.num_mentions} · ${esc(e.source_domain)}<br>Themes: ${esc((e.themes||[]).slice(0,8).join(', '))}<br><a href="${esc(e.url)}" target="_blank" rel="noopener">article</a>`; }
+function showTrack(t) { $('#detail-body').innerHTML = `<b>${esc(t.callsign||'(no callsign)')}</b> · ${esc(t.registration||'')} · ${esc(t.ac_type||'?')} · ICAO ${esc(t.hex)}<br>${t.military?'MILITARY':'civil'} · ${t.alt_ft??'ground'} ft · ${t.gs_kt||'?'} kt · trk ${t.track_deg||'?'}° · squawk ${esc(t.squawk||'–')}<br>source ${esc(t.source)} · rssi ${t.rssi} · msgs ${t.messages}<br>${esc(t.ts)}`; }
+
+// ---------- curated (manual) evidence: analyst-reviewed records, never correlated ----------
+let CUR = null, curFilter = 'all';
+async function loadCurated(id) {
+  const box = $('#curated');
+  try { const r = await fetch(`/api/replay/${id}/evidence`); if (!r.ok) { box.style.display='none'; CUR=null; return; } CUR = await r.json(); }
+  catch (e) { box.style.display='none'; CUR=null; return; }
+  box.style.display = 'block'; renderCurated();
+}
+const fmtDay = d => { if (!d) return null; const [y,m,dd] = d.split('-'); return `${Number(dd)} ${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][Number(m)-1]} ${y}`; };
+function claimTiming(c) {
+  if (c.time_precision === 'minute_as_reported' && c.event_time_utc) { const d = new Date(c.event_time_utc); return `${fmtDay(c.event_time_utc.slice(0,10))} ${d.toISOString().slice(11,16)}Z`; }
+  if (c.time_precision === 'ambiguous_overnight') return 'overnight 17–18 Aug (secondary reporting; conflicts with official Aug 17 date — both kept)';
+  return `${fmtDay(c.event_date) || 'date unknown'} · time unknown`;
+}
+function pubTiming(src) {
+  if (src.publication_time_utc) return `published ${src.publication_time_utc.replace('T',' ').replace(/\+00:00$/,'Z')}`;
+  if (src.publication_date) return `published ${src.publication_date}`;
+  const asOf = src.as_of_date || src.retrieved_date;
+  return asOf ? `publication date unknown, as of ${asOf}` : 'publication date unknown';
+}
+function renderCurated() {
+  const box = $('#curated'); if (!CUR) return;
+  const win = CUR.window || {}; const vessels = CUR.vessels || []; const byId = Object.fromEntries((CUR.sources||[]).map(s => [s.id, s]));
+  const vname = Object.fromEntries(vessels.map(v => [v.id, v.name]));
+  const claims = (CUR.claims||[]).filter(c => curFilter === 'all' || c.vessel_id === curFilter);
+  const inWindow = c => c.event_time_utc && (() => { const t = new Date(c.event_time_utc).getTime()/1000; return t >= win.t_min && t <= win.t_max; })();
+  const winLabel = win.t_min ? `${new Date(win.t_min*1000).toISOString().slice(0,10)}${(win.t_max - win.t_min) > 90000 ? ' → ' + new Date(win.t_max*1000).toISOString().slice(0,10) : ''}` : '?';
+  let h = `<div class="eyebrow">CURATED · MANUAL</div>
+    <div style="display:flex;align-items:center;gap:8px;margin-top:2px"><b>Curated evidence</b>
+      <select id="cur-filter" style="margin-left:auto;background:#1e293b;color:#fff;border:1px solid #334;border-radius:4px;font-size:11px;padding:1px 4px">
+        <option value="all" ${curFilter==='all'?'selected':''}>All vessels</option>${vessels.map(v => `<option value="${esc(v.id)}" ${curFilter===v.id?'selected':''}>${esc(v.name)}</option>`).join('')}</select></div>
+    <div class="banner">Analyst-reviewed records compiled ${esc(CUR.prepared_date||'2026-09-08')} from reporting published after the events. Not sensor data. Not an as-known-at-the-time view. No threat score; never correlated with aircraft.</div>
+    <div class="muted" style="margin-bottom:4px">${vessels.map(v => `<b>${esc(v.name)}</b> · ${esc(v.vessel_type.replace(/_/g,' '))} · IMO ${esc(v.imo)} · flag ${esc(v.flag)} · MMSI candidate ${esc(v.mmsi_candidate||'–')} (unverified)`).join('<br>')}</div>`;
+  claims.forEach(c => {
+    const srcs = (c.source_ids||[]).map(id => byId[id]).filter(Boolean);
+    const seekable = inWindow(c);
+    const seekBtn = c.event_time_utc
+      ? (seekable ? `<button class="seek" data-t="${new Date(c.event_time_utc).getTime()/1000}">Seek</button>`
+                  : `<button class="seek" disabled>outside replay window (${esc(winLabel)})</button>`)
+      : '';
+    h += `<div class="card">
+      <div><span class="chip cls">${esc(c.evidence_class)}</span><span class="chip">${esc(vname[c.vessel_id]||c.vessel_id)}</span><span class="chip">${esc(claimTiming(c))}</span> ${seekBtn}</div>
+      <div style="margin:4px 0">${esc(c.claim)}</div>
+      <div class="muted">${esc(c.location_text||'location not stated')} · coordinates unresolved${c.attacker ? ' · attacker: '+esc(c.attacker) : ' · attacker: not attributed'}</div>
+      <div class="muted">${srcs.map(s => `<a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.publisher)}</a> (${esc(s.source_type)}; ${esc(pubTiming(s))})`).join(' · ')}</div>
+    </div>`;
+  });
+  const leads = CUR.leads || [];
+  if (leads.length) {
+    h += `<div class="eyebrow" style="margin-top:8px">REVIEWED SOURCE LEADS</div>`;
+    leads.forEach(l => {
+      const later = /later context/i.test(l.status||'');
+      h += `<div class="card" style="border-left-color:#94a3b8;border-color:#475569"><div><span class="chip">${esc(l.platform)}</span><span class="chip">${esc(l.original_language)}</span><span class="chip">${esc(l.publication_time_utc||'time unknown')}</span><span class="chip">${esc(l.summary_kind||'paraphrase')}</span></div>
+        <div style="margin:3px 0"><a href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.publisher)}</a> — ${esc(l.summary_en)}</div>
+        <div class="muted">${esc(l.status||'')}${later ? ' · later context; vessel identity in the image not verified' : ''}</div></div>`;
+    });
+  }
+  if ((CUR.excluded||[]).length) h += `<div class="muted" style="margin-top:4px">Excluded: ${CUR.excluded.map(x => esc(x.reason||'')).join(' · ')}</div>`;
+  box.innerHTML = h;
+  $('#cur-filter').onchange = e => { curFilter = e.target.value; renderCurated(); };
+  box.querySelectorAll('button.seek:not([disabled])').forEach(b => b.onclick = () => { const t = Number(b.dataset.t); $('#rb-t').value = Math.round(t - RCFG.t_min); loadReplay(); });
+}
 
 // ---------- activity timeline (replaces the force graph) ----------
 const SERIES = [   // replay: arrivals per 15-min bin
