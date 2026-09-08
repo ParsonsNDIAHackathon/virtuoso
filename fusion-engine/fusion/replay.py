@@ -44,13 +44,20 @@ SCENARIOS = {
 }
 
 
-def _latest_scene(dets: list[dict], t: float, max_age_h: float = 12.0) -> list[dict]:
+def _nearest_scene(dets: list[dict], t: float, max_age_h: float = 72.0) -> tuple[list[dict], dict | None]:
+    """Radar revisit over the strait is days, not hours: return the scene closest in time to t
+    (before or after) within max_age_h, plus a descriptor with its age so the UI can say so."""
     times = sorted({datetime.fromisoformat(d["ts"]).timestamp() for d in dets})
-    past = [x for x in times if x <= t and t - x <= max_age_h * 3600]
-    if not past:
-        return []
-    best = max(past)
-    return [d for d in dets if datetime.fromisoformat(d["ts"]).timestamp() == best]
+    if not times:
+        return [], None
+    best = min(times, key=lambda x: abs(x - t))
+    if abs(best - t) > max_age_h * 3600:
+        return [], None
+    scene = [d for d in dets if datetime.fromisoformat(d["ts"]).timestamp() == best]
+    age_h = (t - best) / 3600
+    return scene, {"ts": datetime.fromtimestamp(best, tz=timezone.utc).isoformat(), "age_h": round(age_h, 1),
+                   "label": f"radar picture {abs(age_h):.0f} h {'before' if age_h > 0 else 'after'} this moment",
+                   "n": len(scene), "scene": scene[0]["scene"] if scene else None}
 
 
 class ReplayState:
@@ -89,9 +96,14 @@ class ReplayState:
             fpath = DATA / "replay" / f"{self.day}_firms.json"
             if fpath.exists():
                 self.firms = json.loads(fpath.read_text(encoding="utf-8"))
-            spath = DATA / "replay" / f"{self.day}_sar.json"
-            if spath.exists():
-                self.sar = json.loads(spath.read_text(encoding="utf-8"))
+            self.sar = []
+            for spath in sorted((DATA / "replay").glob("*_sar.json")):
+                try:
+                    sday = datetime.strptime(spath.name[:10], "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp()
+                except ValueError:
+                    continue
+                if abs(sday - self.t_min) <= 3 * 86400:
+                    self.sar += json.loads(spath.read_text(encoding="utf-8"))
             apath = DATA / "replay" / f"{self.day}_adsb.json"
             if apath.exists():
                 self.tracks = load_tracks(apath)
@@ -135,7 +147,8 @@ class ReplayState:
             # thermal anomalies seen in the last 12 h (satellite passes are ~2x/day)
             "firms": [h for h in self.firms if t - 12 * 3600 <= datetime.fromisoformat(h["ts"]).timestamp() <= t],
             # radar ship detections from the most recent scene at or before t (within 12 h)
-            "sar": _latest_scene(self.sar, t),
+            "sar": (sar := _nearest_scene(self.sar, t))[0],
+            "sar_scene": sar[1],
         }
         if len(self._cache) > 200:
             self._cache.clear()

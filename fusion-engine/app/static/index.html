@@ -58,6 +58,7 @@
   <input id="rb-t" type="range" min="0" max="86340" step="60" value="43200" style="flex:1">
   <b id="rb-time" style="min-width:150px;text-align:right;font-variant-numeric:tabular-nums"></b>
   <span id="rb-src" style="color:#8b9bb8">sources: GDELT 2.0 · adsb.lol archive (ODbL)</span>
+  <span id="sar-note" style="color:#e2e8f0"></span>
 </div>
 <main>
   <div id="map"></div>
@@ -173,11 +174,12 @@ async function load() { return MODE === 'live' ? loadLive() : loadReplay(); }
 async function loadReplay() {
   const t = RCFG.t_min + Number($('#rb-t').value);
   const r = await fetch(`/api/replay/${SC}/at?t=${t}`).then(r=>r.json());
-  DATA = { events:r.events, tracks:r.tracks, alerts:r.alerts, graph:r.graph, tails:r.tails||[], firms:r.firms||[], sar:r.sar||[] };
+  DATA = { events:r.events, tracks:r.tracks, alerts:r.alerts, graph:r.graph, tails:r.tails||[], firms:r.firms||[], sar:r.sar||[], sarScene:r.sar_scene||null };
   $('#s-ev').textContent = r.counts.events; $('#s-conf').textContent = r.counts.conflict_events;
   $('#s-tr').textContent = r.counts.tracks; $('#s-mil').textContent = r.counts.military_tracks;
   $('#s-al').textContent = r.counts.alerts; $('#s-win').textContent = 'replay';
   $('#s-upd').textContent = r.t_iso.slice(11,16) + 'Z'; $('#rb-time').textContent = r.t_iso.slice(0,16).replace('T',' ') + ' UTC';
+  $('#sar-note').textContent = DATA.sarScene ? `Sentinel-1: ${DATA.sarScene.n} ships · ${DATA.sarScene.label} (${DATA.sarScene.ts.slice(0,16).replace('T',' ')}Z)` : 'Sentinel-1: no radar scene within 3 days';
   drawMap(); drawAlerts(); drawGraph();
 }
 
@@ -233,7 +235,7 @@ function drawMap() {
   (DATA.sar||[]).forEach(d => {
     const big = d.length_m >= 150;
     L.marker([d.lat, d.lon], {icon: L.divIcon({className:'', html:`<div style="width:${big?12:8}px;height:${big?12:8}px;border:2px solid #e2e8f0;background:${big?'#e2e8f0aa':'transparent'};border-radius:2px"></div>`, iconSize:[12,12]})}).addTo(layers.sar)
-      .bindTooltip(`Radar ship detection · ~${d.length_m} m · contrast ${d.contrast} · Sentinel-1 ${d.ts.slice(11,16)}Z`);
+      .bindTooltip(`Radar ship detection · ~${d.length_m} m · contrast ${d.contrast} · Sentinel-1 ${d.ts.slice(0,16).replace('T',' ')}Z`);
   });
   const evById = {};
   (DATA.tails||[]).forEach(tl => L.polyline(tl.coords, {color: tl.military?'#ff5c7a':'#4cc9f0', weight:1, opacity:.45}).addTo(layers.air)

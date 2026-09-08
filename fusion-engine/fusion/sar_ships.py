@@ -78,7 +78,8 @@ def read_overview(tiff_path: Path, level: int):
 
 
 def detect(scene_dir: Path, level: int = 2, k: float = 5.0, floor: float | None = None,
-           win: int = 41, min_area: int = 2, bbox=None) -> list[Detection]:
+           win: int = 41, min_area: int = 2, bbox=None, max_len_m: float = 500.0) -> list[Detection]:
+    """max_len_m drops islands, platforms and breakwaters that the 1 km land mask misses."""
     from scipy import ndimage
     from global_land_mask import globe
 
@@ -129,7 +130,7 @@ def detect(scene_dir: Path, level: int = 2, k: float = 5.0, floor: float | None 
             h = sl[0].stop - sl[0].start
             w = sl[1].stop - sl[1].start
             la = float(lat_i(cy * sy, cx * sx)); lo = float(lon_i(cy * sy, cx * sx))
-            if np.isnan(la):
+            if np.isnan(la) or max(h, w) * px_m > max_len_m:
                 continue
             b = float(bg[int(cy), int(cx)]) or 1.0
             dets.append(Detection(
