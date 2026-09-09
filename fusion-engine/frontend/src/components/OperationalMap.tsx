@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import L from "leaflet";
 import { RfSpectrumDialog } from "./RfSpectrumDialog";
 import { Circle, CircleMarker, MapContainer, Marker, Polyline, Rectangle, TileLayer, useMap, useMapEvents } from "react-leaflet";
-import type { Alert, Event, Firms, Region, Tail, Track, Vessel, Viewport } from "../lib/types";
+import type { Alert, Assessment, Event, Firms, RecordRef, Region, Tail, Track, Vessel, Viewport } from "../lib/types";
 import { distanceKm } from "../lib/utils";
 
 const NM_KM = 1.852;
@@ -63,13 +63,15 @@ function planeIcon(track: Track) {
   planeIcons.set(key, icon); return icon;
 }
 
-export type MapDetail = { title: string; lines: string[]; href?: string; hrefLabel?: string; entityId?: string; connections?: Array<{ kind: "event" | "aircraft"; label: string; detail: string; selected?: boolean }> };
+export type MapDetail = { title: string; lines: string[]; href?: string; hrefLabel?: string; entityId?: string; recordRef?: RecordRef; point?: [number, number]; connections?: Array<{ kind: "event" | "aircraft"; label: string; detail: string; selected?: boolean }> };
 export type LayerState = { events: boolean; tracks: boolean; firms: boolean; links: boolean; imagery: boolean; rf: boolean; ais: boolean };
 type Cluster<T> = { lat: number; lon: number; items: T[] };
 type Point = { lat: number; lon: number };
 type Props = {
   events: Event[]; tracks: Track[]; vessels: Vessel[]; live: boolean; alerts: Alert[]; firms: Firms[]; tails: Tail[]; regions: Region[]; layers: LayerState; viewport: Viewport;
+  assessments?: Assessment[];
   filterAoi: boolean; drawing: boolean; focus?: [number, number, number]; satelliteDay?: string; replayBounds?: [number, number, number, number];
+  compareSelection?: MapDetail[]; compareVerdict?: string; compareArticleMatch?: boolean;
   onDraft: (draft: Omit<Region, "id">) => void; onSelect: (detail: MapDetail) => void; onAoiZoom: (region: Region) => void; onBackgroundClick: () => void; onViewport: (viewport: Viewport) => void; onLayerToggle: (layer: keyof LayerState) => void;
 };
 
@@ -111,22 +113,27 @@ function ClusterLayer<T extends Point>({ values, zoom, color, pointColor, render
 
 function TrackLayer({ values, zoom, onSelect }: { values: Track[]; zoom: number; onSelect: (detail: MapDetail) => void }) {
   const map = useMap(); const groups = useMemo(() => cluster(values, zoom), [values, zoom]);
-  const detail = (item: Track): MapDetail => ({ title: item.callsign || "Unidentified aircraft", lines: [`${item.ac_type || "Unknown type"} · ${aircraftKind(item.ac_type)} · ICAO ${item.hex || "?"}`, `${item.military ? "MILITARY" : "Civil"} · ${item.alt_ft ?? "ground"} ft · ${item.gs_kt ?? "?"} kt`, `Heading ${item.track_deg ?? "?"}° · ${item.registration || "no registration"}`], entityId: item.id, href: item.hex ? `https://adsb.lol/?icao=${encodeURIComponent(item.hex)}` : undefined, hrefLabel: "Open ADS-B source" });
+  const detail = (item: Track): MapDetail => ({ title: item.callsign || "Unidentified aircraft", lines: [`${item.ac_type || "Unknown type"} · ${aircraftKind(item.ac_type)} · ICAO ${item.hex || "?"}`, `${item.military ? "MILITARY" : "Civil"} · ${item.alt_ft ?? "ground"} ft · ${item.gs_kt ?? "?"} kt`, `Heading ${item.track_deg ?? "?"}° · ${item.registration || "no registration"}`], entityId: item.id, recordRef: { kind: "adsb", id: item.id }, point: [item.lat, item.lon], href: item.hex ? `https://adsb.lol/?icao=${encodeURIComponent(item.hex)}` : undefined, hrefLabel: "Open ADS-B source" });
   return <>{groups.map((group, index) => group.items.length === 1 ? <Marker key={`track-${group.items[0].id}`} position={[group.lat, group.lon]} icon={planeIcon(group.items[0])} eventHandlers={{ click: () => onSelect(detail(group.items[0])) }} /> : <Marker key={`track-cluster-${index}`} position={[group.lat, group.lon]} icon={clusterIcon(group.items.length, "#5cc7da")} eventHandlers={{ click: () => map.setView([group.lat, group.lon], Math.min(zoom + 2, 9)) }} />)}</>;
 }
 
 function ThermalLayer({ values, zoom, onSelect }: { values: Firms[]; zoom: number; onSelect: (detail: MapDetail) => void }) {
   const map = useMap(); const groups = useMemo(() => cluster(values, zoom), [values, zoom]);
-  const detail = (item: Firms): MapDetail => { const novel = (item.novelty ?? 0) >= .9; return { title: `${novel ? "NEW " : "Routine "}thermal anomaly`, lines: [`${item.ts.slice(0, 16)}Z · ${item.frp ?? "?"} MW`, `${item.satellite ?? "?"} ${item.daynight === "N" ? "night" : "day"}`, `Coordinates ${item.lat.toFixed(4)}, ${item.lon.toFixed(4)}`, novel ? "Absent from the two-day baseline." : "Present in the two-day baseline." ], href: `https://firms.modaps.eosdis.nasa.gov/map/#d:24hrs;@${item.lon.toFixed(4)},${item.lat.toFixed(4)},10z`, hrefLabel: "Open NASA FIRMS" }; };
+  const detail = (item: Firms): MapDetail => { const novel = (item.novelty ?? 0) >= .9; return { title: `${novel ? "NEW " : "Routine "}thermal anomaly`, lines: [`${item.ts.slice(0, 16)}Z · ${item.frp ?? "?"} MW`, `${item.satellite ?? "?"} ${item.daynight === "N" ? "night" : "day"}`, `Coordinates ${item.lat.toFixed(4)}, ${item.lon.toFixed(4)}`, novel ? "Absent from the two-day baseline." : "Present in the two-day baseline." ], entityId: item.id, recordRef: { kind: "firms", id: item.id }, point: [item.lat, item.lon], href: `https://firms.modaps.eosdis.nasa.gov/map/#d:24hrs;@${item.lon.toFixed(4)},${item.lat.toFixed(4)},10z`, hrefLabel: "Open NASA FIRMS" }; };
   return <>{groups.map((group, index) => { const item = group.items[0]; const novel = (item.novelty ?? 0) >= .9; return group.items.length === 1 && zoom >= 5 ? <Marker key={`thermal-${item.lat}-${item.lon}-${item.ts}`} position={[group.lat, group.lon]} icon={thermalIcon(novel)} eventHandlers={{ click: () => onSelect(detail(item)) }} /> : group.items.length === 1 ? <CircleMarker key={`thermal-point-${item.lat}-${item.lon}-${item.ts}`} center={[group.lat, group.lon]} renderer={renderer} radius={novel ? 4 : 3} pathOptions={{ color: novel ? "#f87171" : "#8d2b24", fillOpacity: .8, weight: 1 }} eventHandlers={{ click: () => onSelect(detail(item)) }} /> : <Marker key={`thermal-cluster-${index}`} position={[group.lat, group.lon]} icon={clusterIcon(group.items.length, "#f87171")} eventHandlers={{ click: () => map.setView([group.lat, group.lon], Math.min(zoom + 2, 9)) }} />; })}</>;
 }
 
-export function OperationalMap({ events, tracks, vessels, live, alerts, firms, tails, regions, layers, viewport, filterAoi, drawing, focus, satelliteDay, replayBounds, onDraft, onSelect, onAoiZoom, onBackgroundClick, onViewport, onLayerToggle }: Props) {
+export function OperationalMap({ events, tracks, vessels, live, alerts, firms, tails, regions, layers, viewport, assessments = [], filterAoi, drawing, focus, satelliteDay, replayBounds, compareSelection = [], compareVerdict, compareArticleMatch, onDraft, onSelect, onAoiZoom, onBackgroundClick, onViewport, onLayerToggle }: Props) {
   const [rfOpen, setRfOpen] = useState(false);
   useEffect(() => { if (!layers.rf) setRfOpen(false); }, [layers.rf]);
   const include = (lat: number, lon: number) => !filterAoi || regions.length === 0 || regions.some((region) => distanceKm(lat, lon, region.lat, region.lon) <= region.radius_nm * NM_KM);
   const imagery = satelliteDay ?? new Date(Date.now() - 86400000).toISOString().slice(0, 10);
   const trackById = useMemo(() => new Map(tracks.map((track) => [track.id, track])), [tracks]);
+  const evidencePoints = useMemo(() => new Map<string, [number, number]>([
+    ...events.map((item) => [item.id, [item.lat, item.lon] as [number, number]] as const),
+    ...tracks.map((item) => [item.id, [item.lat, item.lon] as [number, number]] as const),
+    ...firms.map((item) => [item.id, [item.lat, item.lon] as [number, number]] as const),
+  ]), [events, tracks, firms]);
   const filteredEvents = useMemo(() => events.filter((item) => include(item.lat, item.lon)), [events, filterAoi, regions]);
   const filteredTracks = useMemo(() => tracks.filter((item) => include(item.lat, item.lon)), [tracks, filterAoi, regions]);
   return <div className="relative h-full w-full"><MapContainer center={[35, 10]} zoom={2} worldCopyJump className="h-full w-full"><FocusMap focus={focus} /><ViewportReporter onViewport={onViewport} /><AreaDrawer enabled={drawing} onDraft={onDraft} /><MapBackgroundClick onClick={onBackgroundClick} /><TileLayer className="dark-tiles" url="https://tile.openstreetmap.org/{z}/{x}/{y}.png" attribution="© OpenStreetMap contributors" maxZoom={18} />
@@ -134,11 +141,13 @@ export function OperationalMap({ events, tracks, vessels, live, alerts, firms, t
     {layers.rf && <Marker position={[26.55, 56.45]} icon={rfIcon} title="RF sample · Strait of Hormuz · Open spectrum" alt="Open simulated RF spectrum" zIndexOffset={1100} eventHandlers={{ click: () => { if (!drawing) setRfOpen(true); } }} />}
     {regions.map((region) => <AoiCircle key={region.id} region={region} drawing={drawing} onZoom={onAoiZoom} />)}
     {layers.firms && <ThermalLayer values={firms} zoom={viewport.zoom} onSelect={onSelect} />}
-    {layers.events && <ClusterLayer values={filteredEvents} zoom={viewport.zoom} color={eventColor} pointColor={(item) => isTelegram(item) ? "#e879f9" : eventColor} markerIcon={(item) => isTelegram(item) ? telegramIcon : osintIcon} onSelect={onSelect} renderPoint={(item) => ({ title: isTelegram(item) ? `Telegram · ${item.source_domain?.replace(/^t\.me\//, "") || "post"}` : item.root_label, lines: [item.place, `Goldstein ${item.goldstein ?? "–"} · tone ${item.tone?.toFixed(1) ?? "–"}`, `Themes: ${item.themes?.slice(0, 8).join(", ") || "–"}`], entityId: item.id, href: isTelegram(item) || !item.url?.includes("t.me/") ? item.url : undefined, hrefLabel: "Open source" })} />}
+    {layers.events && <ClusterLayer values={filteredEvents} zoom={viewport.zoom} color={eventColor} pointColor={(item) => isTelegram(item) ? "#e879f9" : eventColor} markerIcon={(item) => isTelegram(item) ? telegramIcon : osintIcon} onSelect={onSelect} renderPoint={(item) => ({ title: isTelegram(item) ? `Telegram · ${item.source_domain?.replace(/^t\.me\//, "") || "post"}` : item.root_label, lines: [item.place, `Goldstein ${item.goldstein ?? "–"} · tone ${item.tone?.toFixed(1) ?? "–"}`, `Themes: ${item.themes?.slice(0, 8).join(", ") || "–"}`], entityId: item.id, recordRef: { kind: isTelegram(item) ? "telegram" : "gdelt", id: item.id }, point: [item.lat, item.lon], href: isTelegram(item) || !item.url?.includes("t.me/") ? item.url : undefined, hrefLabel: "Open source" })} />}
     {live && layers.ais && <ClusterLayer values={vessels.filter((vessel) => regions.some((region) => distanceKm(vessel.lat, vessel.lon, region.lat, region.lon) <= region.radius_nm * NM_KM))} zoom={viewport.zoom} color="#34d399" markerIcon={() => vesselIcon} onSelect={onSelect} renderPoint={(vessel) => ({ title: vessel.name || `Vessel ${vessel.mmsi}`, lines: [`AIS · MMSI ${vessel.mmsi}`, `${vessel.sog ?? "–"} kt · course ${vessel.cog ?? "–"}° · heading ${vessel.heading ?? "–"}°`, `${vessel.lat.toFixed(4)}, ${vessel.lon.toFixed(4)}`, `Last report ${vessel.ts} · ${vessel.age_min.toFixed(1)} min ago`, vessel.age_min >= 15 ? "Stale position · no report for at least 15 minutes; coverage may be interrupted." : "Live AIS · aisstream.io"] })} />}
     {layers.tracks && <TrackLayer values={filteredTracks} zoom={viewport.zoom} onSelect={onSelect} />}
     {layers.tracks && tails.map((tail, index) => <Polyline key={`tail-${index}`} positions={tail.coords} renderer={renderer} pathOptions={{ color: tail.military ? "#1d4ed8" : "#5cc7da", weight: 2.5, opacity: .85 }} />)}
-    {layers.links && alerts.filter((item) => include(item.lat, item.lon)).slice(0, 75).flatMap((alert) => { const track = trackById.get(alert.aircraft_id); return track ? [<Polyline key={`${alert.aircraft_id}-${alert.event_id}`} positions={[[alert.lat, alert.lon], [track.lat, track.lon]]} renderer={renderer} pathOptions={{ color: "#94c973", weight: 1 + 3 * alert.score, opacity: .7 }} />] : []; })}
+    {layers.links && alerts.filter((item) => include(item.lat, item.lon)).slice(0, 75).flatMap((alert) => { const track = trackById.get(alert.aircraft_id); return track ? [<Polyline key={`${alert.aircraft_id}-${alert.event_id}`} positions={[[alert.lat, alert.lon], [track.lat, track.lon]]} renderer={renderer} pathOptions={{ color: "#eab85a", weight: 1 + 2 * alert.score, opacity: .45, dashArray: "5 5" }} />] : []; })}
+    {layers.links && assessments.slice(0, 100).flatMap((assessment) => { const left = evidencePoints.get(assessment.left_id); const right = evidencePoints.get(assessment.right_id); const color = assessment.verdict === "SUPPORTED" ? "#94c973" : assessment.verdict === "PLAUSIBLE" ? "#eab85a" : assessment.has_article_match ? "#a78bfa" : "#df5e55"; return left && right ? [<Polyline key={`assessment-${assessment.id}`} positions={[left, right]} renderer={renderer} pathOptions={{ color, weight: 2 + 3 * assessment.evidence_strength, opacity: .85, dashArray: assessment.verdict === "SUPPORTED" ? undefined : "8 4" }} />] : []; })}
+    {compareSelection.length === 2 && compareSelection[0].point && compareSelection[1].point && <Polyline positions={[compareSelection[0].point, compareSelection[1].point]} renderer={renderer} pathOptions={{ color: compareVerdict === "SUPPORTED" ? "#94c973" : compareVerdict === "PLAUSIBLE" ? "#eab85a" : compareArticleMatch ? "#a78bfa" : compareVerdict ? "#df5e55" : "#a78bfa", weight: 4, opacity: .9, dashArray: compareVerdict === "SUPPORTED" ? undefined : "7 5" }} />}
     {replayBounds && <Rectangle bounds={[[replayBounds[0], replayBounds[1]], [replayBounds[2], replayBounds[3]]]} renderer={renderer} pathOptions={{ color: eventColor, weight: 1, fill: false, dashArray: "4 4" }} />}
   </MapContainer><div className="absolute right-3 top-3 z-[1000] grid grid-cols-2 gap-1 border border-line bg-panel/95 p-1">{(Object.keys(layers) as Array<keyof LayerState>).map((layer) => <button key={layer} disabled={layer === "ais" && !live} title={layer === "ais" ? (live ? "Live AIS vessels inside AOIs only" : "AIS is available in live mode only") : undefined} onClick={() => onLayerToggle(layer)} aria-pressed={layers[layer]} className={`border px-2 py-1 font-mono text-[9px] uppercase disabled:opacity-40 ${layers[layer] ? "border-command/50 text-command" : "border-line text-muted"}`}>{LAYER_LABELS[layer]}</button>)}</div>{layers.rf && rfOpen && <RfSpectrumDialog onClose={() => setRfOpen(false)} />}</div>;
 }

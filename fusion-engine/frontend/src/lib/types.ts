@@ -2,6 +2,7 @@ export type Region = { id: string; name: string; lat: number; lon: number; radiu
 
 export type Event = {
   id: string; lat: number; lon: number; root_label: string; place: string; country?: string;
+  ts?: string;
   is_conflict?: boolean; source_domain?: string; url?: string; goldstein?: number; tone?: number;
   num_mentions?: number; actor1?: string; actor2?: string; persons?: string[]; orgs?: string[]; themes?: string[];
 };
@@ -17,7 +18,7 @@ export type Alert = {
   distance_km: number; dt_min?: number; reason?: string; lat: number; lon: number;
 };
 
-export type Firms = { lat: number; lon: number; novelty?: number; ts: string; frp?: number; satellite?: string; daynight?: string };
+export type Firms = { id: string; lat: number; lon: number; novelty?: number; ts: string; frp?: number; satellite?: string; daynight?: string };
 export type Tail = { coords: [number, number][]; military?: boolean; callsign?: string; r?: string; hex?: string; t?: string };
 
 export type GraphNode = { id: string; kind: string; label: string; lat?: number; lon?: number; military?: boolean; mentions?: number; severity?: number; x?: number; y?: number; vx?: number; vy?: number; fx?: number | null; fy?: number | null };
@@ -25,7 +26,7 @@ export type GraphLink = { source: string; target: string; kind?: string; score?:
 export type Graph = { nodes: GraphNode[]; links: GraphLink[] };
 
 export type Status = {
-  counts: { events: number; conflict_events: number; tracks: number; military_tracks: number; alerts: number; social?: number; firms?: number; firms_novel?: number };
+  counts: { events: number; conflict_events: number; tracks: number; military_tracks: number; alerts: number; social?: number; firms?: number; firms_novel?: number; candidates?: number; assessments?: number; supported?: number; plausible?: number; clusters?: number };
   updated?: string; gdelt_window?: string; store?: string;
   sources?: Record<string, { state: "starting" | "ready" | "partial" | "error"; label?: string; updated?: string; count?: number; detail?: string }>;
 };
@@ -40,7 +41,14 @@ export type CuratedSource = { id: string; publisher: string; url: string; source
 export type CuratedClaim = { id: string; vessel_id: string; source_ids: string[]; event_date?: string | null; event_time_utc?: string | null; time_precision: "date_only" | "ambiguous_overnight" | "minute_as_reported"; location_text?: string | null; coordinates: null | [number, number]; claim: string; evidence_class: string; attacker?: string | null };
 export type CuratedLead = { url: string; platform: string; publisher: string; publication_time_utc?: string | null; original_language: string; summary_en: string; summary_kind?: string; status?: string };
 export type Evidence = { kind: string; prepared_date?: string; retrieved_date?: string; vessels: CuratedVessel[]; sources: CuratedSource[]; claims: CuratedClaim[]; leads: CuratedLead[]; excluded: Array<{ reason?: string }>; notes: string[]; window?: { t_min: number; t_max: number; label?: string } };
-export type ReplaySnapshot = { events: Event[]; tracks: Track[]; alerts: Alert[]; graph: Graph; tails?: Tail[]; firms?: Firms[]; counts: Status["counts"]; t_iso: string };
+export type RecordRef = { kind: "gdelt" | "telegram" | "adsb" | "firms" | string; id: string };
+export type FusionCandidate = { id: string; left_id: string; left_kind: string; right_id: string; right_kind: string; distance_km: number; dt_min: number; candidate_score: number; reasons: string[]; entity_overlap?: string[] };
+export type ArticleMatch = { status: "SAME_ARTICLE" | "NOT_ESTABLISHED" | "NOT_APPLICABLE"; basis: "normalized_url" | "redirect_url" | null; confidence: number | null; shared_url: string | null; independent_corroboration: boolean | null };
+export type SourceDocument = { record_id: string; url: string; resolved_url: string; title: string | null; available: boolean; characters: number; truncated: boolean; retrieved_at: string | null; limitation: string | null };
+export type Assessment = { id: string; candidate_id: string; left_id: string; left_kind: string; right_id: string; right_kind: string; verdict: "SUPPORTED" | "PLAUSIBLE" | "INSUFFICIENT_EVIDENCE" | "CONTRADICTED"; relation: string; evidence_strength: number; supporting_facts: string[]; strongest_limitation: string; rationale: string; resolved_entities?: Array<{ record_id: string; name: string; canonical_name: string; entity_type: string; confidence: number }>; model: string; prompt_version: string; created_at: string; cached: boolean; needs_review: boolean; distance_km: number; dt_min: number; incident_relationship?: "SAME_INCIDENT" | "RELATED_INCIDENTS" | "UNRELATED" | "UNCERTAIN" | "NOT_APPLICABLE"; article_match?: ArticleMatch; has_article_match?: boolean; source_documents?: SourceDocument[]; source_groups?: Record<string, string> };
+export type FusionCluster = { id: string; record_ids: string[]; assessment_ids: string[]; modalities: string[]; score: number; needs_review: boolean; brief?: string | null; caveats: string[] };
+export type AIStatus = { provider: "openai"; model: string; configured: boolean; prompt_version: string };
+export type ReplaySnapshot = { t: number; events: Event[]; tracks: Track[]; alerts: Alert[]; graph: Graph; tails?: Tail[]; firms?: Firms[]; candidates?: FusionCandidate[]; assessments?: Assessment[]; clusters?: FusionCluster[]; counts: Status["counts"]; t_iso: string };
 export type EntityNode = { id: string; kind: "event" | "actor" | "location" | "source" | "aircraft" | string; label: string; military?: boolean };
 export type Entity = { node: EntityNode; neighbors: EntityNode[]; links: Array<{ source: string; target: string; kind?: string }> };
 export type LinkPreview = { url: string; host: string; title?: string | null; description?: string | null; image?: string | null; site_name?: string | null; published?: string | null; embeddable?: boolean; error?: string | null; status?: number };

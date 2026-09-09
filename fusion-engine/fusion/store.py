@@ -1,8 +1,10 @@
 """Store selection: Neo4j when reachable, in-memory (networkx) otherwise.
 
 Both stores expose the same interface used by FusionState and ReplayState:
-    ingest(events, tracks, batch_id)
+    ingest(events, tracks, batch_id, hotspots=None, social_posts=None)
     correlate(event_ids, batch_id, radius_km, window_min, min_severity) -> list[Alert]
+    record_fusion(candidates, assessments, clusters, batch_id)
+    fusion_candidates|fusion_assessments|fusion_clusters(batch_id, ...)
     alerts(event_ids, batch_id, min_score=0, limit=None) -> list[Alert]
     events(event_ids, conflict_only=False, limit=3000) -> list[dict]
     aircraft(batch_id, military_only=False) -> list[dict]
@@ -21,7 +23,7 @@ import os
 from collections import OrderedDict
 from pathlib import Path
 
-from .correlate import Alert, dedupe_alerts
+from .correlate import Alert
 from .correlate_mem import correlate as mem_correlate, graph_to_json
 from .ingest_adsb import AirTrack
 from .ingest_gdelt import OsintEvent
@@ -38,10 +40,14 @@ class InMemoryStore:
         self._events: dict[str, OsintEvent] = {}
         self.batches: "OrderedDict[str, dict]" = OrderedDict()
 
-    def ingest(self, events: list[OsintEvent], tracks: list[AirTrack], batch_id: str):
+    def ingest(self, events: list[OsintEvent], tracks: list[AirTrack], batch_id: str,
+               hotspots: list[dict] | None = None, social_posts: dict | None = None):
         for e in events:
             self._events[e.id] = e
-        self.batches[batch_id] = {"tracks": list(tracks), "alerts": [], "G": None, "gj": None}
+        self.batches[batch_id] = {"tracks": list(tracks), "hotspots": list(hotspots or []),
+                                  "social_posts": dict(social_posts or {}), "alerts": [],
+                                  "candidates": [], "assessments": [], "clusters": [],
+                                  "G": None, "gj": None}
         self.batches.move_to_end(batch_id)
         while len(self.batches) > self.keep:
             self.batches.popitem(last=False)
@@ -55,8 +61,82 @@ class InMemoryStore:
         b = self.batches[batch_id]
         ev = [self._events[i] for i in event_ids if i in self._events]
         G, alerts = mem_correlate(ev, b["tracks"], radius_km=radius_km, window_min=window_min, min_severity=min_severity)
+        for hotspot in b["hotspots"]:
+            G.add_node(hotspot["id"], kind="firms", label="FIRMS thermal anomaly",
+                       lat=hotspot["lat"], lon=hotspot["lon"], ts=hotspot["ts"],
+                       novelty=hotspot.get("novelty", 0), frp=hotspot.get("frp"), satellite=hotspot.get("satellite"))
+        for event_id, post in b["social_posts"].items():
+            if event_id in G:
+                G.nodes[event_id].update(kind="telegram", text=post.text, channel=post.channel,
+                                         keywords=post.keywords)
         b["G"], b["alerts"], b["gj"] = G, alerts, None
         return alerts
+
+    def record_fusion(self, candidates, assessments, clusters, batch_id: str):
+        """Persist AI pipeline artifacts in the current networkx batch graph."""
+        b = self.batches.get(batch_id)
+        if not b:
+            return
+        b["candidates"] = [candidate.to_dict(False) for candidate in candidates]
+        b["assessments"] = [assessment.to_dict() for assessment in assessments]
+        b["clusters"] = [cluster.to_dict() for cluster in clusters]
+        G = b.get("G")
+        if G is None:
+            return
+        for candidate in candidates:
+            G.add_node(candidate.id, kind="candidate", label="Proximity candidate",
+                       candidate_score=candidate.candidate_score, distance_km=candidate.distance_km,
+                       dt_min=candidate.dt_min, batch_id=batch_id)
+            if candidate.left.id in G:
+                G.add_edge(candidate.id, candidate.left.id, kind="CANDIDATE_MEMBER", role="left")
+            if candidate.right.id in G:
+                G.add_edge(candidate.id, candidate.right.id, kind="CANDIDATE_MEMBER", role="right")
+        for assessment in assessments:
+            label = (f"Same article; incident: {assessment.incident_relationship}" if assessment.has_article_match
+                     else f"{assessment.verdict}: {assessment.relation}")
+            G.add_node(assessment.id, kind="assessment", label=label,
+                       **assessment.to_dict(), batch_id=batch_id)
+            for role, record_id in (("left", assessment.left_id), ("right", assessment.right_id)):
+                if record_id in G:
+                    G.add_edge(assessment.id, record_id, kind="ASSESSES", role=role)
+            for entity in assessment.resolved_entities:
+                canonical = str(entity.get("canonical_name", "")).strip().upper()
+                if not canonical:
+                    continue
+                entity_type = entity.get("entity_type", "OTHER")
+                actor_like = entity_type in {"PERSON", "ORGANIZATION", "COUNTRY"}
+                entity_id = ("actor:" if actor_like else f"entity:{entity_type}:") + canonical
+                G.add_node(entity_id, kind="actor" if actor_like else "entity", label=canonical.title(),
+                           entity_type=entity_type, resolution_method="openai")
+                record_id = entity.get("record_id")
+                if record_id in G:
+                    G.add_edge(record_id, entity_id, kind="RESOLVES_TO", confidence=entity.get("confidence", 0),
+                               assessment_id=assessment.id)
+        for cluster in clusters:
+            G.add_node(cluster.id, kind="cluster", label=cluster.brief or "Multi-source fusion cluster",
+                       score=cluster.score, modalities=cluster.modalities, needs_review=cluster.needs_review,
+                       caveats=cluster.caveats, batch_id=batch_id)
+            for record_id in cluster.record_ids:
+                if record_id in G:
+                    G.add_edge(cluster.id, record_id, kind="CONTAINS")
+        b["gj"] = None
+
+    def fusion_candidates(self, batch_id: str | None, limit=300) -> list[dict]:
+        b = self.batches.get(batch_id) if batch_id else None
+        return list(b.get("candidates", []))[:limit] if b else []
+
+    def fusion_assessments(self, batch_id: str | None, include_rejected=False, limit=300) -> list[dict]:
+        b = self.batches.get(batch_id) if batch_id else None
+        if not b:
+            return []
+        values = b.get("assessments", [])
+        if not include_rejected:
+            values = [value for value in values if value["verdict"] in ("SUPPORTED", "PLAUSIBLE") or value.get("has_article_match")]
+        return list(values)[:limit]
+
+    def fusion_clusters(self, batch_id: str | None, limit=100) -> list[dict]:
+        b = self.batches.get(batch_id) if batch_id else None
+        return list(b.get("clusters", []))[:limit] if b else []
 
     def alerts(self, event_ids, batch_id, min_score=0.0, limit=None) -> list[Alert]:
         b = self.batches.get(batch_id)
