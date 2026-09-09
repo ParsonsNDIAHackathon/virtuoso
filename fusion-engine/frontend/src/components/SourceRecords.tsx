@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Event, Firms, Track } from "../lib/types";
 import type { MapDetail } from "./OperationalMap";
 import { Panel } from "./ui/panel";
@@ -39,8 +39,11 @@ function firmsRow(f: Firms): Row {
 /** The records behind a source chip in the strip: what the console has loaded for that source, newest first,
  *  each one opening in the Inspector and centring the map. Engine totals can exceed this list (the console
  *  loads a capped, recent window). */
-export function SourceRecords({ source, engineCount, events, tracks, firms, onOpen, onClose, onResetMap }: { source: SourceKey; engineCount?: number; events: Event[]; tracks: Track[]; firms: Firms[]; onOpen: (d: MapDetail) => void; onClose: () => void; onResetMap?: () => void }) {
+export function SourceRecords({ source, engineCount, events, tracks, firms, onOpen, onClose, onResetMap, resetKey = 0 }: { source: SourceKey; engineCount?: number; events: Event[]; tracks: Track[]; firms: Firms[]; onOpen: (d: MapDetail) => void; onClose: () => void; onResetMap?: () => void; resetKey?: number }) {
   const [q, setQ] = useState("");
+  const listRef = useRef<HTMLUListElement>(null);
+  // Every chip click (even the same chip) shows that source fresh: filter cleared, list and column at the top.
+  useEffect(() => { setQ(""); const body = listRef.current?.closest(".panel-body"); if (body) body.scrollTop = 0; const aside = listRef.current?.closest(".sidebar-resizable"); if (aside) aside.scrollTop = 0; }, [source, resetKey]);
   useEffect(() => { const k = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); }; window.addEventListener("keydown", k); return () => window.removeEventListener("keydown", k); }, [onClose]);
   const rows = useMemo<Row[]>(() => {
     const list = source === "gdelt" ? events.filter((e) => !isSocial(e)).map(eventRow)
@@ -65,7 +68,7 @@ export function SourceRecords({ source, engineCount, events, tracks, firms, onOp
       <p className="mt-0.5 font-mono text-[10px] text-muted">{rows.length.toLocaleString()} loaded in the console{engineCount != null && engineCount !== rows.length ? ` · engine holds ${engineCount.toLocaleString()}` : ""}
         {Object.keys(byTag).length > 1 && <span> · {Object.entries(byTag).map(([k, v]) => `${k} ${v}`).join(" · ")}</span>}</p>
       <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="filter by place, outlet, platform, callsign…" className="mt-1 w-full border border-line bg-canvas px-2 py-1 font-mono text-[10px] text-ink placeholder:text-muted" />
-      <ul className="mt-1 divide-y divide-line/60">{shown.slice(0, 400).map((r) => <li key={r.id}>
+      <ul ref={listRef} className="mt-1 divide-y divide-line/60">{shown.slice(0, 400).map((r) => <li key={r.id}>
         <button onClick={() => onOpen(r.detail)} className="flex w-full items-baseline gap-2 py-1 text-left hover:bg-white/[.04]">
           <span className="w-14 shrink-0 font-mono text-[9px] uppercase tracking-wider text-muted">{r.tag}</span>
           <span className="min-w-0 flex-1"><span className="block truncate text-[11px] text-ink">{r.title}</span><span className="block truncate text-[9px] text-muted">{r.sub}</span></span>

@@ -57,7 +57,7 @@ function SourceSignal({ label, markerColor, markerLabel, source, shown, isFetchi
     : source?.detail ?? fallback;
   return <div role={onOpen ? "button" : undefined} tabIndex={onOpen ? 0 : undefined} onClick={onOpen} onKeyDown={onOpen ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpen(); } } : undefined}
     className={`min-w-[188px] border-l border-line px-3 py-0.5 ${onOpen ? "cursor-pointer hover:bg-white/[.05]" : ""} ${active ? "bg-white/[.07] outline outline-1 outline-command/50" : ""}`}
-    title={`${onOpen ? (active ? "Click again to close the list. " : "Click to list the records. ") : ""}${displayMarkerLabel} map marker. ${source?.updated ? `Last source update: ${source.updated}` : detail}`}>
+    title={`${onOpen ? "Click to list the records (click again to reset the list). " : ""}${displayMarkerLabel} map marker. ${source?.updated ? `Last source update: ${source.updated}` : detail}`}>
     <div className="flex items-center gap-2"><span aria-label={`${displayMarkerLabel} map marker`} className="h-2.5 w-2.5 shrink-0 rounded-full border border-black/30" style={{ background: displayMarkerColor }} /><span className="font-semibold text-ink">{label}</span><span className={`font-mono text-[9px] tracking-wide ${tone[state]}`}>{words[state]}</span></div>
     <p className="mt-0.5 max-w-[260px] truncate text-[10px] text-muted" title={detail}>{total === undefined ? "–" : total.toLocaleString()} records{view} · {detail}</p>
     {requestError && onRetry ? <button onClick={onRetry} className="mt-0.5 border border-critical/50 px-1 font-mono text-[9px] uppercase tracking-wider text-critical hover:bg-critical/10">Retry now</button> : null}
@@ -226,7 +226,9 @@ export function App() {
   const live = mode === "live"; const polling = 60_000; const trackPolling = 10_000;
   const [incidentSel, setIncidentSel] = useState<string | null>(null);
   const [sourceList, setSourceList] = useState<SourceKey | null>(null);
-  const toggleSourceList = (k: SourceKey) => setSourceList((v) => (v === k ? null : k));
+  const [sourceListKey, setSourceListKey] = useState(0);
+  // A chip click always shows that source's list afresh; the list closes from its Close button or Esc.
+  const toggleSourceList = (k: SourceKey) => { setSourceList(k); setSourceListKey((n) => n + 1); setDetail(null); setSourceViewer(null); };
   const readLayout = (key: string, fallback: number) => { try { const v = Number(localStorage.getItem(key)); return v > 0 ? v : fallback; } catch { return fallback; } };
   const [sidebarW, setSidebarW] = useState(() => readLayout("layout.sidebarW", 390));
   const [timelineH, setTimelineH] = useState(() => readLayout("layout.timelineH", 240));
@@ -330,7 +332,7 @@ export function App() {
         {wide && <div className="splitter splitter-x" title="Drag to resize the right column" onMouseDown={dragSplit("x")} />}
         {/* The Inspector opens at the top of the column; every other panel stays where it is. */}
         {detail && <Inspector detail={detail} entity={entity.data} entityLoading={entity.isLoading} onClose={() => { setDetail(null); setSourceViewer(null); }} onEmbed={(d) => setSourceViewer(d)} />}
-        {sourceList && <SourceRecords source={sourceList} engineCount={sourceList === "social" ? (currentStatus.sources?.social ?? currentStatus.sources?.telegram)?.count : currentStatus.sources?.[sourceList]?.count} events={records.events} tracks={records.tracks} firms={records.firms} onClose={() => setSourceList(null)} onResetMap={() => { setFocus([35, 10, 2]); setDetail(null); }}
+        {sourceList && <SourceRecords source={sourceList} engineCount={sourceList === "social" ? (currentStatus.sources?.social ?? currentStatus.sources?.telegram)?.count : currentStatus.sources?.[sourceList]?.count} events={records.events} tracks={records.tracks} firms={records.firms} resetKey={sourceListKey} onClose={() => setSourceList(null)} onResetMap={() => { setFocus([35, 10, 2]); setDetail(null); }}
           onOpen={(d) => { setSourceViewer(null); setDetail(d); if (d.point) setFocus([d.point[0], d.point[1], 8]); }} />}
         <>
           <Regions regions={regions.data ?? []} filterAoi={filterAoi} drawing={drawing} draft={draft} onToggleFilter={() => setFilterAoi((value) => !value)} onToggleDrawing={() => { setDrawing((value) => !value); setDraft(null); }} onNameChange={(name) => setDraft((value) => value ? { ...value, name } : value)} onSave={() => { if (draft) addRegion.mutate({ lat: draft.lat, lon: draft.lon, radius_nm: draft.radius_nm, name: draft.name }); }} onCancel={() => setDraft(null)} onRemove={(id) => removeRegion.mutate(id)} onRename={(id, name) => renameRegion.mutate({ id, name })} onZoom={zoomToRegion} />
