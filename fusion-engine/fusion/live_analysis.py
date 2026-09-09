@@ -105,6 +105,11 @@ class LiveAnalysis:
             b = Baseline(t_min, t_max)
             b.add_events(merged)
             b.add_tracks(_tracks_to_archive([tr for tr in track_history if inside(tr.lat, tr.lon)]))
+            stamps_t = [datetime.fromisoformat(tr.ts).timestamp() for tr in track_history]
+            if stamps_t:
+                b.set_track_coverage(min(stamps_t), max(stamps_t))
+            else:
+                b.set_track_coverage(now + 1, now + 2)      # no aircraft history at all
             b.add_firms([h for h in firms if inside(h["lat"], h["lon"])])
             self.progress = "forming incidents"
             tracker = IncidentTracker(b, merged)

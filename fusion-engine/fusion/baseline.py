@@ -80,6 +80,7 @@ class Baseline:
         self._sets: dict[str, dict[tuple[int, int], list[set]]] = {s: defaultdict(lambda: [set() for _ in range(self.n)]) for s in COUNT_STREAMS}
         self._nav_known: dict[tuple[int, int], list[set]] = defaultdict(lambda: [set() for _ in range(self.n)])
         self._nav_deg: dict[tuple[int, int], list[set]] = defaultdict(lambda: [set() for _ in range(self.n)])
+        self.track_coverage: tuple[float, float] | None = None   # (t_from, t_to) with aircraft data; None = whole window
 
     # ---- ingestion -------------------------------------------------------------------
     def _bin(self, t: float) -> int | None:
@@ -100,6 +101,17 @@ class Baseline:
                 self._sets["news"][c][i].add(key)
                 if e.is_conflict:
                     self._sets["conflict"][c][i].add(key)
+
+    def set_track_coverage(self, t_from: float, t_to: float) -> None:
+        """Live mode keeps only ~2 h of aircraft history: bins outside it have no value, not zero."""
+        self.track_coverage = (t_from, t_to)
+        self.__dict__.pop("_series_cache", None)
+
+    def _tracks_covered(self, i: int) -> bool:
+        if self.track_coverage is None:
+            return True
+        b0 = self.t_min + i * self.step
+        return self.track_coverage[0] <= b0 + self.step - 1 and b0 <= self.track_coverage[1]
 
     def add_tracks(self, tracks: dict[str, dict]) -> None:
         self.__dict__.pop("_series_cache", None)
@@ -144,6 +156,8 @@ class Baseline:
             if not known or not known[i]:
                 return None, 0
             return len(self._nav_deg[cell][i]) / len(known[i]), len(known[i])
+        if stream in ("tracks", "military") and not self._tracks_covered(i):
+            return None, 0
         sets = self._sets[stream].get(cell)
         return (float(len(sets[i])) if sets else 0.0), None
 
@@ -156,6 +170,12 @@ class Baseline:
 
     def total_series(self, stream: str) -> list[float]:
         """All cells combined, per bin (for the scrubber strip)."""
+        if stream in ("tracks", "military"):
+            acc = [set() for _ in range(self.n)]
+            for c, sets in self._sets[stream].items():
+                for i in range(self.n):
+                    acc[i] |= sets[i]
+            return [float(len(acc[i])) if self._tracks_covered(i) else 0.0 for i in range(self.n)]
         if stream == "navint":
             known = [set() for _ in range(self.n)]
             deg = [set() for _ in range(self.n)]

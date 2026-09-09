@@ -29,9 +29,9 @@ REPORTING = ("news", "conflict", "social")
 #   coverage_drop:tracks     distinct aircraft fell well below the reference (feed dip)
 #   prior_day_same           the same hour on the prior day was also elevated (routine pattern)
 DEFAULT_EXPLANATIONS = [
-    {"id": "maritime_incident", "title": "Incident affecting shipping in the strait",
+    {"id": "maritime_incident", "title": "Maritime or coastal incident with physical signature",
      "predictions": ["departed:navint", "departed:military", "keywords:vessel|tanker|ship|strait|hormuz|projectile|attack", "departed:news"]},
-    {"id": "air_activity", "title": "Air or missile activity in the theater",
+    {"id": "air_activity", "title": "Military air or missile activity",
      "predictions": ["departed:military", "departed:navint", "keywords:missile|drone|airspace|notam|strike", "departed:social"]},
     {"id": "reporting_only", "title": "Reporting surge without a physical change",
      "predictions": ["departed:news", "quiet:military", "quiet:navint", "quiet:firms_new"]},
