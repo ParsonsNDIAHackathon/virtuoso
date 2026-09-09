@@ -10,6 +10,7 @@ import { SourcesDialog } from "./components/SourcesDialog";
 import { AssessmentResult } from "./components/AssessmentResult";
 import { CuratedEvidence } from "./components/CuratedEvidence";
 import { Incidents } from "./components/Incidents";
+import { IncidentReport } from "./components/IncidentReport";
 import { SourcePreview } from "./components/SourcePreview";
 import { Badge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
@@ -327,6 +328,7 @@ export function App() {
         <>
           <Regions regions={regions.data ?? []} filterAoi={filterAoi} drawing={drawing} draft={draft} onToggleFilter={() => setFilterAoi((value) => !value)} onToggleDrawing={() => { setDrawing((value) => !value); setDraft(null); }} onNameChange={(name) => setDraft((value) => value ? { ...value, name } : value)} onSave={() => { if (draft) addRegion.mutate({ lat: draft.lat, lon: draft.lon, radius_nm: draft.radius_nm, name: draft.name }); }} onCancel={() => setDraft(null)} onRemove={(id) => removeRegion.mutate(id)} onRename={(id, name) => renameRegion.mutate({ id, name })} onZoom={zoomToRegion} />
           <Incidents selected={incidentSel} onSelectChange={setIncidentSel} incidents={live ? (liveIncidents.data?.incidents ?? []) : (replay.incidents ?? [])} baseline={live ? liveIncidents.data?.baseline : replay.baseline} status={live ? liveIncidents.data?.status : undefined} meta={live ? { mode: "live", status: liveIncidents.data?.status ?? (liveIncidents.isLoading ? "connecting to engine" : "waiting for the first data pull"), built_at: liveIncidents.data?.built_at, assessed_through: liveIncidents.data?.assessed_through, aircraft_history: liveIncidents.data?.aircraft_history } : { mode: "replay", status: "done", assessed_through: replay.assessed_through }} onFocus={([lat, lon]) => setFocus([lat, lon, 8])} />
+          <IncidentReport inc={(live ? (liveIncidents.data?.incidents ?? []) : (replay.incidents ?? [])).find((x) => x.id === incidentSel) ?? null} onClose={() => setIncidentSel(null)} onFocus={([lat, lon]) => setFocus([lat, lon, 8])} />
           <CandidateQueue candidates={candidates} />
           <AssessmentQueue assessments={assessed} clusters={clusters} showRejected={showRejected} onToggleRejected={() => setShowRejected((value) => !value)} />
           <details className="group"><summary className="cursor-pointer select-none px-1 font-mono text-[9px] uppercase tracking-[.16em] text-muted hover:text-ink">Legacy proximity cues ({queue.length}) · severity-weighted distance, kept for before/after comparison</summary>

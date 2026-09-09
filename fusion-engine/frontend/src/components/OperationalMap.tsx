@@ -200,7 +200,8 @@ export function OperationalMap({ events, tracks, alerts, firms, sar, sarCore, ta
     {replayBounds && <Rectangle bounds={[[replayBounds[0], replayBounds[1]], [replayBounds[2], replayBounds[3]]]} renderer={renderer} pathOptions={{ color: eventColor, weight: 1, fill: false, dashArray: "4 4" }} />}
     {layers.incidents && incidents.map((inc) => { const cell = inc.cells[0]; if (!cell) return null; const color = INCIDENT_COLOR[inc.state] ?? "#df5e55";
       const departed = Object.entries(inc.streams).filter(([, st]) => st.departed).map(([k, st]) => `${STREAM_SHORT[k] ?? k}${st.best?.z != null ? ` z${st.best.z}` : ""}`);
-      const label = `${inc.id.replace("incident:", "#")} · ${inc.state.replace("_", " ").toUpperCase()} · ${departed.join(", ") || "no stream departed"}`;
+      const head = inc.assessment?.headline ?? departed.join(", ") ?? "";
+      const label = `${inc.id.replace("incident:", "#")} · ${inc.state.replace("_", " ").toUpperCase()} · ${head.length > 110 ? head.slice(0, 107) + "…" : head}`;
       const icon = L.divIcon({ className: "", iconAnchor: [0, 0], html: `<div style="font:600 10px ui-monospace,monospace;letter-spacing:.04em;color:#101710;background:${color};padding:1px 5px;border:1px solid #101710;white-space:nowrap;max-width:320px;overflow:hidden;text-overflow:ellipsis;cursor:pointer">${label.replace(/</g, "&lt;")}</div>` });
       return <Marker key={`label:${inc.id}`} position={[cell[0] + 1, cell[1]]} icon={icon} zIndexOffset={1200} eventHandlers={{ click: () => { if (!drawing) onIncidentSelect?.(inc.id); } }} />;
     })}

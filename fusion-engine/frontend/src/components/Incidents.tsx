@@ -61,7 +61,8 @@ function IncidentCard({ inc, selected, onSelect, onFocus }: { inc: Incident; sel
         {STREAM_LABEL[k] ?? k}{s.best?.z != null ? ` z${s.best.z}` : ""}</button>)}
       {insufficient.length > 0 && <span className="font-mono text-[9px] uppercase tracking-wider text-muted">insufficient: {insufficient.join(", ")}</span>}
     </div>
-    {selected && <div className="mt-2 space-y-2">
+    <p className="mt-1 text-[11px] leading-snug text-ink">{inc.assessment.headline ?? inc.assessment.established}</p>
+    {false && selected && <div className="mt-2 space-y-2">
       <dl className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 font-mono text-[10px]">
         <dt className="uppercase tracking-wider text-muted">Established</dt><dd className="text-ink">{inc.assessment.established}</dd>
         <dt className="uppercase tracking-wider text-muted">Disputed</dt><dd className="text-ink">{inc.assessment.disputed}</dd>

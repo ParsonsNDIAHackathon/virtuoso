@@ -20,6 +20,11 @@ from .ingest_social import is_social_event
 from .mission import CONFIG
 
 PHYSICAL = ("tracks", "military", "firms_new", "navint")
+
+
+def datetime_ts(value: str) -> float:
+    from datetime import datetime
+    return datetime.fromisoformat(value).timestamp()
 REPORTING = ("news", "conflict", "social")
 
 # Explanation templates. Predictions are (kind, argument) pairs:
@@ -313,7 +318,46 @@ class IncidentTracker:
             self._by_bin[i] = current
             prev = current
 
+    # ---- plain-language summary --------------------------------------------------------
+    def _place(self, cells: set[tuple[int, int]], i: int) -> str | None:
+        """Most-reported place name among events in the incident cells during bin i (and the prior bin)."""
+        from collections import Counter
+        t1 = self.b.t_min + (i + 1) * self.b.step
+        t0 = t1 - 2 * self.b.step
+        names: Counter = Counter()
+        for e in self.events:
+            try:
+                ts = datetime_ts(e.ts)
+            except Exception:
+                continue
+            if t0 <= ts < t1 and cell_of(e.lat, e.lon) in cells and getattr(e, "place", None):
+                names[e.place] += 1
+        return names.most_common(1)[0][0] if names else None
+
+    @staticmethod
+    def _phrase(stream: str, d: dict) -> str:
+        v, m, cov = d.get("value"), d.get("median"), d.get("coverage")
+        if stream == "navint":
+            return f"{round((v or 0) * 100)}% of {cov} aircraft reported degraded navigation integrity vs {round((m or 0) * 100)}% normal"
+        n = int(round(v or 0)); base = int(round(m or 0))
+        unit = {"news": "article", "conflict": "conflict-coded article", "social": "geolocated post",
+                "military": "military aircraft", "tracks": "aircraft", "firms_new": "new thermal detection"}.get(stream, stream)
+        plural = unit if n == 1 or unit.endswith("aircraft") else unit + "s"
+        return f"{n} {plural} vs {base} normal for this hour"
+
+    def _headline(self, inc, place: str | None) -> str:
+        parts = []
+        for stream in ("news", "conflict", "social", "military", "firms_new", "navint"):
+            st = inc.streams.get(stream) or {}
+            if st.get("departed") and st.get("best"):
+                parts.append(self._phrase(stream, st["best"]))
+        where = f"Near {place}" if place else f"Cell {inc.cells[0][0]}N {inc.cells[0][1]}E".replace("N -", "N ").replace("E", "E")
+        what = "; ".join(parts) if parts else "no stream currently departed"
+        return f"{where}: {what}."
+
     def _assess(self, inc: Incident) -> dict:
+        i_last = self.b._bin(inc.last_t)
+        place = self._place({tuple(c) for c in inc.cells}, i_last) if i_last is not None else None
         departed = [s for s in STREAMS if inc.streams[s]["departed"]]
         physical = [s for s in departed if s in PHYSICAL]
         reporting = [s for s in departed if s in REPORTING]
@@ -344,7 +388,8 @@ class IncidentTracker:
         unresolved = (f"coverage insufficient for {', '.join(insufficient)}" if insufficient else "all streams had adequate coverage")
         return {"established": established, "disputed": disputed, "unresolved": unresolved,
                 "leading": lead.title if (lead and adequate) else None, "adequately_supported": adequate,
-                "relevance": f"{len(inc.cells)} cell(s) in the monitored area; {inc.state}"}
+                "relevance": f"{len(inc.cells)} cell(s) in the monitored area; {inc.state}",
+                "place": place, "headline": self._headline(inc, place)}
 
     def at(self, t: float) -> list[Incident]:
         i = self.b.completed_bin(t)
