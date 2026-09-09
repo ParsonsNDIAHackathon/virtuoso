@@ -237,13 +237,7 @@ class ReplayState:
         baseline = getattr(self, "baseline", None)
         departures = baseline.departures_at(t) if baseline else []
         departed = baseline.departed_cells(t) if baseline else set()
-        hot = {(c[0] + dy, c[1] + dx) for c in departed for dy in (-1, 0, 1) for dx in (-1, 0, 1)}
-        all_records = records_from_sources(ev, tr, current_firms, self.social_posts)
-        gated = [r for r in all_records
-                 if cell_of(r.lat, r.lon) in hot
-                 and not (r.kind == "gdelt" and is_dateline(r.label.split(": ", 1)[-1]))]
-        candidates = generate_candidates(gated, limit=250)
-        ungated_n = len(generate_candidates(all_records, limit=250))
+        candidates, ungated_n = self._gated_candidates(t, ev, tr, current_firms, departed)
         assessments = [assessment for candidate in candidates
                        if (assessment := self.fusion_ai.cached_assessment(candidate)) is not None]
         clusters = self.fusion_ai.clusters(assessments)
@@ -355,6 +349,48 @@ class ReplayState:
             max_nodes=220, max_links=400,
         )
         return assessment.to_dict()
+
+    def _window(self, t: float, lookback_min: float = 120.0):
+        """Events, aircraft and thermal detections visible at instant t (same rule as at())."""
+        ev = [e for e in self.events if t - lookback_min * 60 <= datetime.fromisoformat(e.ts).timestamp() <= t]
+        tr = snapshot_at(self.tracks, t) if self.tracks else []
+        firms = [h for h in self.firms if t - 12 * 3600 <= datetime.fromisoformat(h["ts"]).timestamp() <= t]
+        return ev, tr, firms
+
+    def _gated_candidates(self, t: float, ev, tr, current_firms, departed) -> tuple[list, int]:
+        """Candidates from records in departed cells (or their neighbours), never dateline news; plus the
+        ungated count for comparison."""
+        hot = {(c[0] + dy, c[1] + dx) for c in departed for dy in (-1, 0, 1) for dx in (-1, 0, 1)}
+        all_records = records_from_sources(ev, tr, current_firms, self.social_posts)
+        gated = [r for r in all_records
+                 if cell_of(r.lat, r.lon) in hot
+                 and not (r.kind == "gdelt" and is_dateline(r.label.split(": ", 1)[-1]))]
+        return generate_candidates(gated, limit=250), len(generate_candidates(all_records, limit=250))
+
+    def adjudicate_instant(self, t: float, limit: int = 12) -> list:
+        """Adjudicate the best candidates at instant t (incident cells first, then shared entities, then
+        news-to-news) and leave the verdicts in the cache so the scrubber shows them. Returns assessments."""
+        self.load()
+        t = min(max(t, self.t_min), self.t_max)
+        ev, tr, firms = self._window(t)
+        baseline = getattr(self, "baseline", None)
+        departed = baseline.departed_cells(t) if baseline else set()
+        candidates, _ = self._gated_candidates(t, ev, tr, firms, departed)
+        tracker = getattr(self, "incidents", None)
+        hot = {tuple(c) for inc in (tracker.at(t) if tracker else []) for c in inc.cells}
+
+        def prio(c):
+            inside = cell_of(c.left.lat, c.left.lon) in hot or cell_of(c.right.lat, c.right.lon) in hot
+            return (not inside, -len(c.entity_overlap), not (c.left.kind == "gdelt" and c.right.kind == "gdelt"), -c.candidate_score)
+
+        out = []
+        for c in sorted(candidates, key=prio)[:limit]:
+            try:
+                out.append(self.fusion_ai.adjudicate(c))
+            except Exception as e:
+                log.warning("adjudication failed for %s: %s", c.id, e)
+        self._cache.pop(int(t // 60), None)          # at(t) re-reads the cache on its next call
+        return out
 
     def evidence(self) -> dict | None:
         """Curated manual evidence attached to this scenario (None if the scenario has none).
