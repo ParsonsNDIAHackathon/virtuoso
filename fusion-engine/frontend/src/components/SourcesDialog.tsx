@@ -3,7 +3,11 @@ import { Button } from "./ui/button";
 
 const sources = [
   ["OSINT event", "GDELT Project", "Worldwide news events, actors, tone, and geocoded locations.", "Every 15 minutes"],
+  ["Social post", "Telegram · Reddit · Bluesky · Mastodon", "Keyless public posts that name a known location. Filter by platform in /api/social?platform=.", "Every 5 minutes"],
   ["Telegram post", "Telegram public channels", "Public-preview posts that name a known location.", "Every 5 minutes"],
+  ["Reddit post", "Reddit public JSON", "Public r/submission titles + selftext that name a known location.", "Every 5 minutes"],
+  ["Bluesky post", "Bluesky public API", "Public search results that name a known location.", "Every 5 minutes"],
+  ["Mastodon post", "Mastodon public timeline", "Public federated timeline posts that name a known location.", "Every 5 minutes"],
   ["Aircraft", "adsb.lol", "Cooperative ADS-B transponder positions; coverage varies by receiver density.", "Every 60 seconds"],
   ["Thermal anomaly", "NASA FIRMS / VIIRS", "Satellite heat detections. Bright/new signals are absent from the two-day baseline.", "Every 15 minutes"],
   ["Satellite imagery", "NASA GIBS", "VIIRS true-colour basemap. It is context only, not a detection source.", "Daily"],

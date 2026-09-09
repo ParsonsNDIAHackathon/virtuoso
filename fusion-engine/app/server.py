@@ -150,6 +150,50 @@ def fusion_clusters(limit: int = Query(100, ge=1, le=500)):
     return state.api_fusion_clusters(limit)
 
 
+def _social_platform(rec: dict) -> str:
+    from fusion.ingest_social import platform_of
+    return platform_of(rec) or "unknown"
+
+
+@app.get("/api/social")
+def social(platform: str | None = None, limit: int = Query(500, ge=1, le=5000), bbox: str | None = None):
+    """Recent geolocated social posts (all platforms) that feed the correlator.
+
+    `platform` optionally filters to telegram|reddit|bluesky|mastodon.
+    """
+    with state.lock:
+        recs = [e.to_dict() for e in list(state.social)]
+    if platform:
+        want = platform.strip().lower()
+        recs = [r for r in recs if _social_platform(r) == want]
+    # Newest first; _in_view preserves order and applies the map viewport.
+    recs.sort(key=lambda r: r.get("ts", ""), reverse=True)
+    return _in_view(recs, bbox, limit)
+
+
+@app.get("/api/social/platforms")
+def social_platforms():
+    """Configured social platforms, their targets, and live counts."""
+    from fusion.ingest_social import PLATFORM_LABELS, default_targets, enabled_platforms
+    with state.lock:
+        recs = [e.to_dict() for e in list(state.social)]
+        sources = {k: dict(v) for k, v in state.source_status.items()}
+    counts: dict[str, int] = {}
+    for r in recs:
+        p = _social_platform(r)
+        counts[p] = counts.get(p, 0) + 1
+    plats = enabled_platforms()
+    return {
+        "platforms": [
+            {"id": p, "label": PLATFORM_LABELS.get(p, p),
+             "targets": default_targets(p), "count": counts.get(p, 0),
+             "status": sources.get(f"social:{p}", sources.get(p, {})).get("state")}
+            for p in plats
+        ],
+        "total": len(recs),
+    }
+
+
 @app.post("/api/refresh")
 def refresh():
     """Force an immediate ADS-B pull + re-fuse (GDELT stays on its 15-min cadence)."""
@@ -160,6 +204,23 @@ def refresh():
         return status()
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/source/preview")
+def source_preview(url: str = Query(..., min_length=8, max_length=2000)):
+    """Same-origin article summary for the source viewer.
+
+    Browsers refuse to iframe most news sites (X-Frame-Options /
+    frame-ancestors), so the engine fetches the page server-side and returns
+    its title, description, lead image and article text for inline rendering.
+    Invalid URLs yield 422; unreachable pages yield a 200 error payload so the
+    viewer can fall back to the engine record plus an external link.
+    """
+    from fusion.source_preview import PreviewError, preview_url
+    try:
+        return preview_url(url)
+    except PreviewError as e:
+        raise HTTPException(422, str(e)) from None
 
 
 @app.get("/api/entity/{node_id:path}")

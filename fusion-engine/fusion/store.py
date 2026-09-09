@@ -67,7 +67,7 @@ class InMemoryStore:
                        novelty=hotspot.get("novelty", 0), frp=hotspot.get("frp"), satellite=hotspot.get("satellite"))
         for event_id, post in b["social_posts"].items():
             if event_id in G:
-                G.nodes[event_id].update(kind="telegram", text=post.text, channel=post.channel,
+                G.nodes[event_id].update(kind=post.platform or "telegram", text=post.text, channel=post.channel,
                                          keywords=post.keywords)
         b["G"], b["alerts"], b["gj"] = G, alerts, None
         return alerts

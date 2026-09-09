@@ -56,6 +56,14 @@ export type LinkPreview = { url: string; host: string; title?: string | null; de
 
 export type LivePicture = { status: Status; events: Event[]; tracks: Track[]; alerts: Alert[]; firms: Firms[] };
 
+export type SocialPlatform = { id: string; label: string; targets: string[]; count: number; status?: string };
+export type SocialPlatforms = { platforms: SocialPlatform[]; total: number };
+
+export type SourcePreview = {
+  url: string; final_url?: string; site?: string; title?: string | null; description?: string | null;
+  image?: string | null; text?: string; fetched_at?: string; error?: string | null;
+};
+
 export type Viewport = { west: number; south: number; east: number; north: number; zoom: number };
 // Live bins: flows (events, social, alerts, firms_new) are sums per 15-min bin; tracks/military are
 // levels averaged from this server's own fuse history and null where nothing was recorded yet.

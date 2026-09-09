@@ -23,6 +23,7 @@ import requests
 
 from .geo import haversine_km
 from .source_documents import FAILURE_TTL, article_url_key, document_text
+from .ingest_social import SOCIAL_PLATFORMS, platform_of
 
 PROMPT_VERSION = "fusion-evidence-v3-article-identity"
 VERDICTS = ("SUPPORTED", "PLAUSIBLE", "INSUFFICIENT_EVIDENCE", "CONTRADICTED")
@@ -277,14 +278,13 @@ def _pair_id(left: EvidenceRecord, right: EvidenceRecord) -> str:
 
 # Candidate windows are deliberately pair-specific.  They are permissive retrieval windows,
 # not claims that records inside them are related.
-PAIR_RULES: tuple[tuple[str, str, float, float], ...] = (
-    ("gdelt", "telegram", 100.0, 12 * 60),
-    ("gdelt", "adsb", 75.0, 4 * 60),
-    ("telegram", "adsb", 75.0, 4 * 60),
-    ("gdelt", "firms", 50.0, 12 * 60),
-    ("telegram", "firms", 50.0, 12 * 60),
-    ("adsb", "firms", 30.0, 3 * 60),
+PAIR_RULES: tuple[tuple[str, str, float, float], ...] = tuple(
+    [("gdelt", social, 100.0, 12 * 60) for social in SOCIAL_PLATFORMS]
+    + [(social, "adsb", 75.0, 4 * 60) for social in SOCIAL_PLATFORMS]
+    + [(social, "firms", 50.0, 12 * 60) for social in SOCIAL_PLATFORMS]
+    + [("gdelt", "adsb", 75.0, 4 * 60), ("gdelt", "firms", 50.0, 12 * 60), ("adsb", "firms", 30.0, 3 * 60)]
 )
+NEWS_KINDS = {"gdelt", *SOCIAL_PLATFORMS}
 RETRIEVAL_KINDS = {kind for pair in PAIR_RULES for kind in pair[:2]}
 
 
@@ -520,7 +520,7 @@ class FusionAI:
                                         "fusion_adjudication", ASSESSMENT_SCHEMA)
         verdict = result["verdict"] if result["verdict"] in VERDICTS else "INSUFFICIENT_EVIDENCE"
         relation = result["relation"] if result["relation"] in RELATIONS else "NONE"
-        news_pair = candidate.left.kind in {"gdelt", "telegram"} and candidate.right.kind in {"gdelt", "telegram"}
+        news_pair = candidate.left.kind in NEWS_KINDS and candidate.right.kind in NEWS_KINDS
         incident = result.get("incident_relationship", "UNCERTAIN") if news_pair else "NOT_APPLICABLE"
         if incident not in INCIDENT_RELATIONSHIPS or (news_pair and incident == "NOT_APPLICABLE"):
             incident = "UNCERTAIN"
@@ -684,7 +684,7 @@ def records_from_sources(events, tracks, hotspots, social_posts: dict[str, Any] 
     records: list[EvidenceRecord] = []
     for event in events:
         post = social_posts.get(event.id)
-        kind = "telegram" if event.id.startswith("tg:") else "gdelt"
+        kind = (platform_of(post) if post else platform_of(event)) or "gdelt"
         data = {
             "actor1": event.actor1, "actor2": event.actor2, "persons": event.persons,
             "orgs": event.orgs, "themes": event.themes, "event_code": event.event_code,
@@ -696,7 +696,7 @@ def records_from_sources(events, tracks, hotspots, social_posts: dict[str, Any] 
                         views=post.views, has_media=post.has_media)
         records.append(EvidenceRecord(
             id=event.id, kind=kind, label=f"{event.root_label}: {event.place}", ts=event.ts,
-            timestamp_kind="telegram_post_time" if kind == "telegram" else "gdelt_date_added_not_incident_time",
+            timestamp_kind=f"{kind}_post_time" if kind in SOCIAL_PLATFORMS else "gdelt_date_added_not_incident_time",
             lat=event.lat, lon=event.lon, source=event.source_domain,
             data=data, graph_context=graph_context.get(event.id, []),
         ))

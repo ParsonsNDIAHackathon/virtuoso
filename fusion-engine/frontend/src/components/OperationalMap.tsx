@@ -32,10 +32,57 @@ const osintIcon = L.divIcon({
   className: "", iconSize: [22, 22], iconAnchor: [11, 11],
   html: '<svg viewBox="0 0 32 32" width="22" height="22" style="display:block;filter:drop-shadow(0 0 2px #101710)" aria-label="OSINT news report"><circle cx="16" cy="16" r="14" fill="#eab85a" stroke="#101710" stroke-width="1.5"/><rect x="9" y="8.5" width="14" height="15" rx="1" fill="#fff8e7"/><rect x="11" y="11" width="4" height="5" rx=".5" fill="#d69d3c"/><path d="M17 11h4M17 14h4M11 18h10M11 21h8" stroke="#694713" stroke-width="1.4" stroke-linecap="round"/></svg>',
 });
+const redditIcon = L.divIcon({
+  className: "", iconSize: [22, 22], iconAnchor: [11, 11],
+  html: '<svg viewBox="0 0 32 32" width="22" height="22" style="display:block;filter:drop-shadow(0 0 2px #101710)" aria-label="Reddit post"><circle cx="16" cy="16" r="14" fill="#ff4500" stroke="#101710" stroke-width="1.5"/><circle cx="11" cy="15" r="2.2" fill="#101710"/><circle cx="21" cy="15" r="2.2" fill="#101710"/><path d="M9 20c2 2.4 12 2.4 14 0" stroke="#101710" stroke-width="1.8" fill="none" stroke-linecap="round"/></svg>',
+});
+const blueskyIcon = L.divIcon({
+  className: "", iconSize: [22, 22], iconAnchor: [11, 11],
+  html: '<svg viewBox="0 0 32 32" width="22" height="22" style="display:block;filter:drop-shadow(0 0 2px #101710)" aria-label="Bluesky post"><circle cx="16" cy="16" r="14" fill="#1185fe" stroke="#101710" stroke-width="1.5"/><path d="M9 12.5c1.2 1 4.2 3.6 7 3.6s5.8-2.6 7-3.6c-.6 3.2-1.6 7.6-2.6 9.2-.9 1.4-2.6 1.7-4.4 1.7s-3.5-.3-4.4-1.7c-1-1.6-2-6-2.6-9.2z" fill="#effaff"/></svg>',
+});
+const mastodonIcon = L.divIcon({
+  className: "", iconSize: [22, 22], iconAnchor: [11, 11],
+  html: '<svg viewBox="0 0 32 32" width="22" height="22" style="display:block;filter:drop-shadow(0 0 2px #101710)" aria-label="Mastodon post"><circle cx="16" cy="16" r="14" fill="#6364ff" stroke="#101710" stroke-width="1.5"/><circle cx="12" cy="14" r="2" fill="#effaff"/><circle cx="20" cy="14" r="2" fill="#effaff"/><path d="M11 20c1.4 1.6 8.6 1.6 10 0" stroke="#effaff" stroke-width="1.8" fill="none" stroke-linecap="round"/></svg>',
+});
 
-// GDELT can cite a t.me channel landing page (and sometimes a stale username).
-// Only records created by ingest_telegram are actual, individual Telegram posts.
-function isTelegram(event: Event) { return event.id.startsWith("tg:"); }
+// GDELT can cite a bare social landing page (t.me channel page, reddit thread
+// index, sometimes a stale username). Only records created by the social
+// ingesters are actual, individual posts — identified by their id prefix.
+function socialPlatform(event: Event): string | null {
+  const id = event.id ?? "";
+  if (id.startsWith("tg:")) return "telegram";
+  if (id.startsWith("reddit:")) return "reddit";
+  if (id.startsWith("bsky:")) return "bluesky";
+  if (id.startsWith("mastodon:") || id.startsWith("md:")) return "mastodon";
+  return null;
+}
+
+function socialIcon(event: Event) {
+  switch (socialPlatform(event)) {
+    case "telegram": return telegramIcon;
+    case "reddit": return redditIcon;
+    case "bluesky": return blueskyIcon;
+    case "mastodon": return mastodonIcon;
+    default: return undefined;
+  }
+}
+
+function socialTitle(event: Event) {
+  switch (socialPlatform(event)) {
+    case "telegram": return `Telegram · ${event.source_domain?.replace(/^t\.me\//, "") || "post"}`;
+    case "reddit": return `Reddit · ${event.source_domain?.replace(/^reddit\.com\//, "") || "post"}`;
+    case "bluesky": return "Bluesky · post";
+    case "mastodon": return `Mastodon · ${event.source_domain || "post"}`;
+    default: return event.root_label;
+  }
+}
+
+function isSocial(event: Event) { return socialPlatform(event) !== null; }
+
+// Bare social landing pages cited by GDELT (channel pages, thread indexes)
+// are not previewable posts — only ingested records link out.
+const SOCIAL_LANDING = ["t.me/", "reddit.com/", "bsky.app/", "mastodon"];
+function isSocialLanding(url?: string) { return !!url && SOCIAL_LANDING.some((s) => url.includes(s)); }
 
 function thermalIcon(novel: boolean) {
   const key = novel ? "novel" : "routine"; const cached = thermalIcons.get(key); if (cached) return cached;
@@ -141,7 +188,7 @@ export function OperationalMap({ events, tracks, alerts, firms, sar, sarCore, ta
     {layers.firms && <ThermalLayer values={firms} zoom={viewport.zoom} onSelect={onSelect} />}
     {layers.sar && <ClusterLayer values={sarCore} zoom={viewport.zoom} color="#f2bb57" onSelect={onSelect} renderPoint={(item) => ({ title: "Radar ship · strait-core scene", lines: [`~${item.length_m ?? "?"} m`, `Sentinel-1 ${item.ts.slice(0, 16)}Z`] })} />}
     {layers.sar && <ClusterLayer values={sar} zoom={viewport.zoom} color="#e5e7df" onSelect={onSelect} renderPoint={(item) => ({ title: "Radar ship detection", lines: [`~${item.length_m ?? "?"} m · contrast ${item.contrast ?? "?"}`, `Sentinel-1 ${item.ts.slice(0, 16)}Z`] })} />}
-    {layers.events && <ClusterLayer values={filteredEvents} zoom={viewport.zoom} color={eventColor} pointColor={(item) => isTelegram(item) ? "#e879f9" : eventColor} markerIcon={(item) => isTelegram(item) ? telegramIcon : osintIcon} onSelect={onSelect} renderPoint={(item) => ({ title: isTelegram(item) ? `Telegram · ${item.source_domain?.replace(/^t\.me\//, "") || "post"}` : item.root_label, lines: [item.place, `Goldstein ${item.goldstein ?? "–"} · tone ${item.tone?.toFixed(1) ?? "–"}`, `Themes: ${item.themes?.slice(0, 8).join(", ") || "–"}`], entityId: item.id, recordRef: { kind: isTelegram(item) ? "telegram" : "gdelt", id: item.id }, point: [item.lat, item.lon], href: isTelegram(item) || !item.url?.includes("t.me/") ? item.url : undefined, hrefLabel: "Open source" })} />}
+    {layers.events && <ClusterLayer values={filteredEvents} zoom={viewport.zoom} color={eventColor} pointColor={(item) => isSocial(item) ? "#e879f9" : eventColor} markerIcon={(item) => isSocial(item) ? socialIcon(item) ?? osintIcon : osintIcon} onSelect={onSelect} renderPoint={(item) => ({ title: isSocial(item) ? socialTitle(item) : item.root_label, lines: [item.place, `Goldstein ${item.goldstein ?? "–"} · tone ${item.tone?.toFixed(1) ?? "–"}`, `Themes: ${item.themes?.slice(0, 8).join(", ") || "–"}`], entityId: item.id, recordRef: { kind: socialPlatform(item) ?? "gdelt", id: item.id }, point: [item.lat, item.lon], href: isSocial(item) || !isSocialLanding(item.url) ? item.url : undefined, hrefLabel: "Open source" })} />}
     {layers.tracks && <TrackLayer values={filteredTracks} zoom={viewport.zoom} onSelect={onSelect} />}
     {layers.tracks && tails.map((tail, index) => <Polyline key={`tail-${index}`} positions={tail.coords} renderer={renderer} pathOptions={{ color: tail.military ? "#1d4ed8" : "#5cc7da", weight: 2.5, opacity: .85 }} />)}
     {layers.links && alerts.filter((item) => include(item.lat, item.lon)).slice(0, 75).flatMap((alert) => { const track = trackById.get(alert.aircraft_id); return track ? [<Polyline key={`${alert.aircraft_id}-${alert.event_id}`} positions={[[alert.lat, alert.lon], [track.lat, track.lon]]} renderer={renderer} pathOptions={{ color: "#eab85a", weight: 1 + 2 * alert.score, opacity: .45, dashArray: "5 5" }} />] : []; })}
