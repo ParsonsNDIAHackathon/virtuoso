@@ -318,7 +318,8 @@ export function App() {
           <Incidents selected={incidentSel} onSelectChange={setIncidentSel} incidents={live ? (liveIncidents.data?.incidents ?? []) : (replay.incidents ?? [])} baseline={live ? liveIncidents.data?.baseline : replay.baseline} status={live ? liveIncidents.data?.status : undefined} meta={live ? { mode: "live", status: liveIncidents.data?.status ?? (liveIncidents.isLoading ? "connecting to engine" : "waiting for the first data pull"), built_at: liveIncidents.data?.built_at, assessed_through: liveIncidents.data?.assessed_through, aircraft_history: liveIncidents.data?.aircraft_history } : { mode: "replay", status: "done", assessed_through: replay.assessed_through }} onFocus={([lat, lon]) => setFocus([lat, lon, 8])} />
           <CandidateQueue candidates={candidates} />
           <AssessmentQueue assessments={assessed} clusters={clusters} showRejected={showRejected} onToggleRejected={() => setShowRejected((value) => !value)} />
-          <AlertQueue alerts={queue} onSelect={selectAlert} />
+          <details className="group"><summary className="cursor-pointer select-none px-1 font-mono text-[9px] uppercase tracking-[.16em] text-muted hover:text-ink">Legacy proximity cues ({queue.length}) · severity-weighted distance, kept for before/after comparison</summary>
+          <AlertQueue alerts={queue} onSelect={selectAlert} /></details>
           <Inspector detail={null} onEmbed={(d) => setSourceViewer(d)} />
           {!live && mode && <CuratedEvidence scenarioId={mode} tMin={config.data?.t_min} tMax={config.data?.t_max} onSeek={(t) => { setPlaying(false); setReplayTime(t); }} />}
         </>}

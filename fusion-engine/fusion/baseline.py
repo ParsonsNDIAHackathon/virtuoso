@@ -82,6 +82,7 @@ class Baseline:
         self._nav_deg: dict[tuple[int, int], list[set]] = defaultdict(lambda: [set() for _ in range(self.n)])
         self.track_coverage: tuple[float, float] | None = None   # (t_from, t_to) with aircraft data; None = whole window
         self._bins_with_aircraft: set[int] = set()                # bins where any aircraft was observed at all
+        self._cell_bins_with_aircraft: dict[tuple[int, int], set[int]] = defaultdict(set)   # per cell
 
     # ---- ingestion -------------------------------------------------------------------
     def _bin(self, t: float) -> int | None:
@@ -116,15 +117,21 @@ class Baseline:
         self.track_coverage = (t_from, t_to)
         self.__dict__.pop("_series_cache", None)
 
-    def _tracks_covered(self, i: int) -> bool:
+    def _tracks_covered(self, i: int, cell: tuple[int, int] | None = None) -> bool:
         """A bin counts as covered only if the feed was actually delivering aircraft in it: inside the
-        declared span AND at least one aircraft was observed anywhere in that bin (an outage inside
-        the span is a gap, not a quiet hour)."""
+        declared span AND at least one aircraft was observed in that bin. With a cell, coverage is
+        judged in that cell's 3x3 neighbourhood, so a healthy feed over one watch area cannot mask
+        an outage over another."""
         if self.track_coverage is None:
             return True
         b0 = self.t_min + i * self.step
         in_span = self.track_coverage[0] <= b0 + self.step - 1 and b0 <= self.track_coverage[1]
-        return in_span and i in self._bins_with_aircraft
+        if not in_span:
+            return False
+        if cell is None:
+            return i in self._bins_with_aircraft
+        return any(i in self._cell_bins_with_aircraft.get((cell[0] + dy, cell[1] + dx), ())
+                   for dy in (-1, 0, 1) for dx in (-1, 0, 1))
 
     def add_tracks(self, tracks: dict[str, dict]) -> None:
         self.__dict__.pop("_series_cache", None)
@@ -136,6 +143,7 @@ class Baseline:
                     continue
                 c = cell_of(p[1], p[2])
                 self._bins_with_aircraft.add(i)
+                self._cell_bins_with_aircraft[c].add(i)
                 self._sets["tracks"][c][i].add(hexid)
                 if mil:
                     self._sets["military"][c][i].add(hexid)
@@ -170,7 +178,7 @@ class Baseline:
             if not known or not known[i]:
                 return None, 0
             return len(self._nav_deg[cell][i]) / len(known[i]), len(known[i])
-        if stream in ("tracks", "military") and not self._tracks_covered(i):
+        if stream in ("tracks", "military") and not self._tracks_covered(i, cell):
             return None, 0
         sets = self._sets[stream].get(cell)
         return (float(len(sets[i])) if sets else 0.0), None
