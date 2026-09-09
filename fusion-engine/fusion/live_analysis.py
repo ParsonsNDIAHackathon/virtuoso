@@ -15,9 +15,11 @@ stays in the tens rather than the thousands GDELT geocodes worldwide.
 """
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
+from pathlib import Path
 from datetime import datetime, timezone
 
 from .backfill import _in_circles, _stamps
@@ -44,8 +46,14 @@ def _tracks_to_archive(track_history) -> dict[str, dict]:
 
 
 class LiveAnalysis:
-    def __init__(self, cache_dir, cadence_s: float = 900.0):
+    def __init__(self, cache_dir, cadence_s: float = 900.0, aircraft_log=None, state_path=None):
         self.cache_dir = cache_dir
+        self.aircraft_log = aircraft_log
+        self.state_path = state_path
+        self._id_map: dict[str, str] = {}          # tracker id -> durable id
+        self._durable: dict[str, dict] = {}        # durable id -> {cells, first_t, last_t, revisions}
+        self._seq = 0
+        self._load_state()
         self.cadence_s = cadence_s
         self.lock = threading.Lock()
         self.baseline: Baseline | None = None
@@ -54,6 +62,53 @@ class LiveAnalysis:
         self.progress = "not started"
         self._thread: threading.Thread | None = None
         self._events_cache: dict[str, list] = {}
+
+    def _load_state(self):
+        if not self.state_path:
+            return
+        try:
+            st = json.loads(Path(self.state_path).read_text(encoding="utf-8"))
+            self._seq = int(st.get("seq", 0))
+            self._durable = dict(st.get("incidents", {}))
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            log.warning("incident state unreadable: %s", e)
+
+    def _save_state(self):
+        if not self.state_path:
+            return
+        try:
+            Path(self.state_path).write_text(json.dumps({"seq": self._seq, "incidents": self._durable}), encoding="utf-8")
+        except Exception as e:
+            log.warning("incident state not saved: %s", e)
+
+    def _assign_durable_ids(self, incidents, now: float):
+        """Match this build's incidents to durable ones by cell overlap; keep first_t and revisions."""
+        unused = dict(self._durable)
+        new_map, new_durable = {}, {}
+        for inc in incidents:
+            cells = {tuple(c) for c in inc.cells}
+            neigh = {(c[0] + dy, c[1] + dx) for c in cells for dy in (-1, 0, 1) for dx in (-1, 0, 1)}
+            match = next((k for k, v in unused.items()
+                          if {tuple(c) for c in v["cells"]} & neigh and now - v.get("last_t", now) <= 6 * 3600), None)
+            if match:
+                unused.pop(match)
+                did = match
+                prev = self._durable[did]
+                inc.first_t = min(inc.first_t, prev.get("first_t", inc.first_t))
+                first_new = inc.revisions[0]["t"] if inc.revisions else now
+                inc.revisions = [r for r in prev.get("revisions", []) if r["t"] < first_new] + inc.revisions
+            else:
+                self._seq += 1
+                did = f"incident:{self._seq:04d}"
+            new_map[inc.id] = did
+            new_durable[did] = {"cells": inc.cells, "first_t": inc.first_t, "last_t": now, "revisions": inc.revisions[-24:]}
+        for k, v in unused.items():          # keep recently closed incidents so one quiet build does not rename them
+            if now - v.get("last_t", 0) <= 6 * 3600:
+                new_durable[k] = v
+        self._id_map, self._durable = new_map, new_durable
+        self._save_state()
 
     def due(self) -> bool:
         return self.built_at is None or time.time() - self.built_at >= self.cadence_s
@@ -104,15 +159,29 @@ class LiveAnalysis:
             merged = [e for e in history + [e for e in list(events) + list(social) if e.id not in seen] if inside(e.lat, e.lon)]
             b = Baseline(t_min, t_max)
             b.add_events(merged)
-            b.add_tracks(_tracks_to_archive([tr for tr in track_history if inside(tr.lat, tr.lon)]))
+            # aircraft: the on-disk log (accumulates across fuses and restarts) plus the in-memory tail
+            archive = _tracks_to_archive([tr for tr in track_history if inside(tr.lat, tr.lon)])
+            span = None
+            if self.aircraft_log is not None:
+                self.progress = "reading aircraft history"
+                logged, span = self.aircraft_log.load(t_min, t_max)
+                for hexid, a in logged.items():
+                    if not any(inside(p[1], p[2]) for p in a["points"]):
+                        continue
+                    dst = archive.setdefault(hexid, {"hex": hexid, "military": False, "points": []})
+                    dst["military"] = dst["military"] or a["military"]
+                    dst["points"] = sorted(dst["points"] + a["points"], key=lambda p: p[0])
+            b.add_tracks(archive)
             stamps_t = [datetime.fromisoformat(tr.ts).timestamp() for tr in track_history]
-            if stamps_t:
-                b.set_track_coverage(min(stamps_t), max(stamps_t))
+            bounds = ([span[0], span[1]] if span else []) + stamps_t
+            if bounds:
+                b.set_track_coverage(min(bounds), max(bounds))
             else:
                 b.set_track_coverage(now + 1, now + 2)      # no aircraft history at all
             b.add_firms([h for h in firms if inside(h["lat"], h["lon"])])
             self.progress = "forming incidents"
             tracker = IncidentTracker(b, merged)
+            self._assign_durable_ids(tracker.at(now), now)
             with self.lock:
                 self.baseline, self.tracker, self.built_at = b, tracker, time.time()
             self.progress = "done"
@@ -134,9 +203,12 @@ class LiveAnalysis:
             "t": now,
             "window": {"t_min": b.t_min, "t_max": b.t_max, "hours": HOURS},
             "baseline": {"z_threshold": 2.0, "reference": "same hour +/-2 h on the prior day, 2-3 h away today",
-                         "days": 2, "note": "aircraft streams have 2 h of history; they read insufficient outside it"},
+                         "days": 2, "note": "aircraft history accumulates on disk from first run; bins before it read insufficient"},
+            "aircraft_history": ({"from": datetime.fromtimestamp(b.track_coverage[0], tz=timezone.utc).isoformat(),
+                                  "to": datetime.fromtimestamp(b.track_coverage[1], tz=timezone.utc).isoformat()}
+                                 if b.track_coverage and b.track_coverage[0] < now else None),
             "assessed_through": (datetime.fromtimestamp(b.bin_end(b.completed_bin(now)), tz=timezone.utc).isoformat() if b.completed_bin(now) is not None else None),
-            "incidents": [inc.to_dict() for inc in tracker.at(now)],
+            "incidents": [{**inc.to_dict(), "id": self._id_map.get(inc.id, inc.id)} for inc in tracker.at(now)],
             "departures": [d.to_dict() for d in b.departures_at(now)],
             "departed_cells": sorted([list(c) for c in b.departed_cells(now)]),
             "timeline_z": b.timeline(),

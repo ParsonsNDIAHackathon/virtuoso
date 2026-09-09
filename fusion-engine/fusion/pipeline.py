@@ -23,6 +23,7 @@ from .ingest_social import PLATFORM_LABELS, SocialPost, enabled_platforms, platf
 from .ingest_firms import fetch as fetch_firms, novelty as firms_novelty
 from .backfill import Backfill
 from .live_analysis import LiveAnalysis
+from .aircraft_log import AircraftLog
 from .fusion_ai import Assessment, Candidate, EvidenceRecord, FusionAI, FusionCluster, asserted_graph_context, candidate_for_pair, generate_candidates, records_from_sources
 
 log = logging.getLogger(__name__)
@@ -79,7 +80,7 @@ class FusionState:
     social_posts: dict[str, SocialPost] = field(default_factory=dict)
     firms: list[dict] = field(default_factory=list)
     fusion_ai: FusionAI = field(default_factory=lambda: FusionAI(DATA), repr=False)
-    live_analysis: LiveAnalysis = field(default_factory=lambda: LiveAnalysis(DATA / "gdelt"), repr=False)
+    live_analysis: LiveAnalysis = field(default_factory=lambda: LiveAnalysis(DATA / "gdelt", aircraft_log=AircraftLog(DATA / "aircraft_log.jsonl"), state_path=DATA / "incidents_state.json"), repr=False)
     fusion_candidates: list[Candidate] = field(default_factory=list, repr=False)
     fusion_candidates_ungated_n: int = 0
     fusion_assessments: dict[str, Assessment] = field(default_factory=dict, repr=False)
@@ -322,6 +323,10 @@ class FusionState:
             cutoff = datetime.now(timezone.utc).timestamp() - 120 * 60
             self.track_history = [track for track in self.track_history if datetime.fromisoformat(track.ts).timestamp() >= cutoff]
             self.track_history.extend(tr)
+        try:
+            self.live_analysis.aircraft_log.record(tr)
+        except Exception as e:
+            log.warning("aircraft log write failed: %s", e)
         batch_id = f"live:{uuid.uuid4().hex}"
         store = self.store
         degraded_detail = None
