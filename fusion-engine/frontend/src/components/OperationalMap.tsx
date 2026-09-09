@@ -167,7 +167,8 @@ export function vesselDetail(item: Vessel): MapDetail {
   const title = item.name?.trim() || `MMSI ${item.mmsi}`;
   return { title, lines: [`MMSI ${item.mmsi}${item.nav_status != null ? ` · ${status[item.nav_status] ?? `status ${item.nav_status}`}` : ""}`,
     `${item.sog != null ? `${item.sog} kt` : "speed ?"} · course ${item.cog ?? "?"}° · heading ${item.heading ?? "?"}°`,
-    `Reported ${item.ts.slice(11, 16)}Z · ${Math.round(item.age_min)} min ago · ${item.lat.toFixed(3)}, ${item.lon.toFixed(3)}`], entityId: item.id, recordRef: { kind: "ais", id: item.id }, point: [item.lat, item.lon] };
+    `Reported ${item.ts.slice(11, 16)}Z · ${Math.round(item.age_min)} min ago · ${item.lat.toFixed(3)}, ${item.lon.toFixed(3)}`,
+    ...(item.age_min >= 15 ? ["Stale position · no report for at least 15 minutes; coverage may have lapsed."] : [])], entityId: item.id, recordRef: { kind: "ais", id: item.id }, point: [item.lat, item.lon] };
 }
 
 function TrackLayer({ values, zoom, onSelect }: { values: Track[]; zoom: number; onSelect: (detail: MapDetail) => void }) {
