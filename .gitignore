@@ -7,3 +7,6 @@ __pycache__/
 !**/data/curated/
 **/data/curated/*
 !**/data/curated/*.json
+!**/data/replay/
+**/data/replay/*
+!**/data/replay/*_adsb.json.gz

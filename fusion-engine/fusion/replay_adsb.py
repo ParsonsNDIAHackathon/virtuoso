@@ -138,7 +138,12 @@ def extract_bbox(archive_dir: Path, bbox=HORMUZ_BBOX, out: Path | None = None,
 
 
 def load_tracks(path: Path) -> dict[str, dict]:
-    return json.loads(Path(path).read_text(encoding="utf-8"))["aircraft"]
+    """Read an extracted archive; a .json.gz (committed, ~13 MB/day) is read transparently."""
+    path = Path(path)
+    if path.suffix == ".gz":
+        with gzip.open(path, "rt", encoding="utf-8") as fh:
+            return json.load(fh)["aircraft"]
+    return json.loads(path.read_text(encoding="utf-8"))["aircraft"]
 
 
 def snapshot_at(tracks: dict[str, dict], t_epoch: float, max_age_s: float = 300.0) -> list[AirTrack]:

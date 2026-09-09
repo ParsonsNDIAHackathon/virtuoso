@@ -6,3 +6,6 @@ __pycache__/
 *.pyc
 .env
 .venv/
+!data/replay/
+data/replay/*
+!data/replay/*_adsb.json.gz

@@ -152,6 +152,8 @@ class ReplayState:
                     self.firms += json.loads(fpath.read_text(encoding="utf-8"))
                     self.loaded_layers["firms"].append(day)
                 apath = DATA / "replay" / f"{day}_adsb.json"
+                if not apath.exists() and (ROOT / "data" / "replay" / f"{day}_adsb.json.gz").exists():
+                    apath = ROOT / "data" / "replay" / f"{day}_adsb.json.gz"      # committed copy with nic/nac_p
                 if apath.exists():
                     for hexid, a in load_tracks(apath).items():
                         if hexid in self.tracks:
