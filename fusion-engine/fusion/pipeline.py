@@ -22,6 +22,7 @@ from .ingest_gdelt import OsintEvent, fetch_window
 from .ingest_social import PLATFORM_LABELS, SocialPost, enabled_platforms, platform_of, social_to_event
 from .ingest_firms import fetch as fetch_firms, novelty as firms_novelty
 from .backfill import Backfill
+from .live_analysis import LiveAnalysis
 from .fusion_ai import Assessment, Candidate, EvidenceRecord, FusionAI, FusionCluster, asserted_graph_context, candidate_for_pair, generate_candidates, records_from_sources
 
 log = logging.getLogger(__name__)
@@ -78,6 +79,7 @@ class FusionState:
     social_posts: dict[str, SocialPost] = field(default_factory=dict)
     firms: list[dict] = field(default_factory=list)
     fusion_ai: FusionAI = field(default_factory=lambda: FusionAI(DATA), repr=False)
+    live_analysis: LiveAnalysis = field(default_factory=lambda: LiveAnalysis(DATA / "gdelt"), repr=False)
     fusion_candidates: list[Candidate] = field(default_factory=list, repr=False)
     fusion_assessments: dict[str, Assessment] = field(default_factory=dict, repr=False)
     fusion_clusters: list[FusionCluster] = field(default_factory=list, repr=False)
@@ -422,6 +424,13 @@ class FusionState:
             self.fusion_clusters, batch_id, "candidate",
         )
         self._start_ai_fusion(batch_id)
+        # baseline + incidents over the last 48 h, rebuilt in the background every 15 min
+        try:
+            with self.lock:
+                args = (list(self.events), list(self.social), list(self.firms), list(self.track_history))
+            self.live_analysis.start(*args)
+        except Exception as e:
+            log.warning("live analysis not started: %s", e)
         return alerts
 
     def _persist_fusion_artifacts(self, store, candidates, assessments, clusters,
@@ -529,6 +538,9 @@ class FusionState:
         with self.lock:
             tracks = [track.to_dict() for track in self.tracks]
         return [track for track in tracks if not military_only or track["military"]]
+
+    def api_incidents(self) -> dict:
+        return self.live_analysis.snapshot()
 
     def api_navint(self) -> list[dict]:
         """Per-cell navigation-integrity picture from the current snapshot, with the count it rests on."""

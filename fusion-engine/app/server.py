@@ -95,6 +95,13 @@ def aircraft(military_only: bool = False, limit: int = Query(3000, ge=1, le=2000
     return _in_view(state.api_aircraft(military_only), bbox, limit)
 
 
+@app.get("/api/incidents")
+def incidents():
+    """Live incidents: baseline departures over the last 48 h formed into persistent incidents with
+    tested explanations and a next check. Same engine as the replay."""
+    return state.api_incidents()
+
+
 @app.get("/api/navint")
 def navint():
     """Navigation-integrity degradation per 1-degree cell from the live ADS-B snapshot.

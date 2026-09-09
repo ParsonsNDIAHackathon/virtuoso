@@ -78,3 +78,4 @@ export type Timeline = {
   bins: TimelineBin[]; step_min: number; hours?: number; t_min?: number; sar_scenes?: Array<{ t: number; ts: string; n: number }>;
   backfill?: { status: string; hours: number; windows: number }; since?: number | null;
 };
+export type LiveIncidents = { status: string; built_at: string | null; t?: number; incidents: Incident[]; departures: Departure[]; departed_cells: number[][]; baseline?: { z_threshold: number; reference: string; days: number; note?: string } };

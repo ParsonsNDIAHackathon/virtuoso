@@ -1,4 +1,4 @@
-import type { AIStatus, Alert, Assessment, Entity, Event, Evidence, Firms, FusionCandidate, FusionCluster, Graph, LinkPreview, RecordRef, Region, ReplayConfig, ReplayScenario, ReplaySnapshot, SocialPlatforms, SourcePreview, Status, Tail, Timeline, Track, Viewport } from "./types";
+import type { AIStatus, Alert, Assessment, Entity, Event, Evidence, Firms, FusionCandidate, FusionCluster, Graph, LinkPreview, LiveIncidents, RecordRef, Region, ReplayConfig, ReplayScenario, ReplaySnapshot, SocialPlatforms, SourcePreview, Status, Tail, Timeline, Track, Viewport } from "./types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, init);
@@ -18,6 +18,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 const mapQuery = (viewport: Viewport, limit: number) => new URLSearchParams({ bbox: [viewport.west, viewport.south, viewport.east, viewport.north].map((value) => value.toFixed(4)).join(","), limit: String(limit) });
 
 export const api = {
+  incidents: () => request<LiveIncidents>("/api/incidents"),
   status: () => request<Status>("/api/status"),
   social: (platform?: string, limit = 500) => request<Event[]>(`/api/social?${new URLSearchParams({ ...(platform ? { platform } : {}), limit: String(limit) })}`),
   socialPlatforms: () => request<SocialPlatforms>("/api/social/platforms"),

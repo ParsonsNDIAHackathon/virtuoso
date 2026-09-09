@@ -216,6 +216,7 @@ export function App() {
   const [replayTime, setReplayTime] = useState<number | null>(null); const [playing, setPlaying] = useState(false); const [speed, setSpeed] = useState(300); const [filterAoi, setFilterAoi] = useState(false); const [drawing, setDrawing] = useState(false); const [draft, setDraft] = useState<Omit<Region, "id"> | null>(null); const [detail, setDetail] = useState<Detail | null>(null); const [sourceViewer, setSourceViewer] = useState<Detail | null>(null); const [focus, setFocus] = useState<[number, number, number] | undefined>();
   const [compareActive, setCompareActive] = useState(false); const [compareSelection, setCompareSelection] = useState<Detail[]>([]); const [compareResult, setCompareResult] = useState<Assessment | null>(null); const [showRejected, setShowRejected] = useState(false);
   const live = mode === "live"; const polling = 60_000; const trackPolling = 10_000;
+  const liveIncidents = useQuery({ queryKey: ["incidents"], queryFn: api.incidents, enabled: live, refetchInterval: 60_000 });
   const status = useQuery({ queryKey: ["status"], queryFn: api.status, enabled: live, refetchInterval: live ? polling : false });
   const events = useQuery({ queryKey: ["events", key, max.events], queryFn: () => api.events(view, max.events), enabled: live && layers.events, refetchInterval: live && layers.events ? polling : false, placeholderData: keepPreviousData });
   const tracks = useQuery({ queryKey: ["tracks", key, max.tracks], queryFn: () => api.tracks(view, max.tracks), enabled: live && layers.tracks, refetchInterval: live && layers.tracks ? (query) => (Array.isArray(query.state.data) && query.state.data.length > 0 ? polling : trackPolling) : false, placeholderData: keepPreviousData });
@@ -310,7 +311,7 @@ export function App() {
           <AssessmentQueue assessments={assessed} clusters={clusters} showRejected={showRejected} onToggleRejected={() => setShowRejected((value) => !value)} />
           <AlertQueue alerts={queue} onSelect={selectAlert} />
           <Inspector detail={null} onEmbed={(d) => setSourceViewer(d)} />
-          {!live && <Incidents incidents={replay.incidents ?? []} baseline={replay.baseline} onFocus={([lat, lon]) => setFocus([lat, lon, 8])} />}
+          <Incidents incidents={live ? (liveIncidents.data?.incidents ?? []) : (replay.incidents ?? [])} baseline={live ? liveIncidents.data?.baseline : replay.baseline} status={live ? liveIncidents.data?.status : undefined} onFocus={([lat, lon]) => setFocus([lat, lon, 8])} />
           {!live && mode && <CuratedEvidence scenarioId={mode} tMin={config.data?.t_min} tMax={config.data?.t_max} onSeek={(t) => { setPlaying(false); setReplayTime(t); }} />}
         </>}
         {sourceViewer && <SourceViewer detail={sourceViewer} onClose={() => setSourceViewer(null)} />}
