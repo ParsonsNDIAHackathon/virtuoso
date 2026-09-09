@@ -47,7 +47,7 @@ export function IncidentReport({ inc, onClose, onFocus, onEvidence }: { inc: Inc
   const rows = Object.entries(inc.streams).map(([k, s]) => ({ k, s }));
   const evidence = inc.evidence ?? [];
   const act = a.next_action;
-  return <Panel panelId="incident-report" className="max-h-[70vh] overflow-auto p-3 scrollbar">
+  return <Panel panelId="incident-report" openOn={inc.id} className="max-h-[70vh] overflow-auto p-3 scrollbar">
     <div className="flex items-start gap-2">
       <div className="mr-auto"><p className="font-mono text-[9px] font-bold uppercase tracking-[.18em] text-command">Incident report · {inc.id.replace("incident:", "#")}</p>
         <p className="mt-1 text-[12px] leading-snug text-ink">{a.headline ?? a.established}</p></div>
