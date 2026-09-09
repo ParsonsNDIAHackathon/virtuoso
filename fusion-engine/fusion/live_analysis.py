@@ -142,7 +142,7 @@ class LiveAnalysis:
                     self._events_cache[stamp] = []
             out.extend(self._events_cache[stamp])
             if i % 16 == 0:
-                self.progress = f"reading GDELT history {i}/{len(stamps)}"
+                self.progress = f"loading news history {i}/{len(stamps)} windows"
         if missing:
             log.info("live analysis: %d of %d GDELT windows unavailable", missing, len(stamps))
         return out
@@ -163,7 +163,7 @@ class LiveAnalysis:
             archive = _tracks_to_archive([tr for tr in track_history if inside(tr.lat, tr.lon)])
             span = None
             if self.aircraft_log is not None:
-                self.progress = "reading aircraft history"
+                self.progress = "loading aircraft history"
                 logged, span = self.aircraft_log.load(t_min, t_max)
                 for hexid, a in logged.items():
                     if not any(inside(p[1], p[2]) for p in a["points"]):
@@ -179,7 +179,7 @@ class LiveAnalysis:
             else:
                 b.set_track_coverage(now + 1, now + 2)      # no aircraft history at all
             b.add_firms([h for h in firms if inside(h["lat"], h["lon"])])
-            self.progress = "forming incidents"
+            self.progress = "computing baseline and incidents"
             tracker = IncidentTracker(b, merged)
             self._assign_durable_ids(tracker.at(now), now)
             with self.lock:
