@@ -14,17 +14,22 @@ body::before { content: ""; position: fixed; inset: 0; pointer-events: none; opa
 .leaflet-control-layers { color: hsl(var(--ink)); }
 .scrollbar { scrollbar-color: hsl(var(--line)) transparent; }
 
-/* Right-column panels: a drag bar at the bottom edge resizes the panel (double-click resets). */
+/* Right-column panels: collapse arrow (top-right) and a drag handle across the bottom edge. */
 .panel { position: relative; }
-.panel-grip { display: none; }
-.sidebar-resizable > .panel, .sidebar-resizable > details > .panel { overflow: auto; padding-bottom: 12px; }
-.sidebar-resizable > .panel > .panel-grip, .sidebar-resizable > details > .panel > .panel-grip {
-  display: flex; position: sticky; bottom: 0; left: 0; right: 0; height: 12px; margin: 0 -12px -12px; align-items: center; justify-content: center;
-  cursor: ns-resize; background: linear-gradient(180deg, transparent, rgba(0,0,0,.45)); user-select: none; z-index: 5;
+.panel-toggle, .panel-grip { display: none; }
+.sidebar-resizable > .panel, .sidebar-resizable > details > .panel { overflow: auto; padding-bottom: 18px; }
+.sidebar-resizable > .panel > .panel-toggle, .sidebar-resizable > details > .panel > .panel-toggle {
+  display: grid; place-items: center; position: absolute; top: 4px; right: 4px; width: 20px; height: 20px; z-index: 6;
+  border: 1px solid rgba(255,255,255,.18); background: rgba(0,0,0,.35); color: rgba(255,255,255,.7); font-size: 11px; line-height: 1; cursor: pointer;
 }
-.panel-grip > span { width: 36px; height: 3px; border-radius: 2px; background: rgba(255,255,255,.28); }
-.panel-grip:hover > span { background: rgba(255,255,255,.6); }
-
+.panel-toggle:hover { color: #fff; border-color: rgba(255,255,255,.45); }
+.sidebar-resizable > .panel-collapsed, .sidebar-resizable > details > .panel-collapsed { height: 38px !important; max-height: 38px !important; min-height: 38px; overflow: hidden; padding-bottom: 0; flex: none; }
+.sidebar-resizable > .panel > .panel-grip, .sidebar-resizable > details > .panel > .panel-grip {
+  display: flex; position: sticky; bottom: 0; left: 0; right: 0; height: 18px; margin: 0 -12px -18px; align-items: center; justify-content: center;
+  cursor: ns-resize; background: linear-gradient(180deg, rgba(0,0,0,.0), rgba(0,0,0,.6)); border-top: 1px dashed rgba(255,255,255,.22); user-select: none; z-index: 5;
+  font: 600 9px ui-monospace, monospace; letter-spacing: .12em; text-transform: uppercase; color: rgba(255,255,255,.55);
+}
+.panel-grip:hover { color: #fff; border-top-color: rgba(255,255,255,.6); background: linear-gradient(180deg, rgba(255,255,255,.04), rgba(0,0,0,.7)); }
 /* Grab the boundary between the map and the right column, or between the map and the timeline. */
 .splitter { position: absolute; z-index: 40; background: transparent; }
 .splitter:hover, .splitter:active { background: rgba(255,255,255,.18); }
