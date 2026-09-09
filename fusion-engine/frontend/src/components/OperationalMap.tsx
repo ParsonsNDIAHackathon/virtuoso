@@ -1,14 +1,19 @@
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import L from "leaflet";
 import { Circle, CircleMarker, MapContainer, Marker, Polyline, Rectangle, TileLayer, useMap, useMapEvents } from "react-leaflet";
 import type { Alert, Assessment, Event, Firms, RecordRef, Region, Sar, Tail, Track, Viewport } from "../lib/types";
 import { distanceKm } from "../lib/utils";
+import { RfSpectrumDialog } from "./RfSpectrumDialog";
 
 const NM_KM = 1.852;
 const renderer = L.canvas({ padding: .5 });
 const eventColor = "#eab85a";
 const aoiColor = "#a78bfa";
-const LAYER_LABELS: Record<keyof LayerState, string> = { events: "OSINT", tracks: "ADS-B", firms: "Thermal", sar: "SAR", links: "Links", imagery: "Imagery" };
+const LAYER_LABELS: Record<keyof LayerState, string> = { events: "OSINT", tracks: "ADS-B", firms: "Thermal", sar: "SAR", links: "Links", imagery: "Imagery", rf: "RF" };
+const rfIcon = L.divIcon({
+  className: "", iconSize: [32, 32], iconAnchor: [16, 16],
+  html: '<svg viewBox="0 0 32 32" width="32" height="32" aria-hidden="true"><circle cx="16" cy="16" r="15" fill="#101710" stroke="#eab85a"/><path d="M18 5 8 18h7l-1 9 10-14h-7z" fill="#eab85a"/></svg>',
+});
 const clusterIcon = (count: number, color: string) => L.divIcon({ className: "", iconSize: [34, 34], iconAnchor: [17, 17], html: `<span style="display:grid;place-items:center;width:34px;height:34px;border-radius:50%;border:2px solid ${color};background:#101710e8;color:${color};font:600 10px monospace">${count > 999 ? "999+" : count}</span>` });
 const planeIcons = new Map<string, L.DivIcon>();
 const thermalIcons = new Map<string, L.DivIcon>();
@@ -57,7 +62,7 @@ function planeIcon(track: Track) {
 }
 
 export type MapDetail = { title: string; lines: string[]; href?: string; hrefLabel?: string; entityId?: string; recordRef?: RecordRef; point?: [number, number]; connections?: Array<{ kind: "event" | "aircraft"; label: string; detail: string; selected?: boolean }> };
-export type LayerState = { events: boolean; tracks: boolean; firms: boolean; sar: boolean; links: boolean; imagery: boolean };
+export type LayerState = { events: boolean; tracks: boolean; firms: boolean; sar: boolean; links: boolean; imagery: boolean; rf: boolean };
 type Cluster<T> = { lat: number; lon: number; items: T[] };
 type Point = { lat: number; lon: number };
 type Props = {
@@ -117,6 +122,8 @@ function ThermalLayer({ values, zoom, onSelect }: { values: Firms[]; zoom: numbe
 }
 
 export function OperationalMap({ events, tracks, alerts, firms, sar, sarCore, tails, regions, layers, viewport, assessments = [], filterAoi, drawing, focus, satelliteDay, replayBounds, compareSelection = [], compareVerdict, onDraft, onSelect, onAoiZoom, onBackgroundClick, onViewport, onLayerToggle }: Props) {
+  const [rfOpen, setRfOpen] = useState(false);
+  useEffect(() => { if (!layers.rf) setRfOpen(false); }, [layers.rf]);
   const include = (lat: number, lon: number) => !filterAoi || regions.length === 0 || regions.some((region) => distanceKm(lat, lon, region.lat, region.lon) <= region.radius_nm * NM_KM);
   const imagery = satelliteDay ?? new Date(Date.now() - 86400000).toISOString().slice(0, 10);
   const trackById = useMemo(() => new Map(tracks.map((track) => [track.id, track])), [tracks]);
@@ -131,6 +138,7 @@ export function OperationalMap({ events, tracks, alerts, firms, sar, sarCore, ta
     {layers.imagery && <TileLayer url={`https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/VIIRS_SNPP_CorrectedReflectance_TrueColor/default/${imagery}/GoogleMapsCompatible_Level9/{z}/{y}/{x}.jpg`} attribution={`NASA GIBS VIIRS ${imagery}`} maxNativeZoom={9} maxZoom={18} opacity={.85} />}
     {regions.map((region) => <AoiCircle key={region.id} region={region} drawing={drawing} onZoom={onAoiZoom} />)}
     {layers.firms && <ThermalLayer values={firms} zoom={viewport.zoom} onSelect={onSelect} />}
+    {layers.rf && <Marker position={[26.55, 56.45]} icon={rfIcon} title="RF sample · Strait of Hormuz · Open spectrum" alt="Open simulated RF spectrum" zIndexOffset={1100} eventHandlers={{ click: () => { if (!drawing) setRfOpen(true); } }} />}
     {layers.sar && <ClusterLayer values={sarCore} zoom={viewport.zoom} color="#f2bb57" onSelect={onSelect} renderPoint={(item) => ({ title: "Radar ship · strait-core scene", lines: [`~${item.length_m ?? "?"} m`, `Sentinel-1 ${item.ts.slice(0, 16)}Z`] })} />}
     {layers.sar && <ClusterLayer values={sar} zoom={viewport.zoom} color="#e5e7df" onSelect={onSelect} renderPoint={(item) => ({ title: "Radar ship detection", lines: [`~${item.length_m ?? "?"} m · contrast ${item.contrast ?? "?"}`, `Sentinel-1 ${item.ts.slice(0, 16)}Z`] })} />}
     {layers.events && <ClusterLayer values={filteredEvents} zoom={viewport.zoom} color={eventColor} pointColor={(item) => isTelegram(item) ? "#e879f9" : eventColor} markerIcon={(item) => isTelegram(item) ? telegramIcon : osintIcon} onSelect={onSelect} renderPoint={(item) => ({ title: isTelegram(item) ? `Telegram · ${item.source_domain?.replace(/^t\.me\//, "") || "post"}` : item.root_label, lines: [item.place, `Goldstein ${item.goldstein ?? "–"} · tone ${item.tone?.toFixed(1) ?? "–"}`, `Themes: ${item.themes?.slice(0, 8).join(", ") || "–"}`], entityId: item.id, recordRef: { kind: isTelegram(item) ? "telegram" : "gdelt", id: item.id }, point: [item.lat, item.lon], href: isTelegram(item) || !item.url?.includes("t.me/") ? item.url : undefined, hrefLabel: "Open source" })} />}
@@ -140,5 +148,5 @@ export function OperationalMap({ events, tracks, alerts, firms, sar, sarCore, ta
     {layers.links && assessments.slice(0, 100).flatMap((assessment) => { const left = evidencePoints.get(assessment.left_id); const right = evidencePoints.get(assessment.right_id); const color = assessment.verdict === "SUPPORTED" ? "#94c973" : assessment.verdict === "PLAUSIBLE" ? "#eab85a" : "#df5e55"; return left && right ? [<Polyline key={`assessment-${assessment.id}`} positions={[left, right]} renderer={renderer} pathOptions={{ color, weight: 2 + 3 * assessment.evidence_strength, opacity: .85, dashArray: assessment.verdict === "SUPPORTED" ? undefined : "8 4" }} />] : []; })}
     {compareSelection.length === 2 && compareSelection[0].point && compareSelection[1].point && <Polyline positions={[compareSelection[0].point, compareSelection[1].point]} renderer={renderer} pathOptions={{ color: compareVerdict === "SUPPORTED" ? "#94c973" : compareVerdict === "PLAUSIBLE" ? "#eab85a" : compareVerdict ? "#df5e55" : "#a78bfa", weight: 4, opacity: .9, dashArray: compareVerdict ? undefined : "7 5" }} />}
     {replayBounds && <Rectangle bounds={[[replayBounds[0], replayBounds[1]], [replayBounds[2], replayBounds[3]]]} renderer={renderer} pathOptions={{ color: eventColor, weight: 1, fill: false, dashArray: "4 4" }} />}
-  </MapContainer><div className="absolute right-3 top-3 z-[1000] grid grid-cols-2 gap-1 border border-line bg-panel/95 p-1">{(Object.keys(layers) as Array<keyof LayerState>).map((layer) => <button key={layer} onClick={() => onLayerToggle(layer)} className={`border px-2 py-1 font-mono text-[9px] uppercase ${layers[layer] ? "border-command/50 text-command" : "border-line text-muted"}`}>{LAYER_LABELS[layer]}</button>)}</div></div>;
+  </MapContainer><div className="absolute right-3 top-3 z-[1000] grid grid-cols-2 gap-1 border border-line bg-panel/95 p-1">{(Object.keys(layers) as Array<keyof LayerState>).map((layer) => <button key={layer} onClick={() => onLayerToggle(layer)} aria-pressed={layers[layer]} className={`border px-2 py-1 font-mono text-[9px] uppercase ${layers[layer] ? "border-command/50 text-command" : "border-line text-muted"}`}>{LAYER_LABELS[layer]}</button>)}</div>{layers.rf && rfOpen && <RfSpectrumDialog onClose={() => setRfOpen(false)} />}</div>;
 }

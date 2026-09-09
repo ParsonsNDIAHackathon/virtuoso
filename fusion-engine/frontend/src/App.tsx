@@ -168,7 +168,7 @@ export function App() {
   const client = useQueryClient();
   const selectingMapItem = useRef(false);
   const [mode, setMode] = useState("live"); const [viewport, setViewport] = useState(WORLD); const view = useDebounced(viewport, 250); const max = limits(view.zoom); const key = viewportKey(view);
-  const [layers, setLayers] = useState<LayerState>({ events: true, tracks: true, firms: true, sar: true, links: true, imagery: false }); const [timelineHours, setTimelineHours] = useState(24); const [sourcesOpen, setSourcesOpen] = useState(false);
+  const [layers, setLayers] = useState<LayerState>({ events: true, tracks: true, firms: true, sar: false, links: true, imagery: false, rf: true }); const [timelineHours, setTimelineHours] = useState(24); const [sourcesOpen, setSourcesOpen] = useState(false);
   const [replayTime, setReplayTime] = useState<number | null>(null); const [playing, setPlaying] = useState(false); const [speed, setSpeed] = useState(300); const [filterAoi, setFilterAoi] = useState(false); const [drawing, setDrawing] = useState(false); const [draft, setDraft] = useState<Omit<Region, "id"> | null>(null); const [detail, setDetail] = useState<Detail | null>(null); const [sourceViewer, setSourceViewer] = useState<Detail | null>(null); const [focus, setFocus] = useState<[number, number, number] | undefined>();
   const [compareActive, setCompareActive] = useState(false); const [compareSelection, setCompareSelection] = useState<Detail[]>([]); const [compareResult, setCompareResult] = useState<Assessment | null>(null); const [showRejected, setShowRejected] = useState(false);
   const live = mode === "live"; const polling = 60_000; const trackPolling = 10_000;
