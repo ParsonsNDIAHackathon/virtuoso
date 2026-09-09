@@ -10,7 +10,17 @@ export function AssessmentResult({ assessment, compact = false }: { assessment: 
   const newsPair = [assessment.left_kind, assessment.right_kind].every((kind) => ["gdelt", "telegram"].includes(kind));
   const label = newsPair ? incidentLabels[assessment.incident_relationship ?? "UNCERTAIN"] : assessment.relation.replace(/_/g, " ");
   const tone = assessment.verdict === "SUPPORTED" ? "text-command" : assessment.verdict === "CONTRADICTED" ? "text-critical" : "text-[#eab85a]";
+  const KIND: Record<string, string> = { gdelt: "news article", telegram: "Telegram post", reddit: "Reddit post", bluesky: "Bluesky post", mastodon: "Mastodon post", adsb: "aircraft", firms: "thermal detection" };
+  const docFor = (id: string) => (assessment.source_documents ?? []).find((d) => d.record_id === id);
+  const describe = (id: string, kind: string) => { const d = docFor(id); const host = d?.url ? (() => { try { return new URL(d.url).hostname.replace(/^www\./, ""); } catch { return ""; } })() : "";
+    return d?.title ? `${d.title}${host ? ` (${host})` : ""}` : `${KIND[kind] ?? kind} ${id.replace(/^(gdelt|adsb|firms|tg):/, "")}`; };
+  const verdictWords: Record<string, string> = { SUPPORTED: "Supported: the records' own content links them", PLAUSIBLE: "Plausible: consistent, but the direct link is missing; analyst review", INSUFFICIENT_EVIDENCE: "Rejected: proximity was the only link", CONTRADICTED: "Contradicted: the records disagree" };
   return <div className="space-y-1.5 text-[10px]">
+    <div className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 font-mono text-[10px]">
+      <span className="text-muted">A</span><span className="text-ink" title={docFor(assessment.left_id)?.url}>{describe(assessment.left_id, assessment.left_kind)}</span>
+      <span className="text-muted">B</span><span className="text-ink" title={docFor(assessment.right_id)?.url}>{describe(assessment.right_id, assessment.right_kind)}</span>
+    </div>
+    <p className={`font-semibold ${tone}`}>{verdictWords[assessment.verdict] ?? assessment.verdict}</p>
     {sameArticle && <div className="border-l-2 border-command bg-command/5 py-1 pl-2">
       <p className="font-semibold text-command">Same article · Confirmed <span className="float-right pr-1 font-mono">Match {assessment.article_match?.confidence?.toFixed(2)}</span></p>
       <p className="text-muted">1 shared reporting source · no added independent corroboration</p>
@@ -21,7 +31,7 @@ export function AssessmentResult({ assessment, compact = false }: { assessment: 
       <p className={`font-semibold ${tone}`}>{newsPair ? "Incident link" : "Evidence link"} · {label}</p>
       <span className="ml-auto font-mono text-muted" title="Strength of evidence for the incident or observation link, separate from article identity.">Strength {assessment.evidence_strength.toFixed(2)}</span>
     </div>
-    <p className="text-muted">{assessment.verdict.replace(/_/g, " ")}{assessment.needs_review ? " · Needs review" : ""} · {assessment.cached ? "cached" : assessment.model}</p>
+    <p className="text-muted">{assessment.needs_review ? "Needs review · " : ""}{assessment.model}{assessment.cached ? " · from cache" : ""}{assessment.created_at ? ` · ${assessment.created_at.slice(0, 16).replace("T", " ")}Z` : ""}</p>
     <p className="leading-snug text-ink">{assessment.rationale}</p>
     {!compact && <>
       <p className="text-muted">Limitation: {assessment.strongest_limitation}</p>

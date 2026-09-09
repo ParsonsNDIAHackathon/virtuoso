@@ -165,9 +165,9 @@ function CandidateQueue({ candidates }: { candidates: FusionCandidate[] }) {
 }
 
 function AssessmentQueue({ assessments, clusters, showRejected, onToggleRejected }: { assessments: Assessment[]; clusters: FusionCluster[]; showRejected: boolean; onToggleRejected: () => void }) {
-  return <Panel className="max-h-52 shrink-0 overflow-auto scrollbar">
+  return <Panel className="max-h-[60vh] shrink-0 overflow-auto scrollbar">
     <div className="sticky top-0 z-10 flex items-center border-b border-line bg-panel px-3 py-2">
-      <div><h2 className="font-mono text-[10px] font-semibold uppercase tracking-[.14em] text-muted">Evidence assessments</h2><p className="text-[9px] text-muted">Article identity + incident evidence</p></div>
+      <div><h2 className="font-mono text-[10px] font-semibold uppercase tracking-[.14em] text-muted">AI evidence assessments</h2><p className="text-[9px] text-muted">Each card: two records the model compared using only their own content. It says whether they describe one incident, related incidents, or nothing beyond proximity, and why.</p></div>
       <label className="ml-auto flex items-center gap-1 text-[9px] text-muted"><input type="checkbox" checked={showRejected} onChange={onToggleRejected} /> Show rejected</label>
     </div>
     {clusters[0]?.brief && <div className="border-b border-command/30 bg-command/5 px-3 py-2">
@@ -175,8 +175,8 @@ function AssessmentQueue({ assessments, clusters, showRejected, onToggleRejected
       <p className="mt-1 text-[10px] text-muted">{clusters[0].brief}</p>
       {clusters[0].caveats.map((caveat, i) => <p key={i} className="mt-1 text-[9px] text-muted">{caveat}</p>)}
     </div>}
-    {assessments.map((assessment) => <div key={assessment.id} className="border-b border-line/70 px-3 py-2"><AssessmentResult assessment={assessment} compact /></div>)}
-    {assessments.length === 0 && <p className="px-3 py-4 text-[10px] text-muted">No assessed findings yet.</p>}
+    {assessments.map((assessment) => <div key={assessment.id} className="border-b border-line/70 px-3 py-2"><AssessmentResult assessment={assessment} /></div>)}
+    {assessments.length === 0 && <p className="px-3 py-4 text-[10px] text-muted">{showRejected ? "No pairs assessed at this instant." : "No supported or plausible links at this instant. Tick Show rejected to read the pairs the model turned down and why."}</p>}
   </Panel>;
 }
 
