@@ -92,7 +92,9 @@ class InMemoryStore:
             if candidate.right.id in G:
                 G.add_edge(candidate.id, candidate.right.id, kind="CANDIDATE_MEMBER", role="right")
         for assessment in assessments:
-            G.add_node(assessment.id, kind="assessment", label=f"{assessment.verdict}: {assessment.relation}",
+            label = (f"Same article; incident: {assessment.incident_relationship}" if assessment.has_article_match
+                     else f"{assessment.verdict}: {assessment.relation}")
+            G.add_node(assessment.id, kind="assessment", label=label,
                        **assessment.to_dict(), batch_id=batch_id)
             for role, record_id in (("left", assessment.left_id), ("right", assessment.right_id)):
                 if record_id in G:
@@ -129,7 +131,7 @@ class InMemoryStore:
             return []
         values = b.get("assessments", [])
         if not include_rejected:
-            values = [value for value in values if value["verdict"] in ("SUPPORTED", "PLAUSIBLE")]
+            values = [value for value in values if value["verdict"] in ("SUPPORTED", "PLAUSIBLE") or value.get("has_article_match")]
         return list(values)[:limit]
 
     def fusion_clusters(self, batch_id: str | None, limit=100) -> list[dict]:

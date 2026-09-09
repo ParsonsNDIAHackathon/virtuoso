@@ -252,7 +252,7 @@ class ReplayState:
         record.graph_context = asserted_graph_context(entity, record_id)
         return record
 
-    def adjudicate_pair(self, t: float, left_kind: str, left_id: str, right_kind: str, right_id: str) -> dict:
+    def adjudicate_pair(self, t: float, left_kind: str, left_id: str, right_kind: str, right_id: str, *, force: bool = False) -> dict:
         # Ensure the instant's source graph exists before collecting one-hop evidence context.
         self.at(t)
         left = self.evidence_record(t, left_kind, left_id)
@@ -260,7 +260,7 @@ class ReplayState:
         if not left or not right:
             raise KeyError("one or both evidence records are not in this replay instant")
         candidate = candidate_for_pair(left, right)
-        assessment = self.fusion_ai.adjudicate(candidate)
+        assessment = self.fusion_ai.adjudicate(candidate, force=force)
         key = int(min(max(t, self.t_min), self.t_max) // 60)
         snapshot = self.at(t)
         values = {value["id"]: value for value in snapshot.get("assessments", [])}

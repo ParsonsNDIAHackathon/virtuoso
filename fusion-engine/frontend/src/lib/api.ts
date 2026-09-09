@@ -29,7 +29,7 @@ export const api = {
   candidates: () => request<FusionCandidate[]>("/api/fusion/candidates?limit=300"),
   assessments: (includeRejected = false) => request<Assessment[]>(`/api/fusion/assessments?include_rejected=${includeRejected}&limit=300`),
   clusters: () => request<FusionCluster[]>("/api/fusion/clusters?limit=100"),
-  adjudicate: (left: RecordRef, right: RecordRef, mode: string, time?: number | null) => request<Assessment>("/api/fusion/adjudicate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ left, right, mode, t: time ?? null }) }),
+  adjudicate: (left: RecordRef, right: RecordRef, mode: string, time?: number | null, force = false) => request<Assessment>("/api/fusion/adjudicate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ left, right, mode, t: time ?? null, force }) }),
   entity: (id: string) => request<Entity>(`/api/entity/${encodeURIComponent(id)}`),
   regions: () => request<Region[]>("/api/regions"),
   addRegion: (region: Pick<Region, "lat" | "lon" | "radius_nm"> & { name?: string }) => request<Region>("/api/regions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(region) }),

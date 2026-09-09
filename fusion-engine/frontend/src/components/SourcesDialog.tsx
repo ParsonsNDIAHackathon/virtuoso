@@ -9,7 +9,8 @@ const sources = [
   ["Radar ship detection", "ESA Sentinel-1 / Copernicus", "SAR-derived vessel detections; replay only and labelled with image age.", "Replay only"],
   ["Satellite imagery", "NASA GIBS", "VIIRS true-colour basemap. It is context only, not a detection source.", "Daily"],
   ["Candidate retrieval", "Fusion engine", "Pair-specific space/time and source-entity retrieval. A candidate is an analyst cue, not a finding.", "Each fusion cycle"],
-  ["Evidence assessment", "OpenAI", "Structured graph-only verdict with rationale and strongest limitation. Plausible links require analyst review.", "Cached + on demand"],
+  ["Article identity", "Fusion engine", "Matching article URLs identify shared reporting. Multiple GDELT events from one article count as one reporting source.", "On comparison"],
+  ["Evidence assessment", "OpenAI", "Separate incident/evidence verdict using source fields, graph facts, and GDELT article text. Plausible links require review; purple dashed links can indicate shared articles with uncertain incident links.", "Cached + on demand"],
 ] as const;
 
 export function SourcesDialog({ open, onClose }: { open: boolean; onClose: () => void }) {

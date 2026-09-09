@@ -199,6 +199,7 @@ class AdjudicationIn(BaseModel):
     right: EvidenceRef
     mode: str = "live"
     t: float | None = None
+    force: bool = False
 
 
 @app.post("/api/fusion/adjudicate")
@@ -207,11 +208,12 @@ def adjudicate(body: AdjudicationIn):
         raise HTTPException(422, "select two different records")
     try:
         if body.mode == "live":
-            return state.adjudicate_pair(body.left.kind, body.left.id, body.right.kind, body.right.id)
+            return state.adjudicate_pair(body.left.kind, body.left.id, body.right.kind, body.right.id, force=body.force)
         if body.t is None:
             raise HTTPException(422, "replay adjudication requires t")
         return _replay(body.mode).adjudicate_pair(
             body.t, body.left.kind, body.left.id, body.right.kind, body.right.id,
+            force=body.force,
         )
     except AIUnavailable as error:
         raise HTTPException(503, str(error)) from None

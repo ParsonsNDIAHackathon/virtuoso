@@ -548,7 +548,7 @@ class FusionState:
         with self.lock:
             values = sorted(self.fusion_assessments.values(), key=lambda value: value.evidence_strength, reverse=True)
         if not include_rejected:
-            values = [value for value in values if value.verdict in ("SUPPORTED", "PLAUSIBLE")]
+            values = [value for value in values if value.verdict in ("SUPPORTED", "PLAUSIBLE") or value.has_article_match]
         return [value.to_dict() for value in values[:limit]]
 
     def api_fusion_clusters(self, limit: int = 100) -> list[dict]:
@@ -571,12 +571,12 @@ class FusionState:
         record.graph_context = asserted_graph_context(entity, record_id)
         return record
 
-    def adjudicate_pair(self, left_kind: str, left_id: str, right_kind: str, right_id: str) -> dict:
+    def adjudicate_pair(self, left_kind: str, left_id: str, right_kind: str, right_id: str, *, force: bool = False) -> dict:
         left, right = self.evidence_record(left_kind, left_id), self.evidence_record(right_kind, right_id)
         if not left or not right:
             raise KeyError("one or both evidence records are not in the current picture")
         candidate = candidate_for_pair(left, right)
-        assessment = self.fusion_ai.adjudicate(candidate)
+        assessment = self.fusion_ai.adjudicate(candidate, force=force)
         with self.lock:
             if not any(value.id == candidate.id for value in self.fusion_candidates):
                 self.fusion_candidates.append(candidate)

@@ -30,7 +30,9 @@ Pipeline (`fusion/`):
    dashed heuristic link for comparison and no longer receives a fake same-cell “corroboration” boost.
 3. **OpenAI evidence adjudication** — one structured Responses API prompt classifies each pair as
    `SUPPORTED`, `PLAUSIBLE` (needs review), `INSUFFICIENT_EVIDENCE`, or `CONTRADICTED`. The prompt may
-   use only the two source records and asserted one-hop graph facts; outside knowledge and unstated
+   use only the two source records and asserted one-hop graph facts. When a GDELT record reaches
+   adjudication, the engine retrieves and caches its source article text and includes up to
+   `FUSION_SOURCE_DOC_MAX_CHARS`; outside knowledge and unstated
    aircraft/operator attribution are prohibited. Verdict, relation, strength, rationale, limitation,
    supporting facts, and explicit entity resolutions are cached in local SQLite and written to Neo4j.
 4. **Multi-source clustering** — positive assessment edges form connected evidence clusters ranked by
@@ -39,6 +41,18 @@ Pipeline (`fusion/`):
    assessments, resolved entities, and clusters. The map supports selecting any two individual GDELT,
    Telegram, ADS-B, or FIRMS markers and invoking the same adjudicator on demand. Rejected assessments
    are persisted but hidden unless **Show rejected** is enabled.
+
+Two GDELT records can come from the same article while describing different incidents. Comparisons
+show **Same article · Confirmed** for matching URLs (tracking parameters removed, successful redirects
+resolved), separately from the model's **same / related / unrelated / uncertain** incident assessment.
+Shared article matches remain visible even when the incident link has insufficient evidence. They
+count as one reporting source; repeated event records do not increase the cluster's corroboration
+weight. Different URLs alone do not establish independent reporting.
+
+The comparison result shows article-text availability, character counts, and truncation. Use
+**Reanalyze with fresh source text** to fetch the source again and replace the cached verdict; this
+makes another model request. Failed article retrievals expire after five minutes. Prompt-versioned
+caches keep older assessments from being reused by the updated adjudicator.
 
 ## Run it
 

@@ -258,8 +258,11 @@ class Neo4jStore:
                     "id", "candidate_id", "left_id", "left_kind", "right_id", "right_kind",
                     "verdict", "relation", "evidence_strength", "supporting_facts",
                     "strongest_limitation", "rationale", "model", "prompt_version", "created_at",
-                    "cached", "distance_km", "dt_min", "needs_review")},
+                    "cached", "distance_km", "dt_min", "needs_review", "incident_relationship", "has_article_match")},
                 "resolved_entities_json": json.dumps(value["resolved_entities"], ensure_ascii=False),
+                "article_match_json": json.dumps(value["article_match"], ensure_ascii=False),
+                "source_documents_json": json.dumps(value["source_documents"], ensure_ascii=False),
+                "source_groups_json": json.dumps(value["source_groups"], ensure_ascii=False),
                 "batch_id": batch_id,
             })
             for entity in assessment.resolved_entities:
@@ -278,7 +281,8 @@ class Neo4jStore:
                 """
                 UNWIND $rows AS row
                 MERGE (a:LLMAssessment {id: row.id})
-                SET a += row, a.label = row.verdict + ': ' + row.relation
+                SET a += row, a.label = CASE WHEN row.has_article_match THEN 'Same article; incident: ' + row.incident_relationship
+                    ELSE row.verdict + ': ' + row.relation END
                 WITH a, row
                 MATCH (left {id: row.left_id}), (right {id: row.right_id})
                 MERGE (a)-[al:ASSESSES {role: 'left'}]->(left) SET al.kind = 'ASSESSES'
@@ -326,7 +330,7 @@ class Neo4jStore:
         records = self._query(
             """
             MATCH (a:LLMAssessment {batch_id: $batch_id})
-            WHERE $include_rejected OR a.verdict IN ['SUPPORTED', 'PLAUSIBLE']
+            WHERE $include_rejected OR a.verdict IN ['SUPPORTED', 'PLAUSIBLE'] OR a.has_article_match = true
             RETURN a ORDER BY a.evidence_strength DESC LIMIT $limit
             """, batch_id=batch_id, include_rejected=include_rejected, limit=limit,
         )
@@ -334,6 +338,8 @@ class Neo4jStore:
         for record in records:
             value = dict(record["a"])
             value["resolved_entities"] = json.loads(value.pop("resolved_entities_json", "[]"))
+            for field, default in (("article_match", "{}"), ("source_documents", "[]"), ("source_groups", "{}")):
+                value[field] = json.loads(value.pop(field + "_json", default))
             out.append(value)
         return out
 
@@ -516,7 +522,8 @@ class Neo4jStore:
             ai = self._query(
                 """
                 MATCH (n) WHERE n.batch_id = $batch_id AND
-                    (n:FusionCluster OR (n:LLMAssessment AND n.verdict IN ['SUPPORTED', 'PLAUSIBLE']))
+                    (n:FusionCluster OR (n:LLMAssessment AND
+                        (n.verdict IN ['SUPPORTED', 'PLAUSIBLE'] OR n.has_article_match = true)))
                 OPTIONAL MATCH (n)-[r]->(m)
                 WHERE type(r) IN ['ASSESSES', 'CONTAINS']
                 RETURN n, r, m ORDER BY coalesce(n.score, n.evidence_strength, 0) DESC LIMIT 250

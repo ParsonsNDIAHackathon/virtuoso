@@ -38,6 +38,7 @@ class FakeOpenAI:
                     "caveats": ["Identity is not directly established."]}
         return {
             "verdict": self.verdict, "relation": "SUPPORTS", "evidence_strength": 0.67,
+            "incident_relationship": "SAME_INCIDENT" if self.verdict in {"SUPPORTED", "PLAUSIBLE"} else "UNCERTAIN",
             "supporting_facts": ["Both records explicitly mention a missile."],
             "strongest_limitation": "No shared unique incident identifier.",
             "rationale": "The graph evidence is consistent but needs analyst review.",
@@ -81,6 +82,23 @@ def test_adjudication_cache_and_review_semantics():
     assert first.verdict == "PLAUSIBLE" and first.needs_review
     assert second.cached and fake.calls == 1
     assert "graph_context" in fake.last_input
+
+
+def test_gdelt_source_article_is_added_only_when_adjudicating():
+    left = record("gdelt:doc", "gdelt", "2026-08-18T10:00:00+00:00", url="https://news.example/doc")
+    right = record("tg:x/1", "telegram", "2026-08-18T10:10:00+00:00", text="missile report")
+    fake = FakeOpenAI("SUPPORTED")
+    document = {
+        "available": True, "resolved_url": "https://news.example/doc", "title": "Incident report",
+        "text": "The full source article explicitly describes the named incident and location.",
+        "truncated": False, "fetched_at_epoch": 1787047200,
+    }
+    with tempfile.TemporaryDirectory() as directory, patch("fusion.fusion_ai.document_text", return_value=document) as fetch:
+        service = FusionAI(Path(directory), client=fake)
+        service.adjudicate(candidate_for_pair(left, right))
+    fetch.assert_called_once_with("https://news.example/doc")
+    assert "full source article explicitly describes" in fake.last_input
+    assert "source_document" in fake.last_input
 
 
 def test_blank_api_key_disables_calls_cleanly():
@@ -224,6 +242,7 @@ def test_neo4j_deadlock_is_retried():
 
 if __name__ == "__main__":
     tests = [test_pair_specific_candidate_generation, test_adjudication_cache_and_review_semantics,
+             test_gdelt_source_article_is_added_only_when_adjudicating,
              test_blank_api_key_disables_calls_cleanly, test_provider_error_preserves_safe_quota_detail,
              test_graph_context_excludes_proximity_and_prior_model_edges,
              test_multimodal_clusters_and_brief, test_in_memory_graph_persists_ai_artifacts,
