@@ -87,6 +87,14 @@ class Baseline:
         i = int((t - self.t_min) // self.step)
         return i if 0 <= i < self.n else None
 
+    def completed_bin(self, t: float) -> int | None:
+        """Index of the last bin that ended at or before t (the bin containing t is still filling)."""
+        i = int((t - self.t_min) // self.step) - 1
+        return i if 0 <= i < self.n else None
+
+    def bin_end(self, i: int) -> float:
+        return self.t_min + (i + 1) * self.step
+
     def add_events(self, events) -> None:
         self.__dict__.pop("_series_cache", None)
         for e in events:
@@ -192,14 +200,15 @@ class Baseline:
 
     # ---- scoring --------------------------------------------------------------------
     def reference_indices(self, i: int) -> list[int]:
-        """Same hour-of-day +/-2 h on other days; 2-3 h away on the same day."""
+        """Past-only reference: same hour-of-day +/-2 h on EARLIER days, and 2-3 h earlier the same
+        day. Nothing after bin i is ever consulted, so an assessment at t uses only evidence before t."""
         per_day = int(86400 // self.step)
         day, hour = divmod(i, per_day)
         n_days = (self.n + per_day - 1) // per_day
         out = []
-        for d in range(n_days):
+        for d in range(day + 1):
             if d == day:
-                for off in (-3, -2, 2, 3):
+                for off in (-3, -2):
                     j = d * per_day + hour + off
                     if 0 <= j < self.n and 0 <= hour + off < per_day:
                         out.append(j)
@@ -251,7 +260,7 @@ class Baseline:
                          z=round(z, 2), state=state, reference_n=len(ref), **base)
 
     def departures_at(self, t: float, streams=STREAMS, only_departed: bool = True) -> list[Departure]:
-        i = self._bin(t)
+        i = self.completed_bin(t)
         if i is None:
             return []
         out = []

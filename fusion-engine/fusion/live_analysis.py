@@ -135,6 +135,7 @@ class LiveAnalysis:
             "window": {"t_min": b.t_min, "t_max": b.t_max, "hours": HOURS},
             "baseline": {"z_threshold": 2.0, "reference": "same hour +/-2 h on the prior day, 2-3 h away today",
                          "days": 2, "note": "aircraft streams have 2 h of history; they read insufficient outside it"},
+            "assessed_through": (datetime.fromtimestamp(b.bin_end(b.completed_bin(now)), tz=timezone.utc).isoformat() if b.completed_bin(now) is not None else None),
             "incidents": [inc.to_dict() for inc in tracker.at(now)],
             "departures": [d.to_dict() for d in b.departures_at(now)],
             "departed_cells": sorted([list(c) for c in b.departed_cells(now)]),

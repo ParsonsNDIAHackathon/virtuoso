@@ -56,8 +56,8 @@ def test_news_spike_is_new_change_and_articles_count_once():
     assert b.value("news", (26, 56), 33)[0] == 2 + 1 + 8       # the 10 duplicate records count once
     d = b.score("news", (26, 56), 33)
     assert d.state == "new_change" and d.z is not None and d.z > 2 and d.reference_n >= 4
-    assert b.score("news", (26, 56), 20).state == "normal"
-    assert (26, 56) in b.departed_cells(T0 + 33 * 3600 + 10)
+    assert b.score("news", (26, 56), 44).state == "normal"
+    assert (26, 56) in b.departed_cells(T0 + 34 * 3600 + 10)
 
 
 def test_persistent_then_recovering_and_insufficient_navint():
@@ -87,12 +87,12 @@ def test_expected_cooccurrence_needs_two_streams():
     per[33] = 60
     b.add_tracks(_tracks(25, 55, per))                 # aircraft alone spike in the airport cell
     assert b.score("tracks", (25, 55), 33).state == "new_change"
-    assert (25, 55) not in b.departed_cells(T0 + 33 * 3600 + 10)
+    assert (25, 55) not in b.departed_cells(T0 + 34 * 3600 + 10)
     # add a news spike in the same cell and hour -> two streams -> the cell qualifies
     events = [Ev(f"n{i}", _iso(T0 + i * 3600 + 30), 25.3, 55.3, f"http://y/{i}", False) for i in range(48)]
     events += [Ev(f"s{a}", _iso(T0 + 33 * 3600 + 30), 25.3, 55.3, f"http://y/s/{a}", True) for a in range(12)]
     b.add_events(events)
-    assert (25, 55) in b.departed_cells(T0 + 33 * 3600 + 10)
+    assert (25, 55) in b.departed_cells(T0 + 34 * 3600 + 10)
 
 
 def test_dateline_config_and_cell_helper():

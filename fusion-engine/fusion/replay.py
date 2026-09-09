@@ -268,6 +268,9 @@ class ReplayState:
             # what is unusual for each cell at this hour, with the reference it rests on
             "departures": [d.to_dict() for d in departures],
             "departed_cells": sorted([list(c) for c in departed]),
+            # assessments use completed hours only: nothing after this instant is consulted
+            "assessed_through": (datetime.fromtimestamp(baseline.bin_end(baseline.completed_bin(t)), tz=timezone.utc).isoformat()
+                                 if baseline and baseline.completed_bin(t) is not None else None),
             # persistent incidents formed from departed cells, with revisions available at t only
             "incidents": [inc.to_dict() for inc in (getattr(self, "incidents", None).at(t) if getattr(self, "incidents", None) else [])],
             "baseline": {"z_threshold": MISSION["z_threshold"], "persistent_bins": MISSION["persistent_bins"],

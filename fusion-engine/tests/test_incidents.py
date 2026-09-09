@@ -35,7 +35,7 @@ def _scenario():
 def test_incident_forms_tracks_and_explains():
     b, events = _scenario()
     tr = IncidentTracker(b, events)
-    t28 = T0 + 28 * 3600 + 10
+    t28 = T0 + 29 * 3600 + 10
     inc = tr.at(t28)
     assert len(inc) == 1 and inc[0].state == "new_change" and [26, 56] in inc[0].cells
     assert inc[0].streams["military"]["departed"] and inc[0].streams["navint"]["departed"]
@@ -45,7 +45,7 @@ def test_incident_forms_tracks_and_explains():
     assert inc[0].next_check and ("news" in inc[0].next_check["prediction"] or "keywords" in inc[0].next_check["prediction"]
                                   or "social" in inc[0].next_check["prediction"])
     # one hour later reporting arrives with vessel keywords: same incident id, a revision, leading explanation is maritime
-    inc29 = tr.at(T0 + 29 * 3600 + 10)
+    inc29 = tr.at(T0 + 30 * 3600 + 10)
     assert inc29[0].id == inc[0].id
     assert inc29[0].streams["news"]["departed"] or inc29[0].streams["conflict"]["departed"]
     assert any("news" in r["added"] or "conflict" in r["added"] for r in inc29[0].revisions)
@@ -58,9 +58,9 @@ def test_incident_forms_tracks_and_explains():
     # revisions visible at t never include later ones
     assert all(r["t"] <= T0 + 29 * 3600 + 10 for r in inc29[0].revisions)
     # after the surge the incident is kept one bin as recovering, then gone
-    rec = tr.at(T0 + 31 * 3600 + 10)
+    rec = tr.at(T0 + 32 * 3600 + 10)
     assert rec and rec[0].id == inc[0].id and rec[0].state == "recovering"
-    assert tr.at(T0 + 33 * 3600 + 10) == [] or all(x.id != inc[0].id for x in tr.at(T0 + 33 * 3600 + 10))
+    assert tr.at(T0 + 34 * 3600 + 10) == [] or all(x.id != inc[0].id for x in tr.at(T0 + 34 * 3600 + 10))
 
 
 def test_no_incident_on_quiet_hours():

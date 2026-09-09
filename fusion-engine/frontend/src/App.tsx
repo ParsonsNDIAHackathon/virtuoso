@@ -307,11 +307,11 @@ export function App() {
       <aside className="relative flex min-h-0 flex-col gap-2 lg:row-span-2">
         {detail ? <><Inspector detail={detail} entity={entity.data} entityLoading={entity.isLoading} expanded onClose={() => { setDetail(null); setSourceViewer(null); }} onEmbed={(d) => setSourceViewer(d)} /><CollapsedSidebarTabs onOpen={() => { setDetail(null); setSourceViewer(null); }} /></> : <>
           <Regions regions={regions.data ?? []} filterAoi={filterAoi} drawing={drawing} draft={draft} onToggleFilter={() => setFilterAoi((value) => !value)} onToggleDrawing={() => { setDrawing((value) => !value); setDraft(null); }} onNameChange={(name) => setDraft((value) => value ? { ...value, name } : value)} onSave={() => { if (draft) addRegion.mutate({ lat: draft.lat, lon: draft.lon, radius_nm: draft.radius_nm, name: draft.name }); }} onCancel={() => setDraft(null)} onRemove={(id) => removeRegion.mutate(id)} onRename={(id, name) => renameRegion.mutate({ id, name })} onZoom={zoomToRegion} />
+          <Incidents incidents={live ? (liveIncidents.data?.incidents ?? []) : (replay.incidents ?? [])} baseline={live ? liveIncidents.data?.baseline : replay.baseline} status={live ? liveIncidents.data?.status : undefined} onFocus={([lat, lon]) => setFocus([lat, lon, 8])} />
           <CandidateQueue candidates={candidates} />
           <AssessmentQueue assessments={assessed} clusters={clusters} showRejected={showRejected} onToggleRejected={() => setShowRejected((value) => !value)} />
           <AlertQueue alerts={queue} onSelect={selectAlert} />
           <Inspector detail={null} onEmbed={(d) => setSourceViewer(d)} />
-          <Incidents incidents={live ? (liveIncidents.data?.incidents ?? []) : (replay.incidents ?? [])} baseline={live ? liveIncidents.data?.baseline : replay.baseline} status={live ? liveIncidents.data?.status : undefined} onFocus={([lat, lon]) => setFocus([lat, lon, 8])} />
           {!live && mode && <CuratedEvidence scenarioId={mode} tMin={config.data?.t_min} tMax={config.data?.t_max} onSeek={(t) => { setPlaying(false); setReplayTime(t); }} />}
         </>}
         {sourceViewer && <SourceViewer detail={sourceViewer} onClose={() => setSourceViewer(null)} />}

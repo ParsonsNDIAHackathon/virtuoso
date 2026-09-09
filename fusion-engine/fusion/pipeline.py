@@ -81,6 +81,7 @@ class FusionState:
     fusion_ai: FusionAI = field(default_factory=lambda: FusionAI(DATA), repr=False)
     live_analysis: LiveAnalysis = field(default_factory=lambda: LiveAnalysis(DATA / "gdelt"), repr=False)
     fusion_candidates: list[Candidate] = field(default_factory=list, repr=False)
+    fusion_candidates_ungated_n: int = 0
     fusion_assessments: dict[str, Assessment] = field(default_factory=dict, repr=False)
     fusion_clusters: list[FusionCluster] = field(default_factory=list, repr=False)
     # This is deliberately separate from record counts.  An empty result can be
@@ -376,7 +377,20 @@ class FusionState:
             # The deterministic pass deliberately creates candidates only. OpenAI adjudication
             # runs outside this one-minute ingest path and promotes supported evidence separately.
             records = records_from_sources(ev, tr, hotspots, social_posts)
-            self.fusion_candidates = generate_candidates(records, limit=int(os.getenv("FUSION_CANDIDATE_LIMIT", "250")))
+            limit = int(os.getenv("FUSION_CANDIDATE_LIMIT", "250"))
+            baseline = getattr(self.live_analysis, "baseline", None)
+            if baseline is not None:
+                from .baseline import cell_of
+                from .mission import is_dateline
+                departed = baseline.departed_cells(now_ts_gate := datetime.now(timezone.utc).timestamp())
+                hot = {(c[0] + dy, c[1] + dx) for c in departed for dy in (-1, 0, 1) for dx in (-1, 0, 1)}
+                gated = [r for r in records if cell_of(r.lat, r.lon) in hot
+                         and not (r.kind == "gdelt" and is_dateline(r.label.split(": ", 1)[-1]))]
+                self.fusion_candidates = generate_candidates(gated, limit=limit)
+                self.fusion_candidates_ungated_n = len(generate_candidates(records, limit=limit))
+            else:
+                self.fusion_candidates = generate_candidates(records, limit=limit)
+                self.fusion_candidates_ungated_n = len(self.fusion_candidates)
             current_candidate_ids = {candidate.id for candidate in self.fusion_candidates}
             self.fusion_assessments = {
                 key: assessment for key, assessment in self.fusion_assessments.items()

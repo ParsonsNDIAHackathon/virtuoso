@@ -269,7 +269,7 @@ class IncidentTracker:
         seq = 0
         for i in range(self.b.n):
             t = self.b.t_min + i * self.b.step
-            departed = self.b.departed_cells(t + 1)
+            departed = self.b.departed_cells(self.b.bin_end(i))      # evaluate bin i once it has completed
             current: list[Incident] = []
             unused = list(prev)
             for comp in _components(departed):
@@ -331,7 +331,7 @@ class IncidentTracker:
                 "relevance": f"{len(inc.cells)} cell(s) in the monitored area; {inc.state}"}
 
     def at(self, t: float) -> list[Incident]:
-        i = self.b._bin(t)
+        i = self.b.completed_bin(t)
         if i is None:
             return []
         out = []
