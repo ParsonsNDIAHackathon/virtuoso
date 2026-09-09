@@ -69,11 +69,13 @@ def test_incident_priority_stays_within_source_evidence_tier():
     assert [c.id for c in chosen] == ["strong", "incident", "away"]
 
 
-def test_same_outlet_is_excluded_from_automatic_corroboration_but_manual_comparison_remains():
+def test_same_outlet_articles_are_candidates_but_duplicate_article_records_are_not():
     first = replace(record("a", "gdelt", "2026-08-18T10:00:00+00:00", persons=["Ada Lovelace"],
                            url="https://one.test/a"), source="one.test")
     same_outlet = replace(first, id="b", data={**first.data, "url": "https://one.test/b"})
-    assert not generate_candidates([first, same_outlet])
+    assert generate_candidates([first, same_outlet])[0].match_type == "entity"
     assert candidate_for_pair(first, same_outlet).match_type == "entity"
+    duplicate_article = replace(first, id="duplicate")
+    assert not generate_candidates([first, duplicate_article])
     independent = replace(same_outlet, source="two.test", data={**same_outlet.data, "url": "https://two.test/b"})
     assert generate_candidates([first, independent])[0].match_type == "entity"

@@ -343,8 +343,6 @@ def generate_candidates(records: Iterable[EvidenceRecord], limit: int = 250) -> 
             return
         if left.kind in NEWS and right.kind in NEWS and coverage_key_pair(left, right)[0] == coverage_key_pair(left, right)[1]:
             return
-        if left.kind == right.kind == "gdelt" and left.source and left.source != "gdelt" and left.source == right.source:
-            return  # two records from one outlet are not independent corroboration
         spatial, temporal = max(0, 1 - distance / radius), max(0, 1 - dt / minutes)
         base = {"identifier": .92, "name": .82, "entity": .68, "topic": .5, "proximity": 0}[kind]
         score = round(base + (.03 * spatial + .03 * temporal if base else .22 * spatial + .17 * temporal), 3)
