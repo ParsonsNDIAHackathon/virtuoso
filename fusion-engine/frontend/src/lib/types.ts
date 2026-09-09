@@ -55,3 +55,6 @@ export type Timeline = {
   bins: TimelineBin[]; step_min: number; hours?: number; t_min?: number;
   backfill?: { status: string; hours: number; windows: number }; since?: number | null;
 };
+
+export type Vessel = { id: string; mmsi: number; ts: string; lat: number; lon: number; name?: string | null; sog?: number | null; cog?: number | null; heading?: number | null; nav_status?: number | null; age_min: number };
+export type AisPicture = { vessels: Vessel[]; source: NonNullable<Status["sources"]>[string] };

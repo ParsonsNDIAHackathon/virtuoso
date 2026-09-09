@@ -11,12 +11,19 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
 
 from fusion.pipeline import FusionState, run_loop, run_once
+from fusion.ingest_ais import AisFeed
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("app")
 
 app = FastAPI(title="Multi-INT Fusion Engine", version="0.1")
 state = FusionState()
+ais = AisFeed()
+
+def _sync_ais():
+    with state.lock:
+        ais.configure(state.regions)
+
 _worker: threading.Thread | None = None
 
 
@@ -71,6 +78,8 @@ def _startup():
     # The UI shows "warming up" until /api/status reports an `updated` timestamp.
     _worker = threading.Thread(target=run_loop, args=(state,), kwargs={"windows": 2, "primed": False}, daemon=True)
     _worker.start()
+    _sync_ais()
+    ais.start()
 
 
 @app.get("/api/status")
@@ -87,6 +96,12 @@ def alerts(limit: int = Query(100, le=2000), min_score: float = 0.0):
 def events(conflict_only: bool = False, limit: int = Query(3000, ge=1, le=20000), bbox: str | None = None):
     # Retrieve before filtering to preserve the existing API's result semantics.
     return _in_view(state.api_events(conflict_only, 20000), bbox, limit)
+
+
+@app.get("/api/ais")
+def vessels():
+    """Only vessels inside saved AOI circles; no viewport/global subscription."""
+    return ais.snapshot()
 
 
 @app.get("/api/aircraft")
@@ -148,19 +163,20 @@ def entity(node_id: str):
 
 @app.on_event("shutdown")
 def _shutdown():
+    ais.stop()
     state.close()
     for replay in _replays.values():
         replay.store.close()
 
 
 # ---------------- areas of interest (circles) ----------------
-from pydantic import BaseModel  # noqa: E402
+from pydantic import BaseModel, Field  # noqa: E402
 
 
 class RegionIn(BaseModel):
-    lat: float
-    lon: float
-    radius_nm: float = 100.0
+    lat: float = Field(ge=-90, le=90, allow_inf_nan=False)
+    lon: float = Field(ge=-180, le=180, allow_inf_nan=False)
+    radius_nm: float = Field(default=100.0, gt=0, allow_inf_nan=False)
     name: str | None = None
 
 
@@ -172,7 +188,9 @@ def regions():
 
 @app.post("/api/regions")
 def add_region(r: RegionIn):
-    return state.add_region(r.lat, r.lon, r.radius_nm, r.name)
+    region = state.add_region(r.lat, r.lon, r.radius_nm, r.name)
+    _sync_ais()
+    return region
 
 
 class RegionRename(BaseModel):
@@ -191,6 +209,7 @@ def rename_region(rid: str, body: RegionRename):
 def delete_region(rid: str):
     if not state.remove_region(rid):
         return JSONResponse({"error": "unknown region"}, status_code=404)
+    _sync_ais()
     return {"ok": True}
 
 

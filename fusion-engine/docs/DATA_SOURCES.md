@@ -19,14 +19,14 @@ Access legend: **none** = no key or account · **free key** = free registration,
 | 5 | Thermal anomalies | [NASA FIRMS](https://firms.modaps.eosdis.nasa.gov) VIIRS SNPP / NOAA-20 / NOAA-21 NRT, 375 m | CSV area API `api/area/csv/{MAP_KEY}/{SOURCE}/{bbox}/{days}/{date}` | **free key** `FIRMS_MAP_KEY` ([request](https://firms.modaps.eosdis.nasa.gov/api/map_key/)) | NASA open data | every 15 min, inside each drawn circle | day = 622 hotspots; novelty vs the previous two days = 23 new | `ingest_firms.py` |
 | 6 | Radar ship detections | Copernicus Sentinel-1 GRD IW, `IW_GRDH_1S-COG` family, via [Copernicus Data Space](https://dataspace.copernicus.eu) | Catalog: OData `/odata/v1/Products` with `OData.CSC.Intersects` + `contains(Name,'GRDH')` (the STAC endpoint rejects collection `SENTINEL-1`). Download: S3 bucket `eodata`, endpoint `eodata.dataspace.copernicus.eu`, boto3 region `default`; VV COG tiff (~600 MB) + annotation XML. Detector works on COG overviews with tie-point geolocation, land mask, 500 m length cap. | **free account** `CDSE_S3_ACCESS_KEY` / `CDSE_S3_SECRET_KEY` (keys expire 2026-09-12) | Copernicus free and open | n/a (revisit is days) | 4 scenes: Aug 17 02:06Z (strait, 139 vessels in core), Aug 18 01:58Z (Gulf of Oman), Aug 18 14:31Z (southern Gulf, 1,609), Aug 20 14:16Z (strait, 292 in core) | `sar_ships.py` |
 | 7 | Satellite basemap | [NASA GIBS](https://gibs.earthdata.nasa.gov) WMTS `VIIRS_SNPP_CorrectedReflectance_TrueColor` | Daily tiles by date, loaded directly by Leaflet | none | NASA open data | yesterday (daily imagery lags a few hours) | scenario day | `app/static/index.html` |
-| 8 | Vessels (AIS, live) | [aisstream.io](https://aisstream.io) WebSocket | Subscribe with bbox; PositionReport messages | **free key** `AISSTREAM_API_KEY` | aisstream terms; volunteer receivers | on demand | none | `ingest_ais.py` |
+| 8 | Vessels (AIS, live) | [aisstream.io](https://aisstream.io) WebSocket | AOI bounding-box subscription; Class A/B position reports; exact circle filter; `/api/ais` | **free key** `AISSTREAM_API_KEY` | aisstream terms; volunteer receivers | on demand | none | `ingest_ais.py` |
 | 9 | Graph store | Neo4j 2026.07.1 in Docker (`docker compose up -d`) | optional; in-memory networkx fallback with identical scoring | `NEO4J_PASSWORD` (local) | — | — | — | `store.py`, `neo4j_store.py` |
 
 ### Coverage limits you must state in the demo
 
-- **aisstream has zero receivers in the Persian Gulf, Gulf of Oman, Arabian Sea, and Red Sea.**
+- **Earlier aisstream probes received no messages in the Persian Gulf, Gulf of Oman, Arabian Sea, and Red Sea.**
   Probes of 12–15 s returned nothing; the eastern Med and Rotterdam return thousands. Found
-  independently by both efforts. The AIS ingest is kept for regions with coverage.
+  independently by both efforts. These were historical checks, not a current coverage guarantee. Live AIS is now connected to saved AOIs and the map; its source indicator reports current connection status.
 - **No free historical AIS exists for the Gulf on Aug 18.** NOAA Marine Cadastre is US waters
   only; OpenSky and ADS-B Exchange history are gated; aisstream is live only. Commercial options
   (Datalastic, VesselFinder, MarineTraffic, Windward) require paid accounts; two inquiries were
@@ -89,7 +89,7 @@ Telegram, and GIBS are keyless, so the two-stream demo runs with an empty `.env`
 | Variable | Needed for | Where to get it | Cost |
 |---|---|---|---|
 | `FIRMS_MAP_KEY` | thermal layer | firms.modaps.eosdis.nasa.gov/api/map_key | free |
-| `AISSTREAM_API_KEY` | live AIS (outside the Gulf) | aisstream.io | free |
+| `AISSTREAM_API_KEY` | live AIS within saved AOIs | aisstream.io | free |
 | `CDSE_S3_ACCESS_KEY`, `CDSE_S3_SECRET_KEY` | Sentinel-1 download | dataspace.copernicus.eu → S3 keys | free account; keys expire |
 | `NEO4J_PASSWORD` | Neo4j container | choose locally | — |
 | `FUSION_STORE` | `auto` \| `neo4j` \| `memory` | — | — |
@@ -127,7 +127,7 @@ correlation rules, and the same alert ranking, but the data comes from different
 | Social (Telegram) | latest posts from `intelslava` and `Middle_East_Spectator` every **5 min** | the same channels paged back to Aug 18: 57 posts, 17 geolocated |
 | Thermal (FIRMS) | last 24 h inside each circle, refreshed every 15 min, novelty vs the previous 2 days | the day's 622 hotspots, novelty vs Aug 16–17: 23 new |
 | Radar ships (Sentinel-1) | **none** (satellite revisit is days, so there is no "live" radar) | 4 real scenes; at instant *t* the nearest scene within 3 days is shown with its age labeled, plus the nearest strait-covering scene in amber |
-| Vessels (AIS) | none in the Gulf (no receivers); works elsewhere if `AISSTREAM_API_KEY` is set | none (no free historical AIS) |
+| Vessels (AIS) | AOI-scoped aisstream.io positions when `AISSTREAM_API_KEY` is set; coverage varies | none (no free historical AIS) |
 | Satellite basemap (GIBS) | yesterday's imagery, toggle | Aug 18 imagery, toggle |
 | Correlation | events from the last 4 h vs aircraft within 75 km, re-scored after every pull | events from the prior 2 h vs aircraft positions as of *t*, re-scored for every instant |
 | History strip | 15-minute bins over a selectable window (6 h to 7 days); GDELT and Telegram backfilled 48 h from the sources inside the drawn circles, thermal from FIRMS, aircraft and correlations from this server's own persisted history | 96 fifteen-minute bins for the day |

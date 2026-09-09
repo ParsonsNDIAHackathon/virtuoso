@@ -4,6 +4,7 @@ import { Button } from "./ui/button";
 const sources = [
   ["OSINT event", "GDELT Project", "Worldwide news events, actors, tone, and geocoded locations.", "Every 15 minutes"],
   ["Telegram post", "Telegram public channels", "Public-preview posts that name a known location.", "Every 5 minutes"],
+  ["AIS vessels", "aisstream.io", "Live vessel reports within AOI circles. Receiver coverage varies; reporting gaps do not prove a vessel stopped transmitting. No historical replay.", "Streaming · view refreshes every 10 seconds"],
   ["Aircraft", "adsb.lol", "Cooperative ADS-B transponder positions; coverage varies by receiver density.", "Every 60 seconds"],
   ["Thermal anomaly", "NASA FIRMS / VIIRS", "Satellite heat detections. Bright/new signals are absent from the two-day baseline.", "Every 15 minutes"],
   ["Satellite imagery", "NASA GIBS", "VIIRS true-colour basemap. It is context only, not a detection source.", "Daily"],

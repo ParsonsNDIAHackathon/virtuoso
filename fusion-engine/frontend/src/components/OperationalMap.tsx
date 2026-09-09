@@ -2,19 +2,21 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import L from "leaflet";
 import { RfSpectrumDialog } from "./RfSpectrumDialog";
 import { Circle, CircleMarker, MapContainer, Marker, Polyline, Rectangle, TileLayer, useMap, useMapEvents } from "react-leaflet";
-import type { Alert, Event, Firms, Region, Tail, Track, Viewport } from "../lib/types";
+import type { Alert, Event, Firms, Region, Tail, Track, Vessel, Viewport } from "../lib/types";
 import { distanceKm } from "../lib/utils";
 
 const NM_KM = 1.852;
 const renderer = L.canvas({ padding: .5 });
 const eventColor = "#eab85a";
 const aoiColor = "#a78bfa";
-const LAYER_LABELS: Record<keyof LayerState, string> = { events: "OSINT", tracks: "ADS-B", firms: "Thermal", links: "Links", imagery: "Imagery", rf: "RF" };
+const LAYER_LABELS: Record<keyof LayerState, string> = { events: "OSINT", tracks: "ADS-B", firms: "Thermal", links: "Links", imagery: "Imagery", rf: "RF", ais: "AIS" };
 const clusterIcon = (count: number, color: string) => L.divIcon({ className: "", iconSize: [34, 34], iconAnchor: [17, 17], html: `<span style="display:grid;place-items:center;width:34px;height:34px;border-radius:50%;border:2px solid ${color};background:#101710e8;color:${color};font:600 10px monospace">${count > 999 ? "999+" : count}</span>` });
 const rfIcon = L.divIcon({
   className: "", iconSize: [32, 32], iconAnchor: [16, 16],
   html: '<svg viewBox="0 0 32 32" width="32" height="32" aria-hidden="true"><circle cx="16" cy="16" r="15" fill="#101710" stroke="#eab85a"/><path d="M18 5 8 18h7l-1 9 10-14h-7z" fill="#eab85a"/></svg>',
 });
+const vesselIcon = L.divIcon({ className: "", iconSize: [24, 24], iconAnchor: [12, 12],
+  html: '<svg width="24" height="24" viewBox="0 0 24 24" aria-label="AIS vessel"><path d="M12 2 19 9v10l-7 3-7-3V9z" fill="#34d399" stroke="#101710" stroke-width="2"/><path d="M9 10h6v6H9z" fill="#101710"/></svg>' });
 const planeIcons = new Map<string, L.DivIcon>();
 const thermalIcons = new Map<string, L.DivIcon>();
 // Keep the AOI target as a DOM marker, rather than a canvas shape.  Leaflet
@@ -62,11 +64,11 @@ function planeIcon(track: Track) {
 }
 
 export type MapDetail = { title: string; lines: string[]; href?: string; hrefLabel?: string; entityId?: string; connections?: Array<{ kind: "event" | "aircraft"; label: string; detail: string; selected?: boolean }> };
-export type LayerState = { events: boolean; tracks: boolean; firms: boolean; links: boolean; imagery: boolean; rf: boolean };
+export type LayerState = { events: boolean; tracks: boolean; firms: boolean; links: boolean; imagery: boolean; rf: boolean; ais: boolean };
 type Cluster<T> = { lat: number; lon: number; items: T[] };
 type Point = { lat: number; lon: number };
 type Props = {
-  events: Event[]; tracks: Track[]; alerts: Alert[]; firms: Firms[]; tails: Tail[]; regions: Region[]; layers: LayerState; viewport: Viewport;
+  events: Event[]; tracks: Track[]; vessels: Vessel[]; live: boolean; alerts: Alert[]; firms: Firms[]; tails: Tail[]; regions: Region[]; layers: LayerState; viewport: Viewport;
   filterAoi: boolean; drawing: boolean; focus?: [number, number, number]; satelliteDay?: string; replayBounds?: [number, number, number, number];
   onDraft: (draft: Omit<Region, "id">) => void; onSelect: (detail: MapDetail) => void; onAoiZoom: (region: Region) => void; onBackgroundClick: () => void; onViewport: (viewport: Viewport) => void; onLayerToggle: (layer: keyof LayerState) => void;
 };
@@ -119,7 +121,7 @@ function ThermalLayer({ values, zoom, onSelect }: { values: Firms[]; zoom: numbe
   return <>{groups.map((group, index) => { const item = group.items[0]; const novel = (item.novelty ?? 0) >= .9; return group.items.length === 1 && zoom >= 5 ? <Marker key={`thermal-${item.lat}-${item.lon}-${item.ts}`} position={[group.lat, group.lon]} icon={thermalIcon(novel)} eventHandlers={{ click: () => onSelect(detail(item)) }} /> : group.items.length === 1 ? <CircleMarker key={`thermal-point-${item.lat}-${item.lon}-${item.ts}`} center={[group.lat, group.lon]} renderer={renderer} radius={novel ? 4 : 3} pathOptions={{ color: novel ? "#f87171" : "#8d2b24", fillOpacity: .8, weight: 1 }} eventHandlers={{ click: () => onSelect(detail(item)) }} /> : <Marker key={`thermal-cluster-${index}`} position={[group.lat, group.lon]} icon={clusterIcon(group.items.length, "#f87171")} eventHandlers={{ click: () => map.setView([group.lat, group.lon], Math.min(zoom + 2, 9)) }} />; })}</>;
 }
 
-export function OperationalMap({ events, tracks, alerts, firms, tails, regions, layers, viewport, filterAoi, drawing, focus, satelliteDay, replayBounds, onDraft, onSelect, onAoiZoom, onBackgroundClick, onViewport, onLayerToggle }: Props) {
+export function OperationalMap({ events, tracks, vessels, live, alerts, firms, tails, regions, layers, viewport, filterAoi, drawing, focus, satelliteDay, replayBounds, onDraft, onSelect, onAoiZoom, onBackgroundClick, onViewport, onLayerToggle }: Props) {
   const [rfOpen, setRfOpen] = useState(false);
   useEffect(() => { if (!layers.rf) setRfOpen(false); }, [layers.rf]);
   const include = (lat: number, lon: number) => !filterAoi || regions.length === 0 || regions.some((region) => distanceKm(lat, lon, region.lat, region.lon) <= region.radius_nm * NM_KM);
@@ -133,9 +135,10 @@ export function OperationalMap({ events, tracks, alerts, firms, tails, regions, 
     {regions.map((region) => <AoiCircle key={region.id} region={region} drawing={drawing} onZoom={onAoiZoom} />)}
     {layers.firms && <ThermalLayer values={firms} zoom={viewport.zoom} onSelect={onSelect} />}
     {layers.events && <ClusterLayer values={filteredEvents} zoom={viewport.zoom} color={eventColor} pointColor={(item) => isTelegram(item) ? "#e879f9" : eventColor} markerIcon={(item) => isTelegram(item) ? telegramIcon : osintIcon} onSelect={onSelect} renderPoint={(item) => ({ title: isTelegram(item) ? `Telegram · ${item.source_domain?.replace(/^t\.me\//, "") || "post"}` : item.root_label, lines: [item.place, `Goldstein ${item.goldstein ?? "–"} · tone ${item.tone?.toFixed(1) ?? "–"}`, `Themes: ${item.themes?.slice(0, 8).join(", ") || "–"}`], entityId: item.id, href: isTelegram(item) || !item.url?.includes("t.me/") ? item.url : undefined, hrefLabel: "Open source" })} />}
+    {live && layers.ais && <ClusterLayer values={vessels.filter((vessel) => regions.some((region) => distanceKm(vessel.lat, vessel.lon, region.lat, region.lon) <= region.radius_nm * NM_KM))} zoom={viewport.zoom} color="#34d399" markerIcon={() => vesselIcon} onSelect={onSelect} renderPoint={(vessel) => ({ title: vessel.name || `Vessel ${vessel.mmsi}`, lines: [`AIS · MMSI ${vessel.mmsi}`, `${vessel.sog ?? "–"} kt · course ${vessel.cog ?? "–"}° · heading ${vessel.heading ?? "–"}°`, `${vessel.lat.toFixed(4)}, ${vessel.lon.toFixed(4)}`, `Last report ${vessel.ts} · ${vessel.age_min.toFixed(1)} min ago`, vessel.age_min >= 15 ? "Stale position · no report for at least 15 minutes; coverage may be interrupted." : "Live AIS · aisstream.io"] })} />}
     {layers.tracks && <TrackLayer values={filteredTracks} zoom={viewport.zoom} onSelect={onSelect} />}
     {layers.tracks && tails.map((tail, index) => <Polyline key={`tail-${index}`} positions={tail.coords} renderer={renderer} pathOptions={{ color: tail.military ? "#1d4ed8" : "#5cc7da", weight: 2.5, opacity: .85 }} />)}
     {layers.links && alerts.filter((item) => include(item.lat, item.lon)).slice(0, 75).flatMap((alert) => { const track = trackById.get(alert.aircraft_id); return track ? [<Polyline key={`${alert.aircraft_id}-${alert.event_id}`} positions={[[alert.lat, alert.lon], [track.lat, track.lon]]} renderer={renderer} pathOptions={{ color: "#94c973", weight: 1 + 3 * alert.score, opacity: .7 }} />] : []; })}
     {replayBounds && <Rectangle bounds={[[replayBounds[0], replayBounds[1]], [replayBounds[2], replayBounds[3]]]} renderer={renderer} pathOptions={{ color: eventColor, weight: 1, fill: false, dashArray: "4 4" }} />}
-  </MapContainer><div className="absolute right-3 top-3 z-[1000] grid grid-cols-2 gap-1 border border-line bg-panel/95 p-1">{(Object.keys(layers) as Array<keyof LayerState>).map((layer) => <button key={layer} onClick={() => onLayerToggle(layer)} aria-pressed={layers[layer]} className={`border px-2 py-1 font-mono text-[9px] uppercase ${layers[layer] ? "border-command/50 text-command" : "border-line text-muted"}`}>{LAYER_LABELS[layer]}</button>)}</div>{layers.rf && rfOpen && <RfSpectrumDialog onClose={() => setRfOpen(false)} />}</div>;
+  </MapContainer><div className="absolute right-3 top-3 z-[1000] grid grid-cols-2 gap-1 border border-line bg-panel/95 p-1">{(Object.keys(layers) as Array<keyof LayerState>).map((layer) => <button key={layer} disabled={layer === "ais" && !live} title={layer === "ais" ? (live ? "Live AIS vessels inside AOIs only" : "AIS is available in live mode only") : undefined} onClick={() => onLayerToggle(layer)} aria-pressed={layers[layer]} className={`border px-2 py-1 font-mono text-[9px] uppercase disabled:opacity-40 ${layers[layer] ? "border-command/50 text-command" : "border-line text-muted"}`}>{LAYER_LABELS[layer]}</button>)}</div>{layers.rf && rfOpen && <RfSpectrumDialog onClose={() => setRfOpen(false)} />}</div>;
 }

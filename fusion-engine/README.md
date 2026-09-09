@@ -82,7 +82,7 @@ API: `/api/status`, `/api/alerts`, `/api/events?conflict_only=true`, `/api/aircr
 | Social posts | Telegram public channel previews, every 5 min | same channels paged back to the day | `ingest_telegram.py` |
 | Thermal anomalies | NASA FIRMS VIIRS inside each circle, every 15 min, novelty vs 7 days earlier | FIRMS for the day, novelty vs Aug 11 | `ingest_firms.py` |
 | Radar ship detections | n/a (revisit is days) | Sentinel-1 GRD COG scenes from Copernicus S3, nearest scene within 3 days, age labeled | `sar_ships.py` |
-| Vessels (AIS) | aisstream.io (no coverage in the Gulf; works in the Med) | none free | `ingest_ais.py` |
+| Vessels (AIS) | aisstream.io · AOI bounding boxes, then circle filtering; coverage varies | none free | `ingest_ais.py` |
 | Satellite basemap | NASA GIBS VIIRS true color (yesterday) | same, scenario day | dashboard layer toggle |
 
 ## Replay mode — Strait of Hormuz, 18 Aug 2026
@@ -112,7 +112,7 @@ feed such as aisstream.io labeled as current.
 
 ## Hackathon facts (from the platform API)
 
-- Team UUID `979aa832-0234-40b6-abe6-16331abb76df`, lead Steve Dall (`sdall`), 6 members.
+- Team UUID `979aa832-0234-40b6-abe6-16331abb76df`, lead (Ruksana), 6 members.
 - Datasets selected on the platform: GDELT 2.0 (#62), adsb.lol ADS-B (#72), DroneRF (#73).
   All platform datasets are *link-only*; data comes from the upstream sources.
 - **Project submissions due 2026-09-10 03:59 UTC** (Sep 9, 23:59 EDT). Judging 14:00 UTC Sep 10.
@@ -130,3 +130,23 @@ feed such as aisstream.io labeled as current.
 - LLM summarization of each alert's corroborating articles (Claude API) into an analyst BLUF.
 - Track history: persist ADS-B snapshots to detect loitering / orbit patterns, not just presence.
 - Social stream (Telegram/X) ingest for true "social media spike" detection.
+
+### Live AIS
+
+Set `AISSTREAM_API_KEY` in `fusion-engine/.env` and restart the API service. In Live mode,
+add an area of interest and enable **AIS**. Green markers show vessel positions; clicking
+one shows MMSI, name, speed, course, heading, report time, and position age. The display
+refreshes every 10 seconds. The AIS source indicator reports missing credentials,
+connection failures, and the current vessel count.
+
+One backend WebSocket subscribes to the union of bounding boxes enclosing saved AOI
+circles, splitting boxes at the dateline. Incoming reports are filtered against the circles;
+map panning and the optional “Filter view to AOIs” checkbox never widen AIS coverage.
+Adding/removing AOIs reconnects with the updated subscription and immediately drops
+positions outside the remaining circles. With no AOIs, no AIS subscription is opened.
+The layer toggle controls display and browser polling; it does not stop the shared server feed.
+
+Only latest positions are kept in memory. Reports older than 15 minutes are labeled stale
+in vessel details and removed after 60 minutes. A reporting gap can reflect receiver coverage
+or connectivity; it is not evidence of intentional AIS shutdown. AIS has no replay support.
+Provider protocol: https://aisstream.io/documentation .

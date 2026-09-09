@@ -1,4 +1,4 @@
-import type { Alert, Entity, Event, Evidence, Firms, Graph, LinkPreview, Region, ReplayConfig, ReplayScenario, ReplaySnapshot, Status, Tail, Timeline, Track, Viewport } from "./types";
+import type { AisPicture, Alert, Entity, Event, Evidence, Firms, Graph, LinkPreview, Region, ReplayConfig, ReplayScenario, ReplaySnapshot, Status, Tail, Timeline, Track, Viewport } from "./types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, init);
@@ -9,6 +9,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 const mapQuery = (viewport: Viewport, limit: number) => new URLSearchParams({ bbox: [viewport.west, viewport.south, viewport.east, viewport.north].map((value) => value.toFixed(4)).join(","), limit: String(limit) });
 
 export const api = {
+  ais: () => request<AisPicture>("/api/ais"),
   status: () => request<Status>("/api/status"),
   events: (viewport: Viewport, limit: number) => request<Event[]>(`/api/events?${new URLSearchParams({ conflict_only: "true", ...Object.fromEntries(mapQuery(viewport, limit)) })}`),
   tracks: (viewport: Viewport, limit: number) => request<Track[]>(`/api/aircraft?${mapQuery(viewport, limit)}`),
