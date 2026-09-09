@@ -138,6 +138,19 @@ function cluster<T extends Point>(items: T[], zoom: number): Cluster<T>[] {
 }
 
 function FocusMap({ focus }: { focus?: [number, number, number] }) { const map = useMap(); useEffect(() => { if (focus) map.setView([focus[0], focus[1]], focus[2]); }, [focus, map]); return null; }
+function MapSizeObserver() {
+  const map = useMap();
+  useEffect(() => {
+    let frame = 0;
+    const observer = new ResizeObserver(() => {
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => map.invalidateSize({ pan: false, debounceMoveend: true }));
+    });
+    observer.observe(map.getContainer());
+    return () => { observer.disconnect(); window.cancelAnimationFrame(frame); };
+  }, [map]);
+  return null;
+}
 function MapBackgroundClick({ onClick }: { onClick: () => void }) { useMapEvents({ click: onClick }); return null; }
 function ViewportReporter({ onViewport }: { onViewport: Props["onViewport"] }) {
   const map = useMap();
@@ -189,7 +202,7 @@ export function OperationalMap({ events, tracks, vessels, live, alerts, firms, s
   ]), [events, tracks, firms, vessels]);
   const filteredEvents = useMemo(() => events.filter((item) => include(item.lat, item.lon)), [events, filterAoi, regions]);
   const filteredTracks = useMemo(() => tracks.filter((item) => include(item.lat, item.lon)), [tracks, filterAoi, regions]);
-  return <div className="relative h-full w-full"><MapContainer zoomControl={false} center={[35, 10]} zoom={2} worldCopyJump className="h-full w-full"><ZoomControl position="bottomright" /><FocusMap focus={focus} /><ViewportReporter onViewport={onViewport} /><AreaDrawer enabled={drawing} onDraft={onDraft} /><MapBackgroundClick onClick={onBackgroundClick} /><TileLayer className="dark-tiles" url="https://tile.openstreetmap.org/{z}/{x}/{y}.png" attribution="© OpenStreetMap contributors" maxZoom={18} />
+  return <div className="relative h-full w-full"><MapContainer zoomControl={false} center={[35, 10]} zoom={2} worldCopyJump className="h-full w-full"><ZoomControl position="bottomright" /><MapSizeObserver /><FocusMap focus={focus} /><ViewportReporter onViewport={onViewport} /><AreaDrawer enabled={drawing} onDraft={onDraft} /><MapBackgroundClick onClick={onBackgroundClick} /><TileLayer className="dark-tiles" url="https://tile.openstreetmap.org/{z}/{x}/{y}.png" attribution="© OpenStreetMap contributors" maxZoom={18} />
     {layers.imagery && <TileLayer url={`https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/VIIRS_SNPP_CorrectedReflectance_TrueColor/default/${imagery}/GoogleMapsCompatible_Level9/{z}/{y}/{x}.jpg`} attribution={`NASA GIBS VIIRS ${imagery}`} maxNativeZoom={9} maxZoom={18} opacity={.85} />}
     {layers.rf && <Marker position={[26.55, 56.45]} icon={rfIcon} title="RF sample · Strait of Hormuz · Open spectrum" alt="Open simulated RF spectrum" zIndexOffset={1100} eventHandlers={{ click: () => { if (!drawing) setRfOpen(true); } }} />}
     {regions.map((region) => <AoiCircle key={region.id} region={region} drawing={drawing} onZoom={onAoiZoom} onAnalyze={onAnalyzeAoi} pending={aoiAnalysisPending} />)}
