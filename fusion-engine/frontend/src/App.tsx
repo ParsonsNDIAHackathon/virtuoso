@@ -9,6 +9,7 @@ import { OperationalMap, type LayerState, type MapDetail } from "./components/Op
 import { SourcesDialog } from "./components/SourcesDialog";
 import { AssessmentResult } from "./components/AssessmentResult";
 import { CuratedEvidence } from "./components/CuratedEvidence";
+import { Incidents } from "./components/Incidents";
 import { SourcePreview } from "./components/SourcePreview";
 import { Badge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
@@ -309,6 +310,7 @@ export function App() {
           <AssessmentQueue assessments={assessed} clusters={clusters} showRejected={showRejected} onToggleRejected={() => setShowRejected((value) => !value)} />
           <AlertQueue alerts={queue} onSelect={selectAlert} />
           <Inspector detail={null} onEmbed={(d) => setSourceViewer(d)} />
+          {!live && <Incidents incidents={replay.incidents ?? []} baseline={replay.baseline} onFocus={([lat, lon]) => setFocus([lat, lon, 8])} />}
           {!live && mode && <CuratedEvidence scenarioId={mode} tMin={config.data?.t_min} tMax={config.data?.t_max} onSeek={(t) => { setPlaying(false); setReplayTime(t); }} />}
         </>}
         {sourceViewer && <SourceViewer detail={sourceViewer} onClose={() => setSourceViewer(null)} />}
