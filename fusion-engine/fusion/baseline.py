@@ -38,6 +38,8 @@ from .mission import CONFIG, is_expected_cooccurrence
 from .navint import MIN_KNOWN, is_degraded
 
 STREAMS = ("news", "conflict", "social", "tracks", "military", "firms_new", "navint")
+# streams whose departure can open an incident; "tracks" (all aircraft) is a coverage signal only
+TRIGGER_STREAMS = ("news", "conflict", "social", "military", "firms_new", "navint")
 COUNT_STREAMS = ("news", "conflict", "social", "tracks", "military", "firms_new")
 
 
@@ -238,7 +240,7 @@ class Baseline:
         """Cells where at least one stream is currently departed on adequate evidence. In an
         expected-co-occurrence cell (airport beside a newsroom) two streams must depart."""
         by_cell: dict[tuple[int, int], set[str]] = defaultdict(set)
-        for d in self.departures_at(t):
+        for d in self.departures_at(t, streams=TRIGGER_STREAMS):
             if d.state in ("new_change", "persistent"):
                 by_cell[tuple(d.cell)].add(d.stream)
         return {c for c, streams in by_cell.items() if len(streams) >= (2 if is_expected_cooccurrence(c) else 1)}
