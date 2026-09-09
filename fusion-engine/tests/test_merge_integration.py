@@ -67,3 +67,13 @@ def test_incident_priority_stays_within_source_evidence_tier():
     incident = replace(pair, id="incident", left=replace(news, id="incident"), match_type="topic", candidate_score=.5)
     chosen = select_batch([away, incident, high], limit=3, priority=lambda c: c.id == "incident")
     assert [c.id for c in chosen] == ["strong", "incident", "away"]
+
+
+def test_same_outlet_is_excluded_from_automatic_corroboration_but_manual_comparison_remains():
+    first = replace(record("a", "gdelt", "2026-08-18T10:00:00+00:00", persons=["Ada Lovelace"],
+                           url="https://one.test/a"), source="one.test")
+    same_outlet = replace(first, id="b", data={**first.data, "url": "https://one.test/b"})
+    assert not generate_candidates([first, same_outlet])
+    assert candidate_for_pair(first, same_outlet).match_type == "entity"
+    independent = replace(same_outlet, source="two.test", data={**same_outlet.data, "url": "https://two.test/b"})
+    assert generate_candidates([first, independent])[0].match_type == "entity"

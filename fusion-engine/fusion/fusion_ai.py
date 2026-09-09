@@ -343,6 +343,8 @@ def generate_candidates(records: Iterable[EvidenceRecord], limit: int = 250) -> 
             return
         if left.kind in NEWS and right.kind in NEWS and coverage_key_pair(left, right)[0] == coverage_key_pair(left, right)[1]:
             return
+        if left.kind == right.kind == "gdelt" and left.source and left.source != "gdelt" and left.source == right.source:
+            return  # two records from one outlet are not independent corroboration
         spatial, temporal = max(0, 1 - distance / radius), max(0, 1 - dt / minutes)
         base = {"identifier": .92, "name": .82, "entity": .68, "topic": .5, "proximity": 0}[kind]
         score = round(base + (.03 * spatial + .03 * temporal if base else .22 * spatial + .17 * temporal), 3)
@@ -547,6 +549,7 @@ class FusionAI:
             " AIS records are reported vessel positions, not proof of vessel activity, ownership, "
             "cargo, intent, or association. MMSI and names are transmitted identifiers. A stale "
             "report or coverage gap does not establish deliberate AIS shutdown."
+            "\nDifferent URLs do NOT establish independent sources: syndicated wire copy, reprints and reports that only repeat one original claim are ONE report. If titles or passages are near-identical, or one article cites the other as its source, treat them as the same report (article match) and do not count them as corroboration. "
             "\nArticle identity and incident relationship are separate questions. article_identity is computed "
             "by the application. SAME_ARTICLE confirms shared reporting provenance, not the same incident or "
             "independent corroboration. One GDELT article may yield many records for different actions, actors "

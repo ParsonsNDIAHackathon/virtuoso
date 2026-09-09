@@ -149,6 +149,7 @@ class LiveAnalysis:
 
     def _build(self, events, social, firms, track_history, circles):
         t0 = time.time()
+        snapshot_taken = t0          # inputs were captured at start; assessments are as of this instant
         try:
             inside = (lambda lat, lon: _in_circles(lat, lon, circles))
             now = datetime.now(timezone.utc).timestamp()
@@ -185,6 +186,7 @@ class LiveAnalysis:
             self._assign_durable_ids(tracker.at(now), now)
             with self.lock:
                 self.baseline, self.tracker, self.built_at = b, tracker, time.time()
+                self.snapshot_taken = snapshot_taken
             self.progress = "done"
             log.info("live analysis: %d events, %d cells, %d incidents now, %.0fs",
                      len(merged), len(b.cells()), len(tracker.at(now)), time.time() - t0)
@@ -197,7 +199,8 @@ class LiveAnalysis:
             b, tracker, built = self.baseline, self.tracker, self.built_at
         # assessments are as of the build, not the wall clock: the current hour was only partly
         # collected when the build ran, so the clock crossing an hour must not promote it to complete
-        now = min(datetime.now(timezone.utc).timestamp(), built) if built else datetime.now(timezone.utc).timestamp()
+        taken = getattr(self, "snapshot_taken", built)
+        now = min(datetime.now(timezone.utc).timestamp(), taken) if taken else datetime.now(timezone.utc).timestamp()
         if not b or not tracker:
             return {"status": self.progress, "built_at": None, "incidents": [], "departures": [], "departed_cells": []}
         return {

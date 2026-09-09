@@ -7,6 +7,7 @@ import { fileURLToPath, URL } from "node:url";
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
   return {
+    define: { __BUILD__: JSON.stringify(process.env.VITE_BUILD || env.VITE_BUILD || "dev") },
     plugins: [react()],
     resolve: { alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) } },
     server: {

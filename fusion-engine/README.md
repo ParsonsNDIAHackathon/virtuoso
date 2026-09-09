@@ -65,7 +65,7 @@ All commands run from this folder (`fusion-engine/`):
 cd fusion-engine
 pip install -r requirements.txt
 cp .env.example .env                 # then add your keys (see "Keys" below)
-docker compose up --build             # command console at http://localhost:8080
+./build-stack.sh                      # (PowerShell: .\build-stack.ps1) stamps the commit; console at http://localhost:8080
 ```
 
 `docker compose up` runs the React command console, FastAPI fusion API, and Neo4j on one private
