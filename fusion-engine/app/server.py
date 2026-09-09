@@ -227,7 +227,8 @@ def social_platforms():
         "platforms": [
             {"id": p, "label": PLATFORM_LABELS.get(p, p),
              "targets": default_targets(p), "count": counts.get(p, 0),
-             "status": sources.get(f"social:{p}", sources.get(p, {})).get("state")}
+             "status": sources.get(f"social:{p}", sources.get(p, {})).get("state"),
+             "detail": sources.get(f"social:{p}", sources.get(p, {})).get("detail")}
             for p in plats
         ],
         "total": len(recs),

@@ -13,6 +13,7 @@ import argparse
 import html
 import json
 import logging
+import os
 import re
 import time
 from datetime import datetime, timezone
@@ -24,6 +25,34 @@ from .ingest_social import SocialPost, _data_root, extract_keywords, geolocate
 
 log = logging.getLogger(__name__)
 HEADERS = {"User-Agent": "Mozilla/5.0 (ParsonsOfInterest-MultiINT hackathon; contact: fusion-engine)"}
+_TOKEN: dict = {}
+
+
+def _oauth() -> str | None:
+    """Bearer token from a Reddit script app (REDDIT_CLIENT_ID/SECRET). With REDDIT_USERNAME/PASSWORD the
+    password grant is used; without them the client-credentials grant. None when no app is configured."""
+    cid, sec = os.getenv("REDDIT_CLIENT_ID", "").strip(), os.getenv("REDDIT_CLIENT_SECRET", "").strip()
+    if not cid or not sec:
+        return None
+    if _TOKEN.get("token") and time.time() < _TOKEN.get("exp", 0) - 60:
+        return _TOKEN["token"]
+    user, pw = os.getenv("REDDIT_USERNAME", "").strip(), os.getenv("REDDIT_PASSWORD", "").strip()
+    data = {"grant_type": "password", "username": user, "password": pw} if user and pw else {"grant_type": "client_credentials"}
+    ua = {"User-Agent": os.getenv("REDDIT_USER_AGENT", "").strip() or f"fusion-engine/1.0 by {user or 'parsons-of-interest'}"}
+    r = requests.post("https://www.reddit.com/api/v1/access_token", data=data, auth=(cid, sec), headers=ua, timeout=30)
+    r.raise_for_status()
+    body = r.json()
+    _TOKEN.update(token=body.get("access_token"), exp=time.time() + float(body.get("expires_in", 3600)), ua=ua["User-Agent"])
+    log.info("reddit: OAuth token obtained (%s grant)", data["grant_type"])
+    return _TOKEN["token"]
+
+
+def _listing(sub: str, params: dict) -> requests.Response:
+    tok = _oauth()
+    if tok:
+        return requests.get(f"https://oauth.reddit.com/r/{sub}/new", params={**params, "raw_json": 1},
+                            headers={"User-Agent": _TOKEN.get("ua", HEADERS["User-Agent"]), "Authorization": f"Bearer {tok}"}, timeout=30)
+    return requests.get(f"https://www.reddit.com/r/{sub}/new.json", params=params, headers=HEADERS, timeout=30)
 
 DEFAULT_SUBREDDITS = ["worldnews", "geopolitics", "CombatFootage", "UkraineWarVideoReport"]
 
@@ -72,8 +101,7 @@ def parse_listing(sub: str, payload: dict) -> tuple[list[SocialPost], str | None
 
 
 def fetch_latest(sub: str, limit: int = 100) -> list[SocialPost]:
-    r = requests.get(f"https://www.reddit.com/r/{sub}/new.json",
-                     params={"limit": min(limit, 100)}, headers=HEADERS, timeout=30)
+    r = _listing(sub, {"limit": min(limit, 100)})
     if r.status_code == 429:
         log.warning("reddit r/%s rate-limited (429); backing off", sub)
         return []
@@ -99,9 +127,7 @@ def fetch_channel(sub: str, since: str, until: str | None = None, max_pages: int
     out: list[SocialPost] = []
     after: str | None = None
     for _ in range(max_pages):
-        r = requests.get(f"https://www.reddit.com/r/{sub}/new.json",
-                         params={"limit": 100, **({"after": after} if after else {})},
-                         headers=HEADERS, timeout=30)
+        r = _listing(sub, {"limit": 100, **({"after": after} if after else {})})
         if r.status_code == 429:
             log.warning("reddit r/%s rate-limited; stopping page walk", sub)
             break

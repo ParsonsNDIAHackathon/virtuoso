@@ -278,6 +278,29 @@ PLATFORM_LABELS = {
 
 ALL_PLATFORMS = tuple(_ADAPTERS)
 
+# What each platform needs in .env before it will answer (all are account-level, never committed).
+CREDENTIAL_HINT = {
+    "bluesky": "set BLUESKY_HANDLE and BLUESKY_APP_PASSWORD in .env (Settings > App passwords)",
+    "mastodon": "set MASTODON_ACCESS_TOKEN in .env (Preferences > Development > New application, read scope)",
+    "reddit": "set REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET in .env (script app; add REDDIT_USERNAME/REDDIT_PASSWORD)",
+}
+
+
+def failure_reason(platform: str, exc: Exception) -> str:
+    """One line an operator can act on: the HTTP status in words plus the credential that fixes it."""
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    hint = CREDENTIAL_HINT.get(platform)
+    if status in (401, 403):
+        return f"access denied ({status}): login required" + (f"; {hint}" if hint else "")
+    if status == 422:
+        return "request rejected (422): the instance requires an authenticated user" + (f"; {hint}" if hint else "")
+    if status == 429:
+        return "rate limited (429): backing off"
+    if status:
+        return f"provider error ({status})"
+    text = str(exc).strip() or exc.__class__.__name__
+    return text[:120]
+
 
 def _env_list(name: str, default: str) -> list[str]:
     raw = os.getenv(name, default)

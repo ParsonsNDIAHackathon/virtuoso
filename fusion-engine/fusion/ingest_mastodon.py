@@ -13,6 +13,7 @@ import argparse
 import html
 import json
 import logging
+import os
 import re
 import time
 from datetime import datetime, timezone
@@ -24,6 +25,13 @@ from .ingest_social import SocialPost, _data_root, extract_keywords, geolocate
 
 log = logging.getLogger(__name__)
 HEADERS = {"User-Agent": "Mozilla/5.0 (ParsonsOfInterest-MultiINT hackathon)"}
+
+
+def _headers() -> dict:
+    """MASTODON_ACCESS_TOKEN (an application token from the configured instance) unlocks the timelines
+    that mastodon.social now refuses to anonymous clients (HTTP 422 'requires an authenticated user')."""
+    tok = os.getenv("MASTODON_ACCESS_TOKEN", "").strip()
+    return {**HEADERS, "Authorization": f"Bearer {tok}"} if tok else dict(HEADERS)
 
 DEFAULT_INSTANCES = ["mastodon.social"]
 
@@ -75,7 +83,7 @@ def _page(instance: str, max_id: str | None = None, limit: int = 40) -> list[dic
     if max_id:
         params["max_id"] = max_id
     r = requests.get(f"https://{instance}/api/v1/timelines/public",
-                     params=params, headers=HEADERS, timeout=30)
+                     params=params, headers=_headers(), timeout=30)
     r.raise_for_status()
     payload = r.json()
     return payload if isinstance(payload, list) else []

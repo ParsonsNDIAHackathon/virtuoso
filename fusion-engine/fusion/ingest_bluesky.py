@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,6 +22,31 @@ from .ingest_social import SocialPost, _data_root, extract_keywords, geolocate
 
 log = logging.getLogger(__name__)
 API = "https://public.api.bsky.app/xrpc/app.bsky.feed.searchPosts"
+PDS = os.getenv("BLUESKY_PDS", "https://bsky.social")
+_SESSION: dict = {}
+
+
+def _login() -> str | None:
+    """App-password session (com.atproto.server.createSession) when BLUESKY_HANDLE/APP_PASSWORD are set."""
+    handle, pw = os.getenv("BLUESKY_HANDLE", "").strip(), os.getenv("BLUESKY_APP_PASSWORD", "").strip()
+    if not handle or not pw:
+        return None
+    if _SESSION.get("jwt") and time.time() - _SESSION.get("at", 0) < 3600:
+        return _SESSION["jwt"]
+    r = requests.post(f"{PDS}/xrpc/com.atproto.server.createSession",
+                      json={"identifier": handle, "password": pw}, headers=HEADERS, timeout=30)
+    r.raise_for_status()
+    _SESSION.update(jwt=r.json().get("accessJwt"), at=time.time())
+    log.info("bluesky: authenticated session for %s", handle)
+    return _SESSION["jwt"]
+
+
+def _endpoint() -> tuple[str, dict]:
+    """(url, headers): the account's PDS with a bearer token when logged in, else the public endpoint."""
+    jwt = _login()
+    if jwt:
+        return f"{PDS}/xrpc/app.bsky.feed.searchPosts", {**HEADERS, "Authorization": f"Bearer {jwt}"}
+    return API, HEADERS
 HEADERS = {"User-Agent": "Mozilla/5.0 (ParsonsOfInterest-MultiINT hackathon)"}
 
 DEFAULT_QUERIES = ["Strait of Hormuz", "tanker", "Hormuz", "IRGC"]
@@ -69,7 +95,12 @@ def _search(query: str, limit: int = 100, cursor: str | None = None,
         params["since"] = since
     if until:
         params["until"] = until
-    r = requests.get(API, params=params, headers=HEADERS, timeout=30)
+    url, headers = _endpoint()
+    r = requests.get(url, params=params, headers=headers, timeout=30)
+    if r.status_code == 401 and _SESSION.get('jwt'):
+        _SESSION.clear()                     # expired token: log in again once
+        url, headers = _endpoint()
+        r = requests.get(url, params=params, headers=headers, timeout=30)
     r.raise_for_status()
     return r.json()
 

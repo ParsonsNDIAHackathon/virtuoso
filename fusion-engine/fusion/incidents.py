@@ -17,6 +17,7 @@ from dataclasses import asdict, dataclass, field
 
 from .baseline import Baseline, STREAMS, TRIGGER_STREAMS, cell_of
 from .ingest_social import is_social_event
+from .navint import MIN_KNOWN
 from .mission import CONFIG
 
 PHYSICAL = ("tracks", "military", "firms_new", "navint")
@@ -98,11 +99,12 @@ class Incident:
     next_check: dict | None
     revisions: list[dict] = field(default_factory=list)
     assessment: dict = field(default_factory=dict)
+    evidence: list[dict] = field(default_factory=list)    # articles / posts geocoded to the cells this bin
 
     def to_dict(self) -> dict:
         return {"id": self.id, "cells": self.cells, "first_t": self.first_t, "last_t": self.last_t, "state": self.state,
                 "streams": self.streams, "explanations": [e.to_dict() for e in self.explanations],
-                "next_check": self.next_check, "revisions": self.revisions, "assessment": self.assessment}
+                "next_check": self.next_check, "revisions": self.revisions, "assessment": self.assessment, "evidence": self.evidence}
 
 
 def _components(cells: set[tuple[int, int]]) -> list[set[tuple[int, int]]]:
@@ -142,15 +144,76 @@ class IncidentTracker:
 
     def _stream_state(self, stream: str, cells: set[tuple[int, int]], i: int) -> dict:
         """Strongest departure of a stream in the cells or their neighbours, and whether coverage allowed a verdict."""
-        best, any_adequate = None, False
+        best, any_adequate, keep = None, False, None
         for c in self._neigh(cells):
             d = self.b.score(stream, c, i)
             if d.state != "insufficient":
                 any_adequate = True
             if d.state in ("new_change", "persistent") and (best is None or (d.z or 0) > (best.z or 0)):
                 best = d
+            # The record kept for a stream that did NOT depart: a cell with a verdict first (so the verdict
+            # and its basis agree), then the incident's own cell, then the largest comparison sample. It lets the report say what was
+            # observed and why no verdict was possible instead of discarding the numbers.
+            rank = (d.state != "insufficient", c in cells, d.reference_n, d.coverage or 0, d.value or 0)
+            if keep is None or rank > keep[0]:
+                keep = (rank, d)
+        shown = best or (keep[1] if keep else None)
         return {"departed": best is not None, "adequate": any_adequate,
-                "best": best.to_dict() if best else None}
+                "best": best.to_dict() if best else None,
+                "detail": shown.to_dict() if shown else None,
+                "reason": self._reason(stream, shown)}
+
+    @staticmethod
+    def _reason(stream: str, d) -> str:
+        """One line on why the stream has (or lacks) a verdict, in the order the checks are applied."""
+        if d is None:
+            return "no data for this hour"
+        if d.state == "insufficient":
+            if stream == "navint" and (d.coverage or 0) < MIN_KNOWN:
+                return f"only {d.coverage or 0} aircraft reported integrity ({MIN_KNOWN} needed)"
+            if d.reference_n < 4:
+                return f"too few comparison hours ({d.reference_n} of 4 needed)"
+            return "no observations this hour"
+        if d.state in ("new_change", "persistent"):
+            return f"departed: z {d.z:.2f} against {d.reference_n} comparison hours"
+        return f"within reference ({d.reference_n} comparison hours)"
+
+    def _evidence(self, cells: set[tuple[int, int]], i: int, per_stream: int = 8) -> list[dict]:
+        """The articles and posts geocoded to the incident cells during bin i: the click-through behind the counts."""
+        t0 = self.b.t_min + i * self.b.step
+        t1 = t0 + self.b.step
+        out: list[dict] = []
+        for e in self.events:
+            try:
+                ts = datetime_ts(e.ts)
+            except Exception:
+                continue
+            if not (t0 <= ts < t1) or cell_of(e.lat, e.lon) not in cells:
+                continue
+            pid = str(getattr(e, "id", "") or "")
+            platform = getattr(e, "platform", None)
+            if not platform and is_social_event(e):
+                platform = {"tg": "telegram", "reddit": "reddit", "bsky": "bluesky", "mastodon": "mastodon", "md": "mastodon"}.get(pid.split(":")[0], "social")
+            if platform:
+                stream, kind = "social", platform
+                title = f"{platform.title()} · {getattr(e, 'channel', None) or getattr(e, 'source_domain', None) or 'post'}"
+                text = (getattr(e, "text", None) or getattr(e, "root_label", None) or "")[:160]
+            else:
+                stream = "conflict" if getattr(e, "is_conflict", False) else "news"
+                kind = "gdelt"
+                title = getattr(e, "root_label", None) or "Event"
+                text = getattr(e, "source_domain", None) or ""
+            out.append({"kind": kind, "stream": stream, "id": pid, "ts": e.ts, "title": title, "text": text,
+                        "url": getattr(e, "url", None) or "", "place": getattr(e, "place", None),
+                        "lat": e.lat, "lon": e.lon})
+        out.sort(key=lambda r: r["ts"], reverse=True)
+        counts: dict[str, int] = defaultdict(int)
+        kept = []
+        for r in out:
+            counts[r["stream"]] += 1
+            if counts[r["stream"]] <= per_stream:
+                kept.append(r)
+        return kept
 
     def _keywords_present(self, cells: set[tuple[int, int]], i: int, words: list[str]) -> tuple[bool, int]:
         t0 = self.b.t_min + i * self.b.step
@@ -292,7 +355,7 @@ class IncidentTracker:
                 if match:
                     inc = Incident(id=match.id, cells=sorted(map(list, comp)), first_t=match.first_t, last_t=t, state=state,
                                    streams=streams, explanations=explanations, next_check=self._next_check(explanations),
-                                   revisions=list(match.revisions))
+                                   revisions=list(match.revisions), evidence=self._evidence(comp, i))
                     added = [s for s in STREAMS if streams[s]["departed"] and not match.streams.get(s, {}).get("departed")]
                     gone = [s for s in STREAMS if match.streams.get(s, {}).get("departed") and not streams[s]["departed"]]
                     if added or gone or set(map(tuple, comp)) != set(map(tuple, match.cells)):
@@ -303,14 +366,15 @@ class IncidentTracker:
                     inc = Incident(id=f"incident:{seq:03d}", cells=sorted(map(list, comp)), first_t=t, last_t=t, state="new_change",
                                    streams=streams, explanations=explanations, next_check=self._next_check(explanations),
                                    revisions=[{"t": t, "added": [s for s in STREAMS if streams[s]["departed"]], "gone": [],
-                                               "cells": len(comp), "leading": explanations[0].title if explanations else None}])
+                                               "cells": len(comp), "leading": explanations[0].title if explanations else None}],
+                                   evidence=self._evidence(comp, i))
                 inc.assessment = self._assess(inc)
                 current.append(inc)
             # incidents that ended this bin are kept one more bin as "recovering"
             for p in prev:
                 if not any(set(map(tuple, p.cells)) & self._neigh(set(map(tuple, c.cells))) for c in current) and p.state != "recovering":
                     r = Incident(id=p.id, cells=p.cells, first_t=p.first_t, last_t=t, state="recovering", streams=p.streams,
-                                 explanations=p.explanations, next_check=p.next_check,
+                                 explanations=p.explanations, next_check=p.next_check, evidence=p.evidence,
                                  revisions=p.revisions + [{"t": t, "added": [], "gone": [s for s in STREAMS if p.streams[s]["departed"]],
                                                            "cells": len(p.cells), "leading": None}])
                     r.assessment = self._assess(r)
@@ -355,6 +419,44 @@ class IncidentTracker:
         what = "; ".join(parts) if parts else "no stream currently departed"
         return f"{where}: {what}."
 
+    STREAM_NAMES = {"news": "news reporting", "conflict": "conflict-coded reporting", "social": "social posting",
+                    "tracks": "aircraft coverage", "military": "military aircraft activity",
+                    "firms_new": "new thermal detections", "navint": "degraded navigation integrity"}
+
+    @classmethod
+    def _question(cls, pred: str) -> str:
+        kind, _, arg = pred.partition(":")
+        name = cls.STREAM_NAMES.get(arg, arg)
+        if kind == "departed":
+            return f"Does {name} also depart from its reference in this area?"
+        if kind == "quiet":
+            return f"Does {name} stay within its reference here?"
+        if kind == "keywords":
+            return f"Does the reporting itself mention {', '.join(arg.split('|')[:3])}?"
+        if kind == "prior_day_same":
+            return "Was the same hour also elevated on the prior day (a routine pattern rather than a change)?"
+        if kind == "coverage_drop":
+            return "Did the aircraft count fall because the feed dipped rather than because traffic changed?"
+        return pred
+
+    def _next_action(self, inc: Incident, place: str | None) -> dict:
+        """The next check as something to do: which source, where, in which window, answering which question."""
+        i_last = self.b._bin(inc.last_t)
+        start = self.b.t_min + ((i_last if i_last is not None else 0) + 1) * self.b.step
+        area = place or f"cell {inc.cells[0][0]}N {inc.cells[0][1]}E"
+        nc = inc.next_check
+        if nc:
+            analyst = nc["prediction"].startswith("keywords")
+            return {"question": self._question(nc["prediction"]), "source": nc["source"], "area": area,
+                    "window": [start, start + self.b.step], "mode": "analyst" if analyst else "automatic",
+                    "how": ("fetch the article text of the evidence records (adjudicate a pair) and read for the terms"
+                            if analyst else "the engine re-scores this check when the next hour completes; no analyst action unless it stays untested"),
+                    "why": nc["why"]}
+        return {"question": "Does the cited reporting describe one event, and does it match the measured change?",
+                "source": "analyst review of the evidence records", "area": area,
+                "window": [start, start + self.b.step], "mode": "analyst",
+                "how": "no automatic check separates the remaining explanations", "why": "no discriminating check remains"}
+
     def _assess(self, inc: Incident) -> dict:
         i_last = self.b._bin(inc.last_t)
         place = self._place({tuple(c) for c in inc.cells}, i_last) if i_last is not None else None
@@ -385,11 +487,22 @@ class IncidentTracker:
                         + (" (untested absence claims do not establish that nothing happened: " + ", ".join(u.replace("quiet:", "no ") for u in untested[:3]) + ")" if untested else "") if lead else "no explanations configured"))
         else:
             disputed = "no contradicted predictions under the leading explanation"
-        unresolved = (f"coverage insufficient for {', '.join(insufficient)}" if insufficient else "all streams had adequate coverage")
+        unresolved = ("; ".join(f"{self.STREAM_NAMES.get(s, s)}: {inc.streams[s].get('reason', 'insufficient')}" for s in insufficient)
+                      if insufficient else "all streams had adequate coverage")
+        # what changed, counts before statistics: "2 articles vs 0 normal (12 comparison hours, z 3.4)"
+        changes = []
+        for st in departed:
+            b = inc.streams[st].get("best") or {}
+            changes.append(f"{self._phrase(st, b)} · {b.get('reference_n', 0)} comparison hours · z {b.get('z')}")
+        impact = ("Operational impact not established: the engine measures departure from routine, not consequence. "
+                  + (f"'{lead.title}' is the adequately supported explanation." if adequate else
+                     "No explanation is adequately supported yet, so treat this as a change to look at, not a conclusion."))
+        action = self._next_action(inc, place)
         return {"established": established, "disputed": disputed, "unresolved": unresolved,
                 "leading": lead.title if (lead and adequate) else None, "adequately_supported": adequate,
                 "relevance": f"{len(inc.cells)} cell(s) in the monitored area; {inc.state}",
-                "place": place, "headline": self._headline(inc, place)}
+                "place": place, "headline": self._headline(inc, place),
+                "changes": changes, "operational_impact": impact, "question": action["question"], "next_action": action}
 
     def at(self, t: float) -> list[Incident]:
         i = self.b.completed_bin(t)
@@ -406,4 +519,4 @@ class IncidentTracker:
 def asdict_shallow(inc: Incident) -> dict:
     return {"id": inc.id, "cells": inc.cells, "first_t": inc.first_t, "last_t": inc.last_t, "state": inc.state,
             "streams": inc.streams, "explanations": inc.explanations, "next_check": inc.next_check,
-            "revisions": inc.revisions, "assessment": inc.assessment}
+            "revisions": inc.revisions, "assessment": inc.assessment, "evidence": inc.evidence}

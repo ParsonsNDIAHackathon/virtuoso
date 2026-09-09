@@ -14,7 +14,7 @@ export function AssessmentResult({ assessment, compact = false }: { assessment: 
   const docFor = (id: string) => (assessment.source_documents ?? []).find((d) => d.record_id === id);
   const describe = (id: string, kind: string) => { const d = docFor(id); const host = d?.url ? (() => { try { return new URL(d.url).hostname.replace(/^www\./, ""); } catch { return ""; } })() : "";
     return d?.title ? `${d.title}${host ? ` (${host})` : ""}` : `${KIND[kind] ?? kind} ${id.replace(/^(gdelt|adsb|firms|tg):/, "")}`; };
-  const verdictWords: Record<string, string> = { SUPPORTED: "Supported: the records' own content links them", PLAUSIBLE: "Plausible: consistent, but the direct link is missing; analyst review", INSUFFICIENT_EVIDENCE: "Rejected: proximity was the only link", CONTRADICTED: "Contradicted: the records disagree" };
+  const verdictWords: Record<string, string> = { SUPPORTED: "Supported: the records' own content links them", PLAUSIBLE: "Plausible: consistent, but the direct link is missing; analyst review", INSUFFICIENT_EVIDENCE: `Rejected: ${assessment.strongest_limitation?.trim() ? assessment.strongest_limitation.trim().replace(/\.$/, "") : "no link between the records beyond proximity"}`, CONTRADICTED: "Contradicted: the records disagree" };
   return <div className="space-y-1.5 text-[10px]">
     <div className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 font-mono text-[10px]">
       <span className="text-muted">A</span><span className="text-ink" title={docFor(assessment.left_id)?.url}>{describe(assessment.left_id, assessment.left_kind)}</span>

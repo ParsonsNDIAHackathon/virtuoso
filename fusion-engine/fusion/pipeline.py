@@ -19,7 +19,7 @@ from pathlib import Path
 from .store import InMemoryStore, make_store
 from .ingest_adsb import AirTrack, fetch_military, fetch_regions
 from .ingest_gdelt import OsintEvent, fetch_window
-from .ingest_social import PLATFORM_LABELS, SocialPost, enabled_platforms, platform_of, social_to_event
+from .ingest_social import PLATFORM_LABELS, SocialPost, enabled_platforms, failure_reason, platform_of, social_to_event
 from .ingest_firms import fetch as fetch_firms, novelty as firms_novelty
 from .backfill import Backfill
 from .live_analysis import LiveAnalysis
@@ -191,6 +191,8 @@ class FusionState:
         # tick); only exceptions count as failures.
         posts, failures = [], 0
         per_platform: dict[str, int] = {}
+        plat_failures: dict[str, str] = {}
+        plat_ok: dict[str, int] = {}
         for plat in plats:
             try:
                 mod = importlib.import_module(_ADAPTERS[plat])
@@ -204,7 +206,9 @@ class FusionState:
                 except Exception as e:
                     log.warning("social %s %s failed: %s", plat, t, e)
                     failures += 1
+                    plat_failures[plat] = failure_reason(plat, e)
                     continue
+                plat_ok[plat] = plat_ok.get(plat, 0) + 1
                 for p in chunk:
                     per_platform[p.platform] = per_platform.get(p.platform, 0) + 1
                 posts += chunk
@@ -249,9 +253,17 @@ class FusionState:
         for plat in plats:
             label = PLATFORM_LABELS.get(plat, plat)
             n = by_plat.get(plat, 0)
-            # A platform that returned nothing this tick keeps its previous count
-            # unless it errored on every target; fetch_latest_all already logged.
-            self.set_source_status(f"social:{plat}", state, count=n, detail=label)
+            # Each platform reports its own outcome: every target failed -> error with the reason and the
+            # credential that fixes it; some failed -> partial; else ready.
+            if plat in plat_failures and not plat_ok.get(plat):
+                self.set_source_status(f"social:{plat}", "error", count=n, detail=f"{label}: {plat_failures[plat]}")
+            elif plat in plat_failures:
+                self.set_source_status(f"social:{plat}", "partial", count=n, detail=f"{label}: some targets failed ({plat_failures[plat]})")
+            else:
+                self.set_source_status(f"social:{plat}", "ready", count=n, detail=f"{label}: {n} geolocated post(s) in the last 6 h")
+        if plat_failures:
+            broken = ", ".join(f"{p}: {r.split(';')[0]}" for p, r in plat_failures.items())
+            self.set_source_status("social", state, count=len(self.social), detail=f"{detail} ({broken})")
 
     def refresh_firms(self):
         """Latest 24 h of VIIRS thermal anomalies inside every area-of-interest circle, scored for
