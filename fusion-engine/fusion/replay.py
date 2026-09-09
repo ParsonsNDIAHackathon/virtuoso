@@ -55,6 +55,22 @@ SCENARIOS = {
 }
 
 
+def _nearest_scene(dets: list[dict], t: float, max_age_h: float = 72.0) -> tuple[list[dict], dict | None]:
+    """Radar revisit over the strait is days, not hours: return the scene closest in time to t
+    (before or after) within max_age_h, plus a descriptor with its age so the UI can say so."""
+    times = sorted({datetime.fromisoformat(d["ts"]).timestamp() for d in dets})
+    if not times:
+        return [], None
+    best = min(times, key=lambda x: abs(x - t))
+    if abs(best - t) > max_age_h * 3600:
+        return [], None
+    scene = [d for d in dets if datetime.fromisoformat(d["ts"]).timestamp() == best]
+    age_h = (t - best) / 3600
+    return scene, {"ts": datetime.fromtimestamp(best, tz=timezone.utc).isoformat(), "age_h": round(age_h, 1),
+                   "label": f"radar picture {abs(age_h):.0f} h {'before' if age_h > 0 else 'after'} this moment",
+                   "n": len(scene), "scene": scene[0]["scene"] if scene else None}
+
+
 class ReplayState:
     def __init__(self, scenario_id: str, store=None):
         self.sc = dict(SCENARIOS[scenario_id], id=scenario_id)
@@ -65,6 +81,7 @@ class ReplayState:
         self.social_posts: dict[str, SocialPost] = {}
         self.tracks: dict[str, dict] = {}
         self.firms: list[dict] = []
+        self.sar: list[dict] = []
         self.loaded = False
         self.lock = threading.Lock()
         self._cache: dict[int, dict] = {}
@@ -112,6 +129,14 @@ class ReplayState:
                     self.loaded_layers["adsb"].append(day)
                 else:
                     log.warning("replay: no ADS-B file for %s", day)
+            self.sar = []
+            for spath in sorted((DATA / "replay").glob("*_sar.json")):
+                try:
+                    sday = datetime.strptime(spath.name[:10], "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp()
+                except ValueError:
+                    continue
+                if self.t_min - 3 * 86400 <= sday <= self.t_max + 3 * 86400:
+                    self.sar += json.loads(spath.read_text(encoding="utf-8"))
             self.loaded = True
             log.info("replay %s: %d events, %d aircraft; layers loaded %s", "..".join(self.days), len(self.events), len(self.tracks), self.loaded_layers)
 
@@ -122,8 +147,32 @@ class ReplayState:
             "layers_loaded": self.loaded_layers,
             "n_events": len(self.events), "n_conflict": sum(e.is_conflict for e in self.events),
             "n_aircraft": len(self.tracks), "n_military": sum(1 for a in self.tracks.values() if a["military"]),
-            "adsb_available": bool(self.tracks), "n_firms": len(self.firms),
+            "adsb_available": bool(self.tracks), "n_firms": len(self.firms), "n_sar": len(self.sar),
+            "sar_scenes": sorted({d["ts"] for d in self.sar}),
+            "sar_summary": self._sar_summary(),
         }
+
+    def _core_dets(self, core=(26.0, 55.8, 27.0, 56.9)) -> list[dict]:
+        """Detections from scenes that image the strait core (scene must have >= 20 core detections)."""
+        la0, lo0, la1, lo1 = core
+        per = {}
+        for d in self.sar:
+            if la0 <= d["lat"] <= la1 and lo0 <= d["lon"] <= lo1:
+                per[d["ts"]] = per.get(d["ts"], 0) + 1
+        ok = {ts for ts, n in per.items() if n >= 20}
+        return [d for d in self.sar if d["ts"] in ok]
+
+    def _sar_summary(self, core=(26.0, 55.8, 27.0, 56.9)) -> list[dict]:
+        """Per radar scene: total ship detections and how many sit in the strait core box, so the UI
+        can state the before/after change in plain words."""
+        la0, lo0, la1, lo1 = core
+        out = {}
+        for d in self.sar:
+            o = out.setdefault(d["ts"], {"ts": d["ts"], "n": 0, "core": 0, "scene": d["scene"][:32]})
+            o["n"] += 1
+            if la0 <= d["lat"] <= la1 and lo0 <= d["lon"] <= lo1:
+                o["core"] += 1
+        return [out[k] for k in sorted(out)]
 
     def at(self, t: float, lookback_min: float = 120.0, radius_km: float = 75.0, tail_min: float = 30.0) -> dict:
         """Fused picture at instant t (epoch seconds). Events from the prior lookback window, aircraft
@@ -170,6 +219,12 @@ class ReplayState:
             "tails": track_polylines(self.tracks, t - tail_min * 60, t) if self.tracks else [],
             # thermal anomalies seen in the last 12 h (satellite passes are ~2x/day)
             "firms": current_firms,
+            # radar ship detections from the most recent scene at or before t (within 12 h)
+            "sar": (sar := _nearest_scene(self.sar, t))[0],
+            "sar_scene": sar[1],
+            # the scene closest in time that actually images the strait core (may be days away)
+            "sar_core": (sc := _nearest_scene(self._core_dets(), t, max_age_h=96.0))[0],
+            "sar_core_scene": sc[1],
         }
         if len(self._cache) > 200:
             self._cache.clear()
@@ -284,4 +339,7 @@ class ReplayState:
             i = idx(datetime.fromisoformat(h["ts"]).timestamp())
             if i is not None and h.get("novelty", 0) >= 0.9:
                 bins[i]["firms_new"] += 1
-        return {"step_min": step_min, "t_min": self.t_min, "bins": bins}
+        scenes = sorted({d["ts"] for d in self.sar})
+        return {"step_min": step_min, "t_min": self.t_min, "bins": bins,
+                "sar_scenes": [{"ts": ts, "t": datetime.fromisoformat(ts).timestamp(),
+                                "n": sum(1 for d in self.sar if d["ts"] == ts)} for ts in scenes]}

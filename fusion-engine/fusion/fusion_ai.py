@@ -13,6 +13,7 @@ import math
 import os
 import re
 import sqlite3
+from contextlib import closing
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -148,16 +149,16 @@ class FusionCache:
     def __init__(self, path: Path):
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("CREATE TABLE IF NOT EXISTS ai_cache (key TEXT PRIMARY KEY, kind TEXT, payload TEXT, created_at TEXT)")
 
     def get(self, key: str) -> dict | None:
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             row = db.execute("SELECT payload FROM ai_cache WHERE key = ?", (key,)).fetchone()
         return json.loads(row[0]) if row else None
 
     def put(self, key: str, kind: str, payload: dict):
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             db.execute(
                 "INSERT OR REPLACE INTO ai_cache(key, kind, payload, created_at) VALUES (?, ?, ?, ?)",
                 (key, kind, json.dumps(payload, ensure_ascii=False), datetime.now(timezone.utc).isoformat()),
