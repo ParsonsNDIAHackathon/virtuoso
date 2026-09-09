@@ -229,9 +229,13 @@ class IncidentTracker:
                 else:
                     preds.append(PredictionResult(p, "untested", "unknown prediction type"))
             out.append(Explanation(tpl["id"], tpl["title"], preds))
-        # rank by supported minus twice contradicted, then by share of predictions supported, so a
-        # template padded with 'quiet' predictions cannot outrank one whose positive predictions were met
-        out.sort(key=lambda e: (-(e.supported - 2 * e.contradicted), -(e.supported / max(1, len(e.predictions))), e.contradicted))
+        # An explanation may lead only if every POSITIVE claim it makes was actually tested: a
+        # 'physical signature' explanation whose physical predictions are untested (no coverage)
+        # cannot outrank one whose claims were checked. Absence claims (quiet:*) may stay untested.
+        def eligible(e: Explanation) -> bool:
+            return not any(p.status == "untested" and not p.prediction.startswith("quiet:") for p in e.predictions)
+        out.sort(key=lambda e: (not eligible(e), -(e.supported - 2 * e.contradicted),
+                               -(e.supported / max(1, len(e.predictions))), e.contradicted))
         return out
 
     def _next_check(self, explanations: list[Explanation]) -> dict | None:

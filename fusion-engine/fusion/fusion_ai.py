@@ -66,6 +66,17 @@ class EvidenceRecord:
         raw = json.dumps(self.to_dict(), sort_keys=True, ensure_ascii=False, default=str)
         return hashlib.sha256(raw.encode()).hexdigest()[:24]
 
+    CLAIM_FIELDS = ("url", "text", "themes", "actor1", "actor2", "persons", "orgs", "event_code", "root_label",
+                    "keywords", "channel", "callsign", "registration", "squawk", "emergency", "military", "novelty", "frp")
+
+    def claim_fingerprint(self) -> str:
+        """Hash of what the record CLAIMS (text, actors, identity flags), not where or when it was
+        observed. A verdict is reused while the claims are unchanged and re-adjudicated when an
+        article is edited or withdrawn; an aircraft moving along its track does not trigger a re-run."""
+        payload = {k: self.data.get(k) for k in self.CLAIM_FIELDS if self.data.get(k) not in (None, "", [])}
+        payload["label"] = self.label
+        return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()[:16]
+
 
 @dataclass
 class Candidate:
@@ -477,7 +488,7 @@ class FusionAI:
         return self.client.available
 
     def adjudicate(self, candidate: Candidate, *, force: bool = False) -> Assessment:
-        cache_key = f"assessment:{PROMPT_VERSION}:{self.client.model}:{candidate.id}"
+        cache_key = self._cache_key(candidate)
         cached_assessment = self.cached_assessment(candidate) if not force else None
         if cached_assessment:
             return cached_assessment
@@ -575,8 +586,12 @@ class FusionAI:
         self.cache.put(cache_key, "assessment", assessment.to_dict())
         return assessment
 
+    def _cache_key(self, candidate: Candidate) -> str:
+        claims = "|".join(sorted((candidate.left.claim_fingerprint(), candidate.right.claim_fingerprint())))
+        return f"assessment:{PROMPT_VERSION}:{self.client.model}:{candidate.id}:{claims}"
+
     def cached_assessment(self, candidate: Candidate) -> Assessment | None:
-        cache_key = f"assessment:{PROMPT_VERSION}:{self.client.model}:{candidate.id}"
+        cache_key = self._cache_key(candidate)
         cached = self.cache.get(cache_key)
         if not cached:
             return None
