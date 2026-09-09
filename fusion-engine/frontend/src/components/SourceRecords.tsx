@@ -14,7 +14,9 @@ function platformOf(id: string) {
   return null;
 }
 const isSocial = (e: Event) => platformOf(e.id) !== null;
-const when = (ts?: string) => (ts ? ts.slice(5, 16).replace("T", " ") + "Z" : "");
+const pad2 = (v: number) => String(v).padStart(2, "0");
+/** UTC label from a parsed timestamp: offsets in the source string are converted, not relabelled. */
+const when = (ts?: string) => { if (!ts) return ""; const ms = Date.parse(ts.match(/(Z|[+-]\d\d:?\d\d)$/) ? ts : ts + "Z"); if (Number.isNaN(ms)) return ts; const d = new Date(ms); return `${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())} ${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}Z`; };
 
 type Row = { id: string; tag: string; title: string; sub: string; ts: string; detail: MapDetail };
 

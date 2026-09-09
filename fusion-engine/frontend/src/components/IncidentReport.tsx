@@ -40,14 +40,14 @@ const H = ({ children }: { children: React.ReactNode }) => <p className="mb-1 mt
  *  operationally → what is still open → what to do next. The hypothesis checklist and the per-stream
  *  statistics sit underneath for the analyst who wants the numbers. */
 export function IncidentReport({ inc, onClose, onFocus, onEvidence }: { inc: Incident | null; onClose: () => void; onFocus: (cell: [number, number]) => void; onEvidence?: (rec: IncidentEvidence) => void }) {
-  if (!inc) return <Panel className="p-3"><p className="font-mono text-[9px] font-bold uppercase tracking-[.18em] text-command">Incident report</p>
+  if (!inc) return <Panel panelId="incident-report" className="p-3"><p className="font-mono text-[9px] font-bold uppercase tracking-[.18em] text-command">Incident report</p>
     <p className="mt-1 font-mono text-[10px] text-muted">Select an incident in the list or click a shaded cell on the map.</p></Panel>;
   const st = STATE[inc.state] ?? STATE.new_change;
   const a = inc.assessment;
   const rows = Object.entries(inc.streams).map(([k, s]) => ({ k, s }));
   const evidence = inc.evidence ?? [];
   const act = a.next_action;
-  return <Panel className="max-h-[70vh] overflow-auto p-3 scrollbar">
+  return <Panel panelId="incident-report" className="max-h-[70vh] overflow-auto p-3 scrollbar">
     <div className="flex items-start gap-2">
       <div className="mr-auto"><p className="font-mono text-[9px] font-bold uppercase tracking-[.18em] text-command">Incident report · {inc.id.replace("incident:", "#")}</p>
         <p className="mt-1 text-[12px] leading-snug text-ink">{a.headline ?? a.established}</p></div>

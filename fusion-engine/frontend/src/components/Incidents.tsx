@@ -77,7 +77,7 @@ export function Incidents({ incidents, baseline, status, meta, onFocus, selected
     const multi = (x: Incident) => Object.values(x.streams).filter((s) => s.departed).length;
     return rank(a) - rank(b) || multi(b) - multi(a);
   });
-  return <Panel className="max-h-[46vh] overflow-auto p-3 scrollbar">
+  return <Panel panelId="incidents" className="max-h-[46vh] overflow-auto p-3 scrollbar">
     <div className="mb-2 flex items-baseline gap-2">
       <p className="font-mono text-[9px] font-bold uppercase tracking-[.18em] text-command">Incidents · machine</p>
       <h2 className="font-mono text-[10px] font-semibold uppercase tracking-[.14em] text-ink">{incidents.length} at this instant</h2>

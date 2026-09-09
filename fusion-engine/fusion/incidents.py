@@ -23,6 +23,23 @@ from .mission import CONFIG
 PHYSICAL = ("tracks", "military", "firms_new", "navint")
 
 
+TRACKING_PARAMS = ("utm_", "fbclid", "gclid", "dclid", "msclkid", "mc_cid", "mc_eid", "ref", "ncid", "cmpid", "ito", "sr_share", "igshid")
+
+
+def _article_key(url: str) -> str:
+    """Group records by article: drop the fragment and known tracking parameters, keep every other
+    query parameter (an outlet's ?id=123 is the article's identity, not noise)."""
+    from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+    try:
+        parts = urlsplit(url.strip())
+    except ValueError:
+        return url
+    keep = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
+            if not any(k.lower() == p or (p.endswith("_") and k.lower().startswith(p)) for p in TRACKING_PARAMS)]
+    host = parts.netloc.lower().removeprefix("www.")
+    return urlunsplit((parts.scheme.lower() or "https", host, parts.path.rstrip("/"), urlencode(sorted(keep)), ""))
+
+
 def datetime_ts(value: str) -> float:
     from datetime import datetime
     return datetime.fromisoformat(value).timestamp()
@@ -204,7 +221,7 @@ class IncidentTracker:
             platform = getattr(e, "platform", None)
             if not platform and is_social_event(e):
                 platform = {"tg": "telegram", "reddit": "reddit", "bsky": "bluesky", "mastodon": "mastodon", "md": "mastodon"}.get(pid.split(":")[0], "social")
-            url = (getattr(e, "url", None) or "").split("?")[0].split("#")[0]
+            url = _article_key(getattr(e, "url", None) or "")
             if platform:
                 stream, kind = "social", platform
                 title = f"{platform.title()} · {getattr(e, 'channel', None) or getattr(e, 'source_domain', None) or 'post'}"

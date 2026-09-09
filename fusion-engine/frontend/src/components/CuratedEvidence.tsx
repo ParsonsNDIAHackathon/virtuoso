@@ -34,7 +34,7 @@ export function CuratedEvidence({ scenarioId, tMin, tMax, onSeek }: { scenarioId
   const inWindow = (c: CuratedClaim) => { if (!c.event_time_utc || !win.t_min || !win.t_max) return false; const t = new Date(c.event_time_utc).getTime() / 1000; return t >= win.t_min && t <= win.t_max; };
   const claims = data.claims.filter((c) => vessel === "all" || c.vessel_id === vessel);
 
-  return <Panel className="max-h-[42vh] overflow-auto border-[#b45309]/60 p-3 scrollbar">
+  return <Panel panelId="curated-evidence" className="max-h-[42vh] overflow-auto border-[#b45309]/60 p-3 scrollbar">
     <div className="flex items-center gap-2">
       <div className="mr-auto"><p className="font-mono text-[9px] font-bold uppercase tracking-[.18em] text-[#fbbf24]">Curated · manual</p><h2 className="font-mono text-[10px] font-semibold uppercase tracking-[.14em] text-muted">Curated evidence</h2></div>
       <select value={vessel} onChange={(e) => setVessel(e.target.value)} className="border border-line bg-black/30 px-1.5 py-0.5 font-mono text-[10px] text-ink">
