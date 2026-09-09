@@ -15,6 +15,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
 
 from .store import InMemoryStore, make_store
 from .ingest_adsb import AirTrack, fetch_military, fetch_regions
@@ -22,9 +23,10 @@ from .ingest_gdelt import OsintEvent, fetch_window
 from .ingest_social import PLATFORM_LABELS, SocialPost, enabled_platforms, failure_reason, platform_of, social_to_event
 from .ingest_firms import fetch as fetch_firms, novelty as firms_novelty
 from .backfill import Backfill
+from .retrieval import coverage_key, refresh_signature, select_batch
+from .fusion_ai import AIProviderError, Assessment, Candidate, EvidenceRecord, FusionAI, FusionCluster, asserted_graph_context, candidate_for_pair, generate_candidates, records_from_sources
 from .live_analysis import LiveAnalysis
 from .aircraft_log import AircraftLog
-from .fusion_ai import Assessment, Candidate, EvidenceRecord, FusionAI, FusionCluster, asserted_graph_context, candidate_for_pair, generate_candidates, records_from_sources
 
 log = logging.getLogger(__name__)
 try:
@@ -97,6 +99,8 @@ class FusionState:
         "fusion": {"state": "starting", "label": "Fusion candidate retrieval"},
         "openai": {"state": "starting", "label": "OpenAI adjudication"},
     })
+    ais_count: Callable[[], int | None] | None = field(default=None, repr=False)
+    ais_snapshot: Callable[[], dict] | None = field(default=None, repr=False)
     history: list[dict] = field(default_factory=lambda: _load_history())   # per-fuse counts, persisted across restarts
     backfill: Backfill = field(default_factory=lambda: Backfill(DATA / "gdelt", hours=float(os.getenv("FUSION_BACKFILL_H", "48"))), repr=False)
     _seen: dict = field(default_factory=lambda: {"events": {}, "social": {}, "alerts": {}, "firms": {}, "tracks": {}}, repr=False)
@@ -105,6 +109,9 @@ class FusionState:
     _ai_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _fusion_persist_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _last_ai_at: float = field(default=0.0, repr=False)
+    _ai_recent: dict[tuple[str, str], tuple[float, str]] = field(default_factory=dict, repr=False)
+    _pending_fusion_write: tuple | None = field(default=None, repr=False)
+    _fusion_writer_running: bool = field(default=False, repr=False)
 
     def set_source_status(self, source: str, state: str, *, count: int | None = None, detail: str | None = None):
         """Publish source readiness without exposing secrets or raw provider errors."""
@@ -328,6 +335,7 @@ class FusionState:
         self.set_source_status("adsb", "ready", count=len(tracks), detail="Military feed plus configured AOIs")
 
     def fuse(self, radius_km=75.0, window_min=240.0):
+        vessels = self.ais_snapshot()["vessels"] if self.ais_snapshot else []
         with self.lock:
             ev, tr = list(self.events) + list(self.social), list(self.tracks)
             hotspots, social_posts = list(self.firms), dict(self.social_posts)
@@ -345,7 +353,7 @@ class FusionState:
 
         def persist_and_correlate():
             self.set_source_status("fusion", "starting", detail="Writing observations to the graph")
-            store.ingest(ev, tr, batch_id, hotspots=hotspots, social_posts=social_posts)
+            store.ingest(ev, tr, batch_id, hotspots=hotspots, social_posts=social_posts, vessels=vessels)
             self.set_source_status("fusion", "starting", detail="Computing spatial and temporal correlations")
             return store.correlate(event_ids, batch_id, radius_km, window_min, min_severity=0.35)
 
@@ -375,7 +383,7 @@ class FusionState:
                 error = failure[0]
                 log.exception("Neo4j fusion pass failed; using the in-memory engine", exc_info=error)
                 fallback = InMemoryStore()
-                fallback.ingest(ev, tr, batch_id, hotspots=hotspots, social_posts=social_posts)
+                fallback.ingest(ev, tr, batch_id, hotspots=hotspots, social_posts=social_posts, vessels=vessels)
                 alerts = fallback.correlate(event_ids, batch_id, radius_km, window_min, min_severity=0.35)
                 with self.lock:
                     if self.store is store:
@@ -393,7 +401,7 @@ class FusionState:
             self.alert_count = len(alerts)
             # The deterministic pass deliberately creates candidates only. OpenAI adjudication
             # runs outside this one-minute ingest path and promotes supported evidence separately.
-            records = records_from_sources(ev, tr, hotspots, social_posts)
+            records = records_from_sources(ev, tr, hotspots, social_posts, vessels=vessels)
             limit = int(os.getenv("FUSION_CANDIDATE_LIMIT", "250"))
             baseline = getattr(self.live_analysis, "baseline", None)
             if baseline is not None:
@@ -408,23 +416,26 @@ class FusionState:
             else:
                 self.fusion_candidates = generate_candidates(records, limit=limit)
                 self.fusion_candidates_ungated_n = len(self.fusion_candidates)
-            current_candidate_ids = {candidate.id for candidate in self.fusion_candidates}
+            current_records = {(record.kind, record.id): record for record in records}
+            cutoff = time.time() - float(os.getenv("FUSION_ASSESSMENT_TTL_S", "3600"))
             self.fusion_assessments = {
                 key: assessment for key, assessment in self.fusion_assessments.items()
-                if assessment.candidate_id in current_candidate_ids
+                if (assessment.left_kind, assessment.left_id) in current_records
+                and (assessment.right_kind, assessment.right_id) in current_records
+                and datetime.fromisoformat(assessment.created_at).timestamp() >= cutoff
+                and all(assessment.claim_fingerprints.get(f"{kind}:{rid}") in (None, current_records[(kind, rid)].claim_fingerprint())
+                        for kind, rid in ((assessment.left_kind, assessment.left_id), (assessment.right_kind, assessment.right_id)))
             }
             # Re-read the cache for every current pair. The cache key includes the records' claim
             # content, so a pair whose article was edited or withdrawn misses and its old verdict is
             # dropped immediately (outdated), rather than lingering until the next model pass.
-            refreshed: dict[str, Assessment] = {}
             for candidate in self.fusion_candidates:
                 try:
                     cached = self.fusion_ai.cached_assessment(candidate)
                 except Exception:
                     cached = None
-                if cached is not None:
-                    refreshed[cached.id] = cached
-            self.fusion_assessments = refreshed
+                if cached is not None and datetime.fromisoformat(cached.created_at).timestamp() >= cutoff:
+                    self._remember_assessment(cached)
             self.fusion_clusters = self.fusion_ai.clusters(self.fusion_assessments.values())
             now_ts = datetime.now(timezone.utc).timestamp()
             # levels (what is present now) and flows (first seen since the previous fuse) — the live
@@ -448,7 +459,7 @@ class FusionState:
                      "social": len(self.social), "tracks": len(tr), "military": sum(t.military for t in tr),
                      "alerts": len(alerts), "firms_new": sum(1 for h in self.firms if h.get("novelty", 0) >= 0.9),
                      "d_conflict": ev_new, "d_social": so_new, "d_alerts": al_new, "d_firms_new": fi_new, "d_tracks": tr_new,
-                     "primed": primed}
+                     "primed": primed, "ais": self.ais_count() if self.ais_count else None}
             self.history.append(point)
             self.history = [h for h in self.history if now_ts - h["t"] <= HISTORY_KEEP_H * 3600]
         try:
@@ -460,9 +471,9 @@ class FusionState:
         log.info("FUSE: persisted %d events / %d tracks, %d alerts (top=%s)",
                  len(ev), len(tr), len(alerts),
                  alerts[0].score if alerts else None)
-        self.set_source_status("fusion", "partial" if degraded_detail else "ready", count=len(alerts),
+        self.set_source_status("fusion", "partial" if degraded_detail else "ready", count=len(self.fusion_candidates),
                                detail=degraded_detail or "Spatial and temporal candidate generation")
-        self._persist_fusion_artifacts(
+        self._queue_fusion_artifacts(
             self.store, self.fusion_candidates, list(self.fusion_assessments.values()),
             self.fusion_clusters, batch_id, "candidate",
         )
@@ -475,6 +486,46 @@ class FusionState:
         except Exception as e:
             log.warning("live analysis not started: %s", e)
         return alerts
+
+    def _queue_fusion_artifacts(self, store, candidates, assessments, clusters, batch_id, source):
+        """One coalescing writer: a slow graph must not block ingestion or model results."""
+        args = (store, list(candidates), list(assessments), list(clusters), batch_id, source)
+        if getattr(store, "name", None) != "neo4j":
+            return self._persist_fusion_artifacts(*args)
+        with self.lock:
+            self._pending_fusion_write = args
+            if self._fusion_writer_running:
+                return
+            self._fusion_writer_running = True
+
+        def work():
+            while True:
+                with self.lock:
+                    pending = self._pending_fusion_write
+                    self._pending_fusion_write = None
+                    if pending is None:
+                        self._fusion_writer_running = False
+                        return
+                self._persist_fusion_artifacts(*pending)
+
+        threading.Thread(target=work, name="fusion-artifact-writer", daemon=True).start()
+
+    def _remember_assessment(self, assessment):
+        """Retain the latest assessment of each record pair across observation refreshes.
+
+        The assessment carries its original evidence timestamps and positions. It is never
+        reused as a cached verdict for a different observation fingerprint.
+        Caller holds self.lock.
+        """
+        pair = {(assessment.left_kind, assessment.left_id), (assessment.right_kind, assessment.right_id)}
+        self.fusion_assessments = {
+            key: value for key, value in self.fusion_assessments.items()
+            if {(value.left_kind, value.left_id), (value.right_kind, value.right_id)} != pair
+        }
+        self.fusion_assessments[assessment.id] = assessment
+        if len(self.fusion_assessments) > 500:
+            oldest = min(self.fusion_assessments, key=lambda key: self.fusion_assessments[key].created_at)
+            del self.fusion_assessments[oldest]
 
     def _persist_fusion_artifacts(self, store, candidates, assessments, clusters,
                                   batch_id: str, source: str) -> bool:
@@ -489,64 +540,86 @@ class FusionState:
             return False
 
     def _start_ai_fusion(self, batch_id: str):
-        """Adjudicate the best current candidates without delaying source ingestion."""
+        """Publish each verdict as it finishes, independently of live batch turnover."""
         if not self.fusion_ai.available:
             self.set_source_status("openai", "error", count=0,
                                    detail="Set OPENAI_API_KEY to enable evidence adjudication")
             return
         now = time.time()
-        cadence = float(os.getenv("FUSION_LLM_EVERY_S", "600"))
+        cadence = float(os.getenv("FUSION_LLM_EVERY_S", "180"))
         if now - self._last_ai_at < cadence or not self._ai_lock.acquire(blocking=False):
             return
-        self._last_ai_at = now
         with self.lock:
-            # priority: pairs inside current incident cells, then pairs with shared entities, then
-            # news-to-news pairs (the ones most often supported), then retrieval score
+            assessed_ids = {value.candidate_id for value in self.fusion_assessments.values()}
+            cooldown = float(os.getenv("FUSION_LLM_REPEAT_S", "1800"))
+            self._ai_recent = {key: value for key, value in self._ai_recent.items() if now - value[0] < cooldown}
+            eligible = [value for value in self.fusion_candidates if value.id not in assessed_ids
+                        and (coverage_key(value) not in self._ai_recent
+                             or self._ai_recent[coverage_key(value)][1] != refresh_signature(value))]
             try:
-                hot = {tuple(c) for inc in self.live_analysis.snapshot().get("incidents", []) for c in inc["cells"]}
+                hot = {tuple(cell) for incident in self.live_analysis.snapshot().get("incidents", []) for cell in incident["cells"]}
             except Exception:
                 hot = set()
             from .baseline import cell_of
-            def _prio(c):
-                inside = cell_of(c.left.lat, c.left.lon) in hot or cell_of(c.right.lat, c.right.lon) in hot
-                return (not inside, -len(c.entity_overlap), not (c.left.kind == "gdelt" and c.right.kind == "gdelt"), -c.candidate_score)
-            candidates = sorted(self.fusion_candidates, key=_prio)[:int(os.getenv("FUSION_LLM_MAX_CANDIDATES", "24"))]
-            store = self.store
+            candidates = select_batch(eligible, limit=int(os.getenv("FUSION_LLM_MAX_CANDIDATES", "12")),
+                                      proximity_limit=int(os.getenv("FUSION_LLM_PROXIMITY_LIMIT", "2")),
+                                      priority=lambda c: cell_of(c.left.lat, c.left.lon) in hot or cell_of(c.right.lat, c.right.lon) in hot)
         if not candidates:
             self._ai_lock.release()
-            self.set_source_status("openai", "ready", count=0, detail="No candidates require adjudication")
+            self.set_source_status("openai", "ready", count=len(self.fusion_assessments),
+                                   detail="No new eligible pairs; recently assessed pairs are cooling down")
             return
+        self._last_ai_at = now
 
         def work():
+            completed = 0
+            errors = []
             try:
-                self.set_source_status("openai", "starting", detail=f"Adjudicating {len(candidates)} candidate pairs")
-                completed: list[Assessment] = []
+                self.set_source_status("openai", "starting", count=len(self.fusion_assessments),
+                                       detail=f"Adjudicating 0/{len(candidates)} candidate pairs")
                 for candidate in candidates:
-                    completed.append(self.fusion_ai.adjudicate(candidate))
+                    try:
+                        assessment = self.fusion_ai.adjudicate(candidate)
+                    except Exception as error:
+                        errors.append(str(error)[:250])
+                        log.warning("Candidate adjudication failed: %s", error)
+                        if isinstance(error, AIProviderError):
+                            break  # Do not repeat quota, authentication or provider failures.
+                        continue
+                    with self.lock:
+                        self._remember_assessment(assessment)
+                        self._ai_recent[coverage_key(candidate)] = (time.time(), refresh_signature(candidate))
+                        self.fusion_clusters = self.fusion_ai.clusters(self.fusion_assessments.values())
+                        args = (self.store, list(self.fusion_candidates), list(self.fusion_assessments.values()),
+                                list(self.fusion_clusters), self.batch_id, "automatic OpenAI")
+                        count = len(self.fusion_assessments)
+                    completed += 1
+                    self.set_source_status("openai", "starting", count=count,
+                                           detail=f"Adjudicated {completed}/{len(candidates)} candidate pairs")
+                    # The current batch may have advanced. Results retain the original evidence
+                    # snapshot and are persisted with the current picture, not silently discarded.
+                    if args[4]:
+                        self._queue_fusion_artifacts(*args)
                 with self.lock:
-                    # the batch may have moved on during a slow pass; keep verdicts for pairs that still exist
-                    current = {c.id for c in self.fusion_candidates}
-                    for assessment in completed:
-                        if assessment.candidate_id in current:
-                            self.fusion_assessments[assessment.id] = assessment
-                    clusters = self.fusion_ai.clusters(self.fusion_assessments.values())
-                    all_assessments = list(self.fusion_assessments.values())
+                    clusters = list(self.fusion_clusters)
+                    assessments = list(self.fusion_assessments.values())
                 if clusters:
                     try:
-                        clusters[0] = self.fusion_ai.brief(clusters[0], all_assessments)
+                        brief = self.fusion_ai.brief(clusters[0], assessments)
+                        with self.lock:
+                            self.fusion_clusters = [brief if value.id == brief.id else value
+                                                    for value in self.fusion_clusters]
+                            args = (self.store, list(self.fusion_candidates), list(self.fusion_assessments.values()),
+                                    list(self.fusion_clusters), self.batch_id, "automatic brief")
+                        if args[4]:
+                            self._queue_fusion_artifacts(*args)
                     except Exception as error:
-                        log.warning("cluster brief failed; retaining pair assessments: %s", error)
+                        log.warning("Cluster brief failed; retaining pair assessments: %s", error)
                 with self.lock:
-                    self.fusion_clusters = clusters
-                self._persist_fusion_artifacts(
-                    store, self.fusion_candidates, all_assessments, clusters,
-                    batch_id, "automatic OpenAI",
-                )
-                self.set_source_status("openai", "ready", count=len(completed),
-                                       detail="Evidence adjudication complete; plausible links need review")
-            except Exception as e:
-                log.exception("OpenAI fusion pass failed: %s", e)
-                self.set_source_status("openai", "error", detail="OpenAI adjudication failed; candidates remain unpromoted")
+                    count = len(self.fusion_assessments)
+                self.set_source_status("openai", "partial" if errors and completed else "error" if errors else "ready",
+                                       count=count, detail=(f"{completed} completed; {errors[0]}" if errors else
+                                       f"{completed} pairs assessed; next automatic batch after {cadence:g}s. Show rejected includes unsupported links"))
             finally:
                 self._ai_lock.release()
 
@@ -679,10 +752,14 @@ class FusionState:
         with self.lock:
             return [cluster.to_dict() for cluster in self.fusion_clusters[:limit]]
 
-    def evidence_record(self, kind: str, record_id: str) -> EvidenceRecord | None:
+    def evidence_records(self) -> list[EvidenceRecord]:
+        vessels = self.ais_snapshot()["vessels"] if self.ais_snapshot else []
         with self.lock:
-            records = records_from_sources(list(self.events) + list(self.social), list(self.tracks),
-                                           list(self.firms), dict(self.social_posts))
+            return records_from_sources(list(self.events) + list(self.social), list(self.tracks),
+                                        list(self.firms), dict(self.social_posts), vessels=vessels)
+
+    def evidence_record(self, kind: str, record_id: str) -> EvidenceRecord | None:
+        records = self.evidence_records()
         record = next((value for value in records if value.kind == kind and value.id == record_id), None)
         if not record:
             return None
@@ -704,24 +781,15 @@ class FusionState:
         with self.lock:
             if not any(value.id == candidate.id for value in self.fusion_candidates):
                 self.fusion_candidates.append(candidate)
-            self.fusion_assessments[assessment.id] = assessment
+            self._remember_assessment(assessment)
+            self._ai_recent[coverage_key(candidate)] = (time.time(), refresh_signature(candidate))
             self.fusion_clusters = self.fusion_ai.clusters(self.fusion_assessments.values())
             candidates, assessments, clusters, batch_id, store = (
                 list(self.fusion_candidates), list(self.fusion_assessments.values()),
                 list(self.fusion_clusters), self.batch_id, self.store,
             )
         if batch_id:
-            args = (store, candidates, assessments, clusters, batch_id, "analyst OpenAI")
-            if getattr(store, "name", None) == "neo4j":
-                # The verdict is the requested operation. Graph persistence can overlap a live
-                # ingest pass, so it must not hold the HTTP response open or relabel a database
-                # deadlock as an OpenAI failure.
-                threading.Thread(
-                    target=self._persist_fusion_artifacts, args=args,
-                    name="fusion-analyst-persist", daemon=True,
-                ).start()
-            else:
-                self._persist_fusion_artifacts(*args)
+            self._queue_fusion_artifacts(store, candidates, assessments, clusters, batch_id, "analyst OpenAI")
         return assessment.to_dict()
 
     def api_timeline(self, hours: float = 24.0) -> dict:

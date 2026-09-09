@@ -128,7 +128,7 @@ class Backfill:
         now = datetime.now(timezone.utc).timestamp()
         start = int((now - hours * 3600) // STEP * STEP)
         n = int((now - start) // STEP) + 1
-        out = [{"t": start + i * STEP, "events": 0, "conflict": 0, "social": 0, "tracks": None, "military": None,
+        out = [{"t": start + i * STEP, "events": 0, "conflict": 0, "social": 0, "tracks": None, "military": None, "ais": None,
                 "alerts": 0, "firms_new": 0, "backfilled": False} for i in range(n)]
         idx = {b["t"]: b for b in out}
         with self.lock:
@@ -155,6 +155,8 @@ class Backfill:
                 acc.setdefault(t, []).append(p)
         for t, pts in acc.items():
             b = idx[t]
+            ais_levels = [p["ais"] for p in pts if p.get("ais") is not None]
+            b["ais"] = round(sum(ais_levels) / len(ais_levels), 1) if ais_levels else None
             b["tracks"] = round(sum(p.get("tracks", 0) for p in pts) / len(pts))
             b["military"] = round(sum(p.get("military", 0) for p in pts) / len(pts))
             b["alerts"] = sum(p.get("d_alerts", 0) for p in pts if p.get("primed"))

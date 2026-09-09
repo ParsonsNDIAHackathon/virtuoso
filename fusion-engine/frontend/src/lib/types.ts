@@ -1,4 +1,10 @@
 export type Region = { id: string; name: string; lat: number; lon: number; radius_nm: number; user?: boolean };
+export type AoiSummary = {
+  region: Region; mode: string; as_of: string; generated_at: string; cached: boolean;
+  counts: Record<string, number>; total_records: number; record_time_start: string | null; record_time_end: string | null;
+  summary: string; findings: { text: string; record_ids: string[] }[]; caveats: string[];
+  sources: { key: string; id: string; kind: string; label: string; ts: string; lat: number; lon: number; url?: string | null }[];
+};
 
 export type Event = {
   id: string; lat: number; lon: number; root_label: string; place: string; country?: string;
@@ -43,11 +49,11 @@ export type CuratedSource = { id: string; publisher: string; url: string; source
 export type CuratedClaim = { id: string; vessel_id: string; source_ids: string[]; event_date?: string | null; event_time_utc?: string | null; time_precision: "date_only" | "ambiguous_overnight" | "minute_as_reported"; location_text?: string | null; coordinates: null | [number, number]; claim: string; evidence_class: string; attacker?: string | null };
 export type CuratedLead = { url: string; platform: string; publisher: string; publication_time_utc?: string | null; original_language: string; summary_en: string; summary_kind?: string; status?: string };
 export type Evidence = { kind: string; prepared_date?: string; retrieved_date?: string; vessels: CuratedVessel[]; sources: CuratedSource[]; claims: CuratedClaim[]; leads: CuratedLead[]; excluded: Array<{ reason?: string }>; notes: string[]; window?: { t_min: number; t_max: number; label?: string } };
-export type RecordRef = { kind: "gdelt" | "telegram" | "adsb" | "firms" | string; id: string };
-export type FusionCandidate = { id: string; left_id: string; left_kind: string; right_id: string; right_kind: string; distance_km: number; dt_min: number; candidate_score: number; reasons: string[]; entity_overlap?: string[] };
+export type RecordRef = { kind: "gdelt" | "telegram" | "adsb" | "firms" | "ais" | string; id: string };
+export type FusionCandidate = { id: string; left_id: string; left_kind: string; right_id: string; right_kind: string; distance_km: number; dt_min: number; candidate_score: number; reasons: string[]; entity_overlap?: string[]; match_type?: "identifier" | "name" | "entity" | "topic" | "proximity" };
 export type ArticleMatch = { status: "SAME_ARTICLE" | "NOT_ESTABLISHED" | "NOT_APPLICABLE"; basis: "normalized_url" | "redirect_url" | null; confidence: number | null; shared_url: string | null; independent_corroboration: boolean | null };
 export type SourceDocument = { record_id: string; url: string; resolved_url: string; title: string | null; available: boolean; characters: number; truncated: boolean; retrieved_at: string | null; limitation: string | null };
-export type Assessment = { id: string; candidate_id: string; left_id: string; left_kind: string; right_id: string; right_kind: string; verdict: "SUPPORTED" | "PLAUSIBLE" | "INSUFFICIENT_EVIDENCE" | "CONTRADICTED"; relation: string; evidence_strength: number; supporting_facts: string[]; strongest_limitation: string; rationale: string; resolved_entities?: Array<{ record_id: string; name: string; canonical_name: string; entity_type: string; confidence: number }>; model: string; prompt_version: string; created_at: string; cached: boolean; needs_review: boolean; distance_km: number; dt_min: number; incident_relationship?: "SAME_INCIDENT" | "RELATED_INCIDENTS" | "UNRELATED" | "UNCERTAIN" | "NOT_APPLICABLE"; article_match?: ArticleMatch; has_article_match?: boolean; source_documents?: SourceDocument[]; source_groups?: Record<string, string> };
+export type Assessment = { evidence?: Array<{ id: string; kind: string; label: string; ts: string; lat: number; lon: number }>; id: string; candidate_id: string; left_id: string; left_kind: string; right_id: string; right_kind: string; verdict: "SUPPORTED" | "PLAUSIBLE" | "INSUFFICIENT_EVIDENCE" | "CONTRADICTED"; relation: string; evidence_strength: number; supporting_facts: string[]; strongest_limitation: string; rationale: string; resolved_entities?: Array<{ record_id: string; name: string; canonical_name: string; entity_type: string; confidence: number }>; model: string; prompt_version: string; created_at: string; cached: boolean; needs_review: boolean; distance_km: number; dt_min: number; incident_relationship?: "SAME_INCIDENT" | "RELATED_INCIDENTS" | "UNRELATED" | "UNCERTAIN" | "NOT_APPLICABLE"; article_match?: ArticleMatch; has_article_match?: boolean; source_documents?: SourceDocument[]; source_groups?: Record<string, string> };
 export type FusionCluster = { id: string; record_ids: string[]; assessment_ids: string[]; modalities: string[]; score: number; needs_review: boolean; brief?: string | null; caveats: string[] };
 export type AIStatus = { provider: "openai"; model: string; configured: boolean; prompt_version: string };
 export type ReplaySnapshot = { t: number; events: Event[]; tracks: Track[]; alerts: Alert[]; graph: Graph; tails?: Tail[]; firms?: Firms[]; sar?: Sar[]; sar_scene?: { n: number; label: string; ts: string }; sar_core?: Sar[]; sar_core_scene?: { n: number; label: string; ts: string }; candidates?: FusionCandidate[]; assessments?: Assessment[]; clusters?: FusionCluster[]; counts: Status["counts"]; t_iso: string;
@@ -75,9 +81,12 @@ export type SourcePreview = {
 export type Viewport = { west: number; south: number; east: number; north: number; zoom: number };
 // Live bins: flows (events, social, alerts, firms_new) are sums per 15-min bin; tracks/military are
 // levels averaged from this server's own fuse history and null where nothing was recorded yet.
-export type TimelineBin = { t: number; events: number; conflict: number; social: number; tracks: number | null; military: number | null; alerts?: number; firms_new: number; backfilled?: boolean; navint_known?: number; navint_degraded?: number; z?: Record<string, number | null> };
+export type TimelineBin = { ais?: number | null; t: number; events: number; conflict: number; social: number; tracks: number | null; military: number | null; alerts?: number; firms_new: number; backfilled?: boolean; navint_known?: number; navint_degraded?: number; z?: Record<string, number | null> };
 export type Timeline = {
   bins: TimelineBin[]; step_min: number; hours?: number; t_min?: number; sar_scenes?: Array<{ t: number; ts: string; n: number }>;
   backfill?: { status: string; hours: number; windows: number }; since?: number | null;
 };
+
+export type Vessel = { id: string; mmsi: number; ts: string; lat: number; lon: number; name?: string | null; sog?: number | null; cog?: number | null; heading?: number | null; nav_status?: number | null; age_min: number };
+export type AisPicture = { vessels: Vessel[]; source: NonNullable<Status["sources"]>[string] };
 export type LiveIncidents = { status: string; built_at: string | null; t?: number; assessed_through?: string | null; aircraft_history?: { from: string; to: string } | null; incidents: Incident[]; departures: Departure[]; departed_cells: number[][]; baseline?: { z_threshold: number; reference: string; days: number; note?: string } };

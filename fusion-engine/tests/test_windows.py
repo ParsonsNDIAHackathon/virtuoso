@@ -12,7 +12,9 @@ from pathlib import Path
 import pytest
 
 DATA = Path(os.getenv("FUSION_DATA_DIR") or Path(__file__).resolve().parent.parent / "data")
-HAVE = all((DATA / "replay" / f).exists() for f in ("2026-08-17_adsb.json", "2026-08-18_adsb.json", "2026-08-18_gdelt.json"))
+HAVE = ((DATA / "replay" / "2026-08-18_gdelt.json").exists()
+        and all(any((DATA / "replay" / f"{day}_adsb.json{suffix}").exists() for suffix in ("", ".gz"))
+                for day in ("2026-08-17", "2026-08-18")))
 
 
 @pytest.mark.skipif(not HAVE, reason="Hormuz replay files not present in FUSION_DATA_DIR")

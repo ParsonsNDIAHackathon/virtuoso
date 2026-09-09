@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Timeline, TimelineBin } from "../lib/types";
 
-type SeriesKey = "conflict" | "social" | "tracks" | "military" | "firms_new" | "alerts" | "navint_degraded";
+type SeriesKey = "ais" | "conflict" | "social" | "tracks" | "military" | "firms_new" | "alerts" | "navint_degraded";
 type Series = { key: SeriesKey; label: string; color: string };
 
 // Replay: arrivals per 15-min bin across the scenario day.
@@ -20,6 +20,7 @@ const LIVE_SERIES: Series[] = [
   { key: "conflict", label: "conflict OSINT events (in circles)", color: "#eab85a" },
   { key: "social", label: "Social posts (in circles)", color: "#d99add" },
   { key: "tracks", label: "aircraft in coverage", color: "#5cc7da" },
+  { key: "ais", label: "Vessels in Coverage", color: "#34d399" },
   { key: "military", label: "military aircraft", color: "#df5e55" },
   { key: "firms_new", label: "new thermal anomalies", color: "#ef4444" },
   { key: "alerts", label: "new correlations", color: "#a78bfa" },
@@ -130,7 +131,7 @@ export function ActivityTimeline({ timeline, activeTime, mode, onSeek }: Props) 
     <div className="mb-1 flex flex-wrap items-center gap-x-3 gap-y-1">
       <h2 className="mr-2 font-mono text-[10px] uppercase tracking-[.14em] text-muted">Multi-source activity timeline</h2>
       {series.map((s) => <span key={s.key} className="flex items-center gap-1 font-mono text-[9px] uppercase tracking-wide text-muted"><i className="h-0.5 w-3" style={{ background: s.color }} />{s.label}</span>)}
-      {backfill && <span className="font-mono text-[9px] text-ink/80">15-min bins · GDELT/Telegram backfilled {backfill.hours} h from the sources ({backfill.status}, {backfill.windows} windows) · aircraft and correlations from this server&apos;s own history</span>}
+      {backfill && <span className="font-mono text-[9px] text-ink/80">15-min bins · GDELT/Telegram backfilled {backfill.hours} h from the sources ({backfill.status}, {backfill.windows} windows) · aircraft, AIS and correlations from this server&apos;s own history · AIS uses AOIs active at recording time; gaps mean unavailable</span>}
     </div>
     <canvas ref={canvas} className={`min-h-0 w-full flex-1 ${onSeek ? "cursor-pointer" : ""}`} aria-label="Multi-source activity timeline"
       onMouseMove={(event) => { const t = timeAt(event.clientX); if (t === null) return; const rect = event.currentTarget.getBoundingClientRect(); setHover({ x: event.clientX - rect.left, y: event.clientY - rect.top, bin: nearest(t) }); }}

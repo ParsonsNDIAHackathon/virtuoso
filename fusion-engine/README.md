@@ -25,7 +25,10 @@ Pipeline (`fusion/`):
    250 nm circles around regions of interest.
 2. **Candidate retrieval** — `fusion_ai.generate_candidates()` uses a different permissive time and
    distance window for each source pair. It suppresses routine FIRMS pixels and ordinary high-altitude
-   civil traffic, adds shared source entities/themes, uses a spatial index, and keeps a bounded top set.
+   civil traffic unless explicitly identified in reporting. Exact MMSIs, IMO numbers, aircraft
+   identifiers and complete vessel names rank first, then shared persons/organizations and relevant
+   reporting. Distinct news articles can be compared; repeated event rows from one article share a
+   retrieval slot. Spatial and identity indexes keep the candidate set bounded.
    These are explicitly cues, not findings. The older OSINT/ADS-B proximity score remains visible as a
    dashed heuristic link for comparison and no longer receives a fake same-cell “corroboration” boost.
 3. **OpenAI evidence adjudication** — one structured Responses API prompt classifies each pair as
@@ -39,7 +42,7 @@ Pipeline (`fusion/`):
    distinct modalities and evidence strength. OpenAI produces a cached analyst BLUF for the top cluster.
 5. **Knowledge graph and dashboard** — Neo4j stores source records, retrieval candidates, LLM
    assessments, resolved entities, and clusters. The map supports selecting any two individual GDELT,
-   Telegram, ADS-B, or FIRMS markers and invoking the same adjudicator on demand. Rejected assessments
+   Telegram, ADS-B, AIS, or FIRMS markers and invoking the same adjudicator on demand. Rejected assessments
    are persisted but hidden unless **Show rejected** is enabled.
 
 Two GDELT records can come from the same article while describing different incidents. Comparisons
@@ -92,12 +95,41 @@ same alerts on one snapshot (last run: 568/568 identical).
 `CDSE_S3_SECRET_KEY` (Copernicus Data Space S3 keys, for Sentinel-1). GDELT, adsb.lol, Telegram
 previews and NASA GIBS need no key.
 
+**Test AIS and AI together:** run `docker compose up -d --build api frontend`, then hard-refresh
+`http://localhost:8080` (or your configured `FUSION_PORT`). The live source legend should show
+both **AIS · VESSELS** and **AI · ADJUDICATION**. Enable **Compare with AI**, expand any
+clusters, select two individual GDELT, Telegram, ADS-B, AIS, or FIRMS markers, then click
+**Adjudicate evidence**. The result separates article identity from incident association and
+explains the supporting facts and limitations. Repeat in a replay: selecting the first marker
+pauses playback and binds the comparison to that displayed instant. AIS comparisons are live-only.
+The legacy ADS-B/OSINT cues panel is removed; map zoom controls are at the bottom-right.
+
+**Analyze an AOI:** click its purple center marker, then **Analyze**. The summary panel includes
+source counts, findings with numbered citations, evidence gaps and the snapshot time. It uses all
+available GDELT, Telegram, Reddit, Bluesky, Mastodon, AIS, ADS-B and FIRMS records inside the circle, including hidden layers;
+map viewport limits do not truncate it. Large snapshots are summarized in batches and combined.
+This covers available feed observations, not every real-world event or vessel. It uses structured
+news records rather than fetching every article. In replay, analysis pauses at the displayed instant
+and uses that instant's archived records (two hours of news, twelve hours of FIRMS, aircraft
+positions); live AIS is excluded. Identical snapshots reuse a cached summary. The server deadline
+is `FUSION_AOI_SUMMARY_TIMEOUT_S=180` seconds; errors appear in the panel with a retry action.
+
+Automatic pair analysis is eligible every **3 minutes**, checked each fusion cycle, with at most
+**12 pairs** per pass (`FUSION_LLM_EVERY_S=180`, `FUSION_LLM_MAX_CANDIDATES=12`). Ranking
+prioritizes source evidence and alternates source-pair types within each priority tier, favoring current incident cells within a tier. Once the live baseline is ready, automatic retrieval is gated to departed cells and their neighbors; manual comparisons and AOI summaries use all available records. At most
+**two proximity-only pairs** are analyzed per pass (`FUSION_LLM_PROXIMITY_LIMIT=2`). A recently
+assessed report/asset pair has a **30-minute cooldown** (`FUSION_LLM_REPEAT_S=1800`) unless material
+evidence changes; routine position/time updates do not bypass it. Manual comparisons bypass these
+batch limits. Existing `.env` overrides take precedence over these defaults.
+
+Regression checks (with `pytest` installed): `python -m pytest tests -q`.
+
 API: `/api/status`, `/api/alerts`, `/api/events?conflict_only=true`, `/api/aircraft`, `/api/firms`,
-`/api/graph`, `/api/entity/{id}`, `/api/regions` (GET/POST/PATCH/DELETE), `POST /api/refresh`,
+`/api/ais`, `/api/graph`, `/api/entity/{id}`, `/api/regions` (GET/POST/PATCH/DELETE), `POST /api/refresh`,
 `/api/fusion/status|candidates|assessments|clusters`, `POST /api/fusion/adjudicate`,
-`/api/graph`, `/api/entity/{id}`, `/api/source/preview?url=…`,
+`POST /api/regions/{id}/analyze` (`mode`, optional replay `t`, optional `force`),
+`/api/source/preview?url=…`,
 `/api/social?platform=reddit&limit=500`, `/api/social/platforms`,
-`/api/regions` (GET/POST/PATCH/DELETE), `POST /api/refresh`,
 `/api/replay/scenarios`, `/api/replay/{id}/config|timeline|at?t=`.
 
 ## Sources
@@ -109,7 +141,7 @@ API: `/api/status`, `/api/alerts`, `/api/events?conflict_only=true`, `/api/aircr
 | Social posts | Telegram + Reddit + Bluesky + Mastodon (keyless public endpoints), every 5 min. Configure with `SOCIAL_PLATFORMS` / `SOCIAL_REDDIT_SUBS` / `SOCIAL_BLUESKY_QUERIES` / `SOCIAL_MASTODON_INSTANCES` | same sources paged back to the day (`python -m fusion.ingest_social --since 2026-08-18`) | `ingest_social.py` registry + `ingest_telegram.py`, `ingest_reddit.py`, `ingest_bluesky.py`, `ingest_mastodon.py` |
 | Thermal anomalies | NASA FIRMS VIIRS inside each circle, every 15 min, novelty vs 7 days earlier | FIRMS for the day, novelty vs Aug 11 | `ingest_firms.py` |
 | Radar ship detections | n/a (revisit is days) | Sentinel-1 GRD COG scenes from Copernicus S3, nearest scene within 3 days, age labeled | `sar_ships.py` |
-| Vessels (AIS) | aisstream.io (no coverage in the Gulf; works in the Med) | none free | `ingest_ais.py` |
+| Vessels (AIS) | aisstream.io · AOI bounding boxes, then circle filtering; coverage varies | none free | `ingest_ais.py` |
 | Satellite basemap | NASA GIBS VIIRS true color (yesterday) | same, scenario day | dashboard layer toggle |
 
 ## Replay mode — Strait of Hormuz, 18 Aug 2026
@@ -154,7 +186,7 @@ feed such as aisstream.io labeled as current.
 
 ## Hackathon facts (from the platform API)
 
-- Team UUID `979aa832-0234-40b6-abe6-16331abb76df`, lead Steve Dall (`sdall`), 6 members.
+- Team UUID `979aa832-0234-40b6-abe6-16331abb76df`, lead (Ruksana), 6 members.
 - Datasets selected on the platform: GDELT 2.0 (#62), adsb.lol ADS-B (#72), DroneRF (#73).
   All platform datasets are *link-only*; data comes from the upstream sources.
 - **Project submissions due 2026-09-10 03:59 UTC** (Sep 9, 23:59 EDT). Judging 14:00 UTC Sep 10.
@@ -171,4 +203,55 @@ feed such as aisstream.io labeled as current.
   API projections query Neo4j directly.
 - Track history: persist ADS-B snapshots to detect loitering / orbit patterns, not just presence.
 - Extend entity extraction beyond the current source fields and LLM-resolved explicit mentions.
+
 - Social spike detection across all four platforms (per-platform bursts in `/api/social/platforms` + timeline).
+
+### Live AIS
+
+Set `AISSTREAM_API_KEY` in `fusion-engine/.env` and restart the API service. In Live mode,
+add an area of interest and enable **AIS**. Green markers show vessel positions; clicking
+one shows MMSI, name, speed, course, heading, report time, and position age. Enable
+**Compare with AI** to compare a vessel against another vessel, news item, aircraft, Telegram
+post, or thermal anomaly. The display
+refreshes every 10 seconds. The AIS source indicator reports missing credentials,
+connection failures, and the current vessel count.
+
+One backend WebSocket subscribes to the union of bounding boxes enclosing saved AOI
+circles, splitting boxes at the dateline. Incoming reports are filtered against the circles;
+map panning and the optional “Filter view to AOIs” checkbox never widen AIS coverage.
+Adding/removing AOIs reconnects with the updated subscription and immediately drops
+positions outside the remaining circles. With no AOIs, no AIS subscription is opened.
+The layer toggle controls display and browser polling; it does not stop the shared server feed.
+
+Only latest positions are kept in memory. Reports older than 15 minutes are labeled stale
+in vessel details and removed after 60 minutes. A reporting gap can reflect receiver coverage
+or connectivity; it is not evidence of intentional AIS shutdown. AIS has no replay support.
+Provider protocol: https://aisstream.io/documentation .
+
+The live Activity Timeline records AOI-scoped AIS vessel counts once per fusion cycle
+(approximately 60 seconds) and averages available samples into 15-minute bins. Samples
+persist in `data/history.jsonl`. Missing credentials, disconnected feeds, and no AOIs produce
+gaps, not zero counts. Older history has no AIS values; no historical AIS is backfilled.
+Counts reflect the AOIs active at recording time and use the same latest-position expiry
+as the map. The timeline continues recording when the AIS map layer is hidden.
+
+### AI result updates
+
+Live AIS joins cross-source candidate retrieval with news, Telegram, ADS-B, and FIRMS.
+Proximity retrieves candidates; the AI still requires supporting source facts before asserting
+an association. Vessel identity, ownership, intent, and deliberate transmitter shutdown are
+not inferred from positions or coverage gaps.
+
+Automatic verdicts appear as each pair completes and survive live refreshes. The latest assessment
+per record pair is retained for up to an hour while both records remain available, bounded to 500
+pairs. Every new verdict includes the actual observation timestamps and positions; retained results
+do not become cached verdicts for newer positions. The map draws assessed links at their evaluated
+positions. Assessments are dropped immediately when the underlying claims change or are withdrawn. **AI ASSESSMENTS** counts all returned verdicts; **Show rejected** reveals unsupported
+or contradicted links. The count can be positive even when no association is supported.
+
+Graph artifact writes run in a single background worker so database delays cannot block ingestion
+or automatic analysis. Queries default to a 20-second transaction timeout. Article retrieval has a
+12-second overall budget per article, falling back to the supplied record fields with an explicit
+evidence gap. Manual requests return an error after 90 seconds instead of spinning indefinitely;
+the browser also has a 100-second timeout. Timeouts do not guarantee cancellation of an already
+running provider call.

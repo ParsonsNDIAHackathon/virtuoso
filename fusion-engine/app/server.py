@@ -5,22 +5,32 @@
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
-from datetime import datetime, timezone
 from pathlib import Path
 import threading
+import time
+from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
 
 from fusion.pipeline import FusionState, run_loop, run_once
+from fusion.ingest_ais import AisFeed
 from fusion.fusion_ai import AIProviderError, AIUnavailable
+from fusion.aoi_summary import summarize_aoi
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("app")
 
 app = FastAPI(title="Multi-INT Fusion Engine", version="0.1")
 state = FusionState()
+ais = AisFeed()
+
+def _sync_ais():
+    with state.lock:
+        ais.configure(state.regions)
+
 _worker: threading.Thread | None = None
 
 
@@ -73,6 +83,10 @@ def _startup():
     global _worker
     # Serve immediately; the first fuse runs in the background (primed=False -> fetch now).
     # The UI shows "warming up" until /api/status reports an `updated` timestamp.
+    _sync_ais()
+    ais.start()
+    state.ais_count = ais.timeline_count
+    state.ais_snapshot = ais.snapshot
     _worker = threading.Thread(target=run_loop, args=(state,), kwargs={"windows": 2, "primed": False}, daemon=True)
     _worker.start()
 
@@ -113,6 +127,12 @@ def alerts(limit: int = Query(100, le=2000), min_score: float = 0.0):
 def events(conflict_only: bool = False, limit: int = Query(3000, ge=1, le=20000), bbox: str | None = None):
     # Retrieve before filtering to preserve the existing API's result semantics.
     return _in_view(state.api_events(conflict_only, 20000), bbox, limit)
+
+
+@app.get("/api/ais")
+def vessels():
+    """Only vessels inside saved AOI circles; no viewport/global subscription."""
+    return ais.snapshot()
 
 
 @app.get("/api/aircraft")
@@ -275,19 +295,20 @@ def entity(node_id: str):
 
 @app.on_event("shutdown")
 def _shutdown():
+    ais.stop()
     state.close()
     for replay in _replays.values():
         replay.store.close()
 
 
 # ---------------- areas of interest (circles) ----------------
-from pydantic import BaseModel  # noqa: E402
+from pydantic import BaseModel, Field  # noqa: E402
 
 
 class RegionIn(BaseModel):
-    lat: float
-    lon: float
-    radius_nm: float = 100.0
+    lat: float = Field(ge=-90, le=90, allow_inf_nan=False)
+    lon: float = Field(ge=-180, le=180, allow_inf_nan=False)
+    radius_nm: float = Field(default=100.0, gt=0, allow_inf_nan=False)
     name: str | None = None
 
 
@@ -305,7 +326,15 @@ class AdjudicationIn(BaseModel):
 
 
 @app.post("/api/fusion/adjudicate")
-def adjudicate(body: AdjudicationIn):
+async def adjudicate(body: AdjudicationIn):
+    timeout = float(os.getenv("FUSION_ADJUDICATION_TIMEOUT_S", "90"))
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(_adjudicate, body), timeout=timeout)
+    except asyncio.TimeoutError:
+        raise HTTPException(504, f"Evidence analysis exceeded {timeout:g} seconds. Check source/provider status and retry shortly.") from None
+
+
+def _adjudicate(body: AdjudicationIn):
     if body.left.id == body.right.id and body.left.kind == body.right.kind:
         raise HTTPException(422, "select two different records")
     try:
@@ -340,9 +369,65 @@ def regions():
         return list(state.regions)
 
 
+class AoiAnalysisIn(BaseModel):
+    mode: str = "live"
+    t: float | None = Field(default=None, allow_inf_nan=False)
+    force: bool = False
+
+
+_aoi_slots = threading.BoundedSemaphore(2)
+
+
+@app.post("/api/regions/{rid}/analyze")
+async def analyze_region(rid: str, body: AoiAnalysisIn):
+    timeout = float(os.getenv("FUSION_AOI_SUMMARY_TIMEOUT_S", "180"))
+    deadline = time.monotonic() + timeout
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(_analyze_region, rid, body, deadline), timeout)
+    except TimeoutError:
+        raise HTTPException(504, f"AOI analysis exceeded {timeout:g} seconds. Try a smaller area or retry shortly.") from None
+
+
+def _analyze_region(rid: str, body: AoiAnalysisIn, deadline: float):
+    with state.lock:
+        region = next((dict(r) for r in state.regions if r["id"] == rid), None)
+    if region is None:
+        raise HTTPException(404, "AOI no longer exists")
+    if body.mode != "live" and body.t is None:
+        raise HTTPException(422, "replay AOI analysis requires t")
+    if not _aoi_slots.acquire(blocking=False):
+        raise HTTPException(429, "AOI analysis is busy. Wait for the current analysis to finish.")
+    try:
+        source = state if body.mode == "live" else _replay(body.mode)
+        if body.mode == "live":
+            records = source.evidence_records()
+            as_of = datetime.now(timezone.utc).isoformat()
+        else:
+            t = min(max(body.t, source.t_min), source.t_max)
+            records = source.evidence_records(t)
+            as_of = datetime.fromtimestamp(t, timezone.utc).isoformat()
+        return summarize_aoi(source.fusion_ai, region, records, mode=body.mode, as_of=as_of,
+                             force=body.force, deadline=deadline)
+    except AIUnavailable as error:
+        raise HTTPException(503, str(error)) from None
+    except AIProviderError as error:
+        status = 429 if error.status_code == 429 else 503 if error.status_code >= 500 else 502
+        code = f" ({error.code})" if error.code else ""
+        raise HTTPException(status, f"OpenAI API error{code}: {error}") from None
+    except (HTTPException, TimeoutError):
+        raise
+    except Exception:
+        log.exception("AOI summary failed")
+        raise HTTPException(502, "AOI analysis failed. Check provider status and retry shortly.") from None
+    finally:
+        _aoi_slots.release()
+
+
 @app.post("/api/regions")
 def add_region(r: RegionIn):
-    return state.add_region(r.lat, r.lon, r.radius_nm, r.name)
+    region = state.add_region(r.lat, r.lon, r.radius_nm, r.name)
+    _sync_ais()
+    return region
 
 
 class RegionRename(BaseModel):
@@ -361,6 +446,7 @@ def rename_region(rid: str, body: RegionRename):
 def delete_region(rid: str):
     if not state.remove_region(rid):
         return JSONResponse({"error": "unknown region"}, status_code=404)
+    _sync_ais()
     return {"ok": True}
 
 

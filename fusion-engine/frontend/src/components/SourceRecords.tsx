@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { Event, Firms, Track } from "../lib/types";
-import type { MapDetail } from "./OperationalMap";
+import type { Event, Firms, Track, Vessel } from "../lib/types";
+import { vesselDetail, type MapDetail } from "./OperationalMap";
 import { Panel } from "./ui/panel";
 
-export type SourceKey = "gdelt" | "social" | "adsb" | "firms" | "candidates" | "openai";
-const TITLE: Record<SourceKey, string> = { gdelt: "GDELT · OSINT records", social: "Social · OSINT records", adsb: "ADS-B · aircraft records", firms: "FIRMS · thermal records", candidates: "Fusion candidates", openai: "AI assessments" };
+export type SourceKey = "gdelt" | "social" | "adsb" | "ais" | "firms" | "candidates" | "openai";
+const TITLE: Record<SourceKey, string> = { gdelt: "GDELT · OSINT records", social: "Social · OSINT records", adsb: "ADS-B · aircraft records", ais: "AIS · vessel records", firms: "FIRMS · thermal records", candidates: "Fusion candidates", openai: "AI assessments" };
 
 function platformOf(id: string) {
   if (id.startsWith("tg:")) return "telegram";
@@ -31,6 +31,10 @@ function trackRow(t: Track): Row {
   return { id: t.id, tag: t.military ? "military" : "civil", title, sub: [t.ac_type, t.alt_ft != null ? `${t.alt_ft} ft` : null, t.gs_kt != null ? `${t.gs_kt} kt` : null].filter(Boolean).join(" · "), ts: t.ts ?? "",
     detail: { title, lines: [`${t.ac_type || "Unknown type"} · ICAO ${t.hex || "?"}`, `${t.military ? "MILITARY" : "Civil"} · ${t.alt_ft ?? "ground"} ft · ${t.gs_kt ?? "?"} kt`, `Heading ${t.track_deg ?? "?"}° · ${t.registration || "no registration"}`], entityId: t.id, recordRef: { kind: "adsb", id: t.id }, point: [t.lat, t.lon] } };
 }
+function vesselRow(v: Vessel): Row {
+  const d = vesselDetail(v);
+  return { id: v.id, tag: v.age_min > 10 ? "stale" : "live", title: d.title, sub: d.lines[1] + (v.nav_status != null ? ` · ${d.lines[0].split(" · ").slice(1).join(" · ")}` : ""), ts: v.ts, detail: d };
+}
 function firmsRow(f: Firms): Row {
   const novel = (f.novelty ?? 0) >= 0.9;
   const title = `${novel ? "NEW" : "Routine"} thermal anomaly`;
@@ -41,7 +45,7 @@ function firmsRow(f: Firms): Row {
 /** The records behind a source chip in the strip: what the console has loaded for that source, newest first,
  *  each one opening in the Inspector and centring the map. Engine totals can exceed this list (the console
  *  loads a capped, recent window). */
-export function SourceRecords({ source, engineCount, events, tracks, firms, onOpen, onClose, onResetMap, resetKey = 0 }: { source: SourceKey; engineCount?: number; events: Event[]; tracks: Track[]; firms: Firms[]; onOpen: (d: MapDetail) => void; onClose: () => void; onResetMap?: () => void; resetKey?: number }) {
+export function SourceRecords({ source, engineCount, events, tracks, vessels = [], firms, onOpen, onClose, onResetMap, resetKey = 0 }: { source: SourceKey; engineCount?: number; events: Event[]; tracks: Track[]; vessels?: Vessel[]; firms: Firms[]; onOpen: (d: MapDetail) => void; onClose: () => void; onResetMap?: () => void; resetKey?: number }) {
   const [q, setQ] = useState("");
   const listRef = useRef<HTMLUListElement>(null);
   // Every chip click (even the same chip) shows that source fresh: filter cleared, list and column at the top.
@@ -51,9 +55,10 @@ export function SourceRecords({ source, engineCount, events, tracks, firms, onOp
     const list = source === "gdelt" ? events.filter((e) => !isSocial(e)).map(eventRow)
       : source === "social" ? events.filter(isSocial).map(eventRow)
       : source === "adsb" ? tracks.map(trackRow)
+      : source === "ais" ? vessels.map(vesselRow)
       : source === "firms" ? firms.map(firmsRow) : [];
     return list.sort((a, b) => (b.ts || "").localeCompare(a.ts || ""));
-  }, [source, events, tracks, firms]);
+  }, [source, events, tracks, vessels, firms]);
   const needle = q.trim().toLowerCase();
   const shown = needle ? rows.filter((r) => `${r.tag} ${r.title} ${r.sub}`.toLowerCase().includes(needle)) : rows;
   const byTag = useMemo(() => { const m: Record<string, number> = {}; for (const r of rows) m[r.tag] = (m[r.tag] ?? 0) + 1; return m; }, [rows]);
