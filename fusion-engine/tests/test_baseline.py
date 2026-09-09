@@ -92,6 +92,13 @@ def test_expected_cooccurrence_needs_two_streams():
     events = [Ev(f"n{i}", _iso(T0 + i * 3600 + 30), 25.3, 55.3, f"http://y/{i}", False) for i in range(48)]
     events += [Ev(f"s{a}", _iso(T0 + 33 * 3600 + 30), 25.3, 55.3, f"http://y/s/{a}", True) for a in range(12)]
     b.add_events(events)
+    # news + conflict are the same articles: one family, still not enough at an airport cell
+    assert (25, 55) not in b.departed_cells(T0 + 34 * 3600 + 10)
+    # an independent family (geolocated social posts) spiking in the same hour qualifies the cell
+    social = [Ev(f"p{a}", _iso(T0 + 33 * 3600 + 40), 25.3, 55.3, f"http://t.me/x/{a}", False, source_domain="t.me/x", root_code="SOCIAL", event_code="SOCIAL") for a in range(10)]
+    for e in social:
+        e.id = f"tg:x/{e.id}"
+    b.add_events(social)
     assert (25, 55) in b.departed_cells(T0 + 34 * 3600 + 10)
 
 

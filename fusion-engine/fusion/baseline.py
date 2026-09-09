@@ -81,6 +81,7 @@ class Baseline:
         self._nav_known: dict[tuple[int, int], list[set]] = defaultdict(lambda: [set() for _ in range(self.n)])
         self._nav_deg: dict[tuple[int, int], list[set]] = defaultdict(lambda: [set() for _ in range(self.n)])
         self.track_coverage: tuple[float, float] | None = None   # (t_from, t_to) with aircraft data; None = whole window
+        self._bins_with_aircraft: set[int] = set()                # bins where any aircraft was observed at all
 
     # ---- ingestion -------------------------------------------------------------------
     def _bin(self, t: float) -> int | None:
@@ -116,10 +117,14 @@ class Baseline:
         self.__dict__.pop("_series_cache", None)
 
     def _tracks_covered(self, i: int) -> bool:
+        """A bin counts as covered only if the feed was actually delivering aircraft in it: inside the
+        declared span AND at least one aircraft was observed anywhere in that bin (an outage inside
+        the span is a gap, not a quiet hour)."""
         if self.track_coverage is None:
             return True
         b0 = self.t_min + i * self.step
-        return self.track_coverage[0] <= b0 + self.step - 1 and b0 <= self.track_coverage[1]
+        in_span = self.track_coverage[0] <= b0 + self.step - 1 and b0 <= self.track_coverage[1]
+        return in_span and i in self._bins_with_aircraft
 
     def add_tracks(self, tracks: dict[str, dict]) -> None:
         self.__dict__.pop("_series_cache", None)
@@ -130,6 +135,7 @@ class Baseline:
                 if i is None:
                     continue
                 c = cell_of(p[1], p[2])
+                self._bins_with_aircraft.add(i)
                 self._sets["tracks"][c][i].add(hexid)
                 if mil:
                     self._sets["military"][c][i].add(hexid)
@@ -279,7 +285,11 @@ class Baseline:
         for d in self.departures_at(t, streams=TRIGGER_STREAMS):
             if d.state in ("new_change", "persistent"):
                 by_cell[tuple(d.cell)].add(d.stream)
-        return {c for c, streams in by_cell.items() if len(streams) >= (2 if is_expected_cooccurrence(c) else 1)}
+        # news and conflict are two views of the same articles; count evidence families, not streams
+        family = {"news": "news", "conflict": "news", "social": "social", "military": "military",
+                  "tracks": "aircraft", "firms_new": "thermal", "navint": "navint"}
+        return {c for c, streams in by_cell.items()
+                if len({family.get(s, s) for s in streams}) >= (2 if is_expected_cooccurrence(c) else 1)}
 
     def timeline(self) -> dict[str, list[float]]:
         """Total-series robust z per bin per stream, for the scrubber strip."""

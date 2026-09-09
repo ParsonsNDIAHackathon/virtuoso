@@ -166,11 +166,12 @@ class LiveAnalysis:
                 self.progress = "loading aircraft history"
                 logged, span = self.aircraft_log.load(t_min, t_max)
                 for hexid, a in logged.items():
-                    if not any(inside(p[1], p[2]) for p in a["points"]):
+                    pts = [p for p in a["points"] if inside(p[1], p[2])]
+                    if not pts:
                         continue
                     dst = archive.setdefault(hexid, {"hex": hexid, "military": False, "points": []})
                     dst["military"] = dst["military"] or a["military"]
-                    dst["points"] = sorted(dst["points"] + a["points"], key=lambda p: p[0])
+                    dst["points"] = sorted(dst["points"] + pts, key=lambda p: p[0])
             b.add_tracks(archive)
             stamps_t = [datetime.fromisoformat(tr.ts).timestamp() for tr in track_history]
             bounds = ([span[0], span[1]] if span else []) + stamps_t
@@ -192,9 +193,11 @@ class LiveAnalysis:
             log.exception("live analysis build failed")
 
     def snapshot(self) -> dict:
-        now = datetime.now(timezone.utc).timestamp()
         with self.lock:
             b, tracker, built = self.baseline, self.tracker, self.built_at
+        # assessments are as of the build, not the wall clock: the current hour was only partly
+        # collected when the build ran, so the clock crossing an hour must not promote it to complete
+        now = min(datetime.now(timezone.utc).timestamp(), built) if built else datetime.now(timezone.utc).timestamp()
         if not b or not tracker:
             return {"status": self.progress, "built_at": None, "incidents": [], "departures": [], "departed_cells": []}
         return {
