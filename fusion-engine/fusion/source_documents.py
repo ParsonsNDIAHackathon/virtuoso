@@ -24,6 +24,15 @@ _lock = threading.Lock()
 _fetches = BoundedCalls()
 
 
+def cached_document_text(url: str) -> str:
+    """Already-retrieved reporting for candidate ranking; never performs network I/O."""
+    with _lock:
+        value = _cache.get(url)
+        if not value or not value["available"] or time.time() - value["fetched_at_epoch"] >= CACHE_TTL:
+            return ""
+        return f"{value.get('title') or ''}\n{value.get('text', '')[:24000]}"
+
+
 def article_url_key(url: str) -> str | None:
     """Normalize article identity without dropping content-selecting query parameters."""
     try:

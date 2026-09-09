@@ -54,8 +54,8 @@ def test_automatic_result_is_published_before_pass_finishes_and_survives_batch_c
     vessel, thermal = evidence()
     records = records_from_sources([], [], [thermal], vessels=[vessel])
     first = candidate_for_pair(*records)
-    second = candidate_for_pair(records[0], records[1])
-    second.id += "-second"
+    from dataclasses import replace
+    second = candidate_for_pair(records[0], replace(records[1], id="ais:second"))
     entered, release, finished = threading.Event(), threading.Event(), threading.Event()
     with tempfile.TemporaryDirectory() as directory:
         ai = FusionAI(Path(directory), FakeOpenAI())

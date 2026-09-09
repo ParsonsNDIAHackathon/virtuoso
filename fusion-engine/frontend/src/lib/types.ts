@@ -1,4 +1,10 @@
 export type Region = { id: string; name: string; lat: number; lon: number; radius_nm: number; user?: boolean };
+export type AoiSummary = {
+  region: Region; mode: string; as_of: string; generated_at: string; cached: boolean;
+  counts: Record<string, number>; total_records: number; record_time_start: string | null; record_time_end: string | null;
+  summary: string; findings: { text: string; record_ids: string[] }[]; caveats: string[];
+  sources: { key: string; id: string; kind: string; label: string; ts: string; lat: number; lon: number; url?: string | null }[];
+};
 
 export type Event = {
   id: string; lat: number; lon: number; root_label: string; place: string; country?: string;
@@ -42,7 +48,7 @@ export type CuratedClaim = { id: string; vessel_id: string; source_ids: string[]
 export type CuratedLead = { url: string; platform: string; publisher: string; publication_time_utc?: string | null; original_language: string; summary_en: string; summary_kind?: string; status?: string };
 export type Evidence = { kind: string; prepared_date?: string; retrieved_date?: string; vessels: CuratedVessel[]; sources: CuratedSource[]; claims: CuratedClaim[]; leads: CuratedLead[]; excluded: Array<{ reason?: string }>; notes: string[]; window?: { t_min: number; t_max: number; label?: string } };
 export type RecordRef = { kind: "gdelt" | "telegram" | "adsb" | "firms" | "ais" | string; id: string };
-export type FusionCandidate = { id: string; left_id: string; left_kind: string; right_id: string; right_kind: string; distance_km: number; dt_min: number; candidate_score: number; reasons: string[]; entity_overlap?: string[] };
+export type FusionCandidate = { id: string; left_id: string; left_kind: string; right_id: string; right_kind: string; distance_km: number; dt_min: number; candidate_score: number; reasons: string[]; entity_overlap?: string[]; match_type?: "identifier" | "name" | "entity" | "topic" | "proximity" };
 export type ArticleMatch = { status: "SAME_ARTICLE" | "NOT_ESTABLISHED" | "NOT_APPLICABLE"; basis: "normalized_url" | "redirect_url" | null; confidence: number | null; shared_url: string | null; independent_corroboration: boolean | null };
 export type SourceDocument = { record_id: string; url: string; resolved_url: string; title: string | null; available: boolean; characters: number; truncated: boolean; retrieved_at: string | null; limitation: string | null };
 export type Assessment = { evidence?: Array<{ id: string; kind: string; label: string; ts: string; lat: number; lon: number }>; id: string; candidate_id: string; left_id: string; left_kind: string; right_id: string; right_kind: string; verdict: "SUPPORTED" | "PLAUSIBLE" | "INSUFFICIENT_EVIDENCE" | "CONTRADICTED"; relation: string; evidence_strength: number; supporting_facts: string[]; strongest_limitation: string; rationale: string; resolved_entities?: Array<{ record_id: string; name: string; canonical_name: string; entity_type: string; confidence: number }>; model: string; prompt_version: string; created_at: string; cached: boolean; needs_review: boolean; distance_km: number; dt_min: number; incident_relationship?: "SAME_INCIDENT" | "RELATED_INCIDENTS" | "UNRELATED" | "UNCERTAIN" | "NOT_APPLICABLE"; article_match?: ArticleMatch; has_article_match?: boolean; source_documents?: SourceDocument[]; source_groups?: Record<string, string> };

@@ -9,9 +9,10 @@ const sources = [
   ["Thermal anomaly", "NASA FIRMS / VIIRS", "Satellite heat detections. Bright/new signals are absent from the two-day baseline.", "Every 15 minutes"],
   ["Satellite imagery", "NASA GIBS", "VIIRS true-colour basemap. It is context only, not a detection source.", "Daily"],
   ["RF sample", "Synthetic demo", "One sample near the Strait of Hormuz with a simulated 60-second chirp spectrogram; not a live measurement.", "Static sample"],
-  ["Candidate retrieval", "Fusion engine", "Pair-specific space/time and source-entity retrieval. A candidate is an analyst cue, not a finding.", "Each fusion cycle"],
+  ["Candidate retrieval", "Fusion engine", "Exact reported vessel/aircraft identifiers and full names rank first, then shared people/organizations and relevant reporting. Repeated article rows share a slot. Candidates require evidence adjudication.", "Each fusion cycle"],
   ["Article identity", "Fusion engine", "Matching article URLs identify shared reporting. Multiple GDELT events from one article count as one reporting source.", "On comparison"],
-  ["Evidence assessment", "OpenAI", "Separate incident/evidence verdict using source fields, graph facts, and GDELT article text. Plausible links require review; purple dashed links can indicate shared articles with uncertain incident links.", "Cached + on demand"],
+  ["Evidence assessment", "AI", "Separate incident/evidence verdict using source fields, graph facts, and GDELT article text. Plausible links require review; purple dashed links can indicate shared articles with uncertain incident links.", "Every 3 minutes by default · up to 12 pairs · on demand"],
+  ["AOI summary", "AI", "Click an AOI center, then Analyze. Summarizes all available records inside its circle, including hidden layers, with source citations and evidence gaps. Replay uses archived records at the displayed instant.", "On demand · cached per snapshot"],
 ] as const;
 
 export function SourcesDialog({ open, onClose }: { open: boolean; onClose: () => void }) {

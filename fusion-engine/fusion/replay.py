@@ -176,7 +176,7 @@ class ReplayState:
         self._cache[key] = out
         return out
 
-    def evidence_record(self, t: float, kind: str, record_id: str, lookback_min: float = 120.0):
+    def evidence_records(self, t: float, lookback_min: float = 120.0):
         self.load()
         t = min(max(t, self.t_min), self.t_max)
         ev = [event for event in self.events
@@ -184,7 +184,10 @@ class ReplayState:
         tracks = snapshot_at(self.tracks, t) if self.tracks else []
         firms = [hotspot for hotspot in self.firms
                  if t - 12 * 3600 <= datetime.fromisoformat(hotspot["ts"]).timestamp() <= t]
-        records = records_from_sources(ev, tracks, firms, self.social_posts)
+        return records_from_sources(ev, tracks, firms, self.social_posts)
+
+    def evidence_record(self, t: float, kind: str, record_id: str, lookback_min: float = 120.0):
+        records = self.evidence_records(t, lookback_min)
         record = next((value for value in records if value.kind == kind and value.id == record_id), None)
         if not record:
             return None

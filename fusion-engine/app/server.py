@@ -9,12 +9,15 @@ import asyncio
 import logging
 import os
 import threading
+import time
+from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
 
 from fusion.pipeline import FusionState, run_loop, run_once
 from fusion.ingest_ais import AisFeed
 from fusion.fusion_ai import AIProviderError, AIUnavailable
+from fusion.aoi_summary import summarize_aoi
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("app")
@@ -264,6 +267,60 @@ def _adjudicate(body: AdjudicationIn):
 def regions():
     with state.lock:
         return list(state.regions)
+
+
+class AoiAnalysisIn(BaseModel):
+    mode: str = "live"
+    t: float | None = Field(default=None, allow_inf_nan=False)
+    force: bool = False
+
+
+_aoi_slots = threading.BoundedSemaphore(2)
+
+
+@app.post("/api/regions/{rid}/analyze")
+async def analyze_region(rid: str, body: AoiAnalysisIn):
+    timeout = float(os.getenv("FUSION_AOI_SUMMARY_TIMEOUT_S", "180"))
+    deadline = time.monotonic() + timeout
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(_analyze_region, rid, body, deadline), timeout)
+    except TimeoutError:
+        raise HTTPException(504, f"AOI analysis exceeded {timeout:g} seconds. Try a smaller area or retry shortly.") from None
+
+
+def _analyze_region(rid: str, body: AoiAnalysisIn, deadline: float):
+    with state.lock:
+        region = next((dict(r) for r in state.regions if r["id"] == rid), None)
+    if region is None:
+        raise HTTPException(404, "AOI no longer exists")
+    if body.mode != "live" and body.t is None:
+        raise HTTPException(422, "replay AOI analysis requires t")
+    if not _aoi_slots.acquire(blocking=False):
+        raise HTTPException(429, "AOI analysis is busy. Wait for the current analysis to finish.")
+    try:
+        source = state if body.mode == "live" else _replay(body.mode)
+        if body.mode == "live":
+            records = source.evidence_records()
+            as_of = datetime.now(timezone.utc).isoformat()
+        else:
+            t = min(max(body.t, source.t_min), source.t_max)
+            records = source.evidence_records(t)
+            as_of = datetime.fromtimestamp(t, timezone.utc).isoformat()
+        return summarize_aoi(source.fusion_ai, region, records, mode=body.mode, as_of=as_of,
+                             force=body.force, deadline=deadline)
+    except AIUnavailable as error:
+        raise HTTPException(503, str(error)) from None
+    except AIProviderError as error:
+        status = 429 if error.status_code == 429 else 503 if error.status_code >= 500 else 502
+        code = f" ({error.code})" if error.code else ""
+        raise HTTPException(status, f"OpenAI API error{code}: {error}") from None
+    except (HTTPException, TimeoutError):
+        raise
+    except Exception:
+        log.exception("AOI summary failed")
+        raise HTTPException(502, "AOI analysis failed. Check provider status and retry shortly.") from None
+    finally:
+        _aoi_slots.release()
 
 
 @app.post("/api/regions")

@@ -23,6 +23,7 @@ from .ingest_gdelt import OsintEvent, fetch_window
 from .ingest_telegram import DEFAULT_CHANNELS, SocialPost, fetch_latest, social_to_event
 from .ingest_firms import fetch as fetch_firms, novelty as firms_novelty
 from .backfill import Backfill
+from .retrieval import coverage_key, refresh_signature, select_batch
 from .fusion_ai import AIProviderError, Assessment, Candidate, EvidenceRecord, FusionAI, FusionCluster, asserted_graph_context, candidate_for_pair, generate_candidates, records_from_sources
 
 log = logging.getLogger(__name__)
@@ -103,6 +104,7 @@ class FusionState:
     _ai_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _fusion_persist_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _last_ai_at: float = field(default=0.0, repr=False)
+    _ai_recent: dict[tuple[str, str], tuple[float, str]] = field(default_factory=dict, repr=False)
     _pending_fusion_write: tuple | None = field(default=None, repr=False)
     _fusion_writer_running: bool = field(default=False, repr=False)
 
@@ -439,17 +441,22 @@ class FusionState:
                                    detail="Set OPENAI_API_KEY to enable evidence adjudication")
             return
         now = time.time()
-        cadence = float(os.getenv("FUSION_LLM_EVERY_S", "900"))
+        cadence = float(os.getenv("FUSION_LLM_EVERY_S", "180"))
         if now - self._last_ai_at < cadence or not self._ai_lock.acquire(blocking=False):
             return
         with self.lock:
             assessed_ids = {value.candidate_id for value in self.fusion_assessments.values()}
-            candidates = [value for value in self.fusion_candidates if value.id not in assessed_ids]
-            candidates = candidates[:int(os.getenv("FUSION_LLM_MAX_CANDIDATES", "12"))]
+            cooldown = float(os.getenv("FUSION_LLM_REPEAT_S", "1800"))
+            self._ai_recent = {key: value for key, value in self._ai_recent.items() if now - value[0] < cooldown}
+            eligible = [value for value in self.fusion_candidates if value.id not in assessed_ids
+                        and (coverage_key(value) not in self._ai_recent
+                             or self._ai_recent[coverage_key(value)][1] != refresh_signature(value))]
+            candidates = select_batch(eligible, limit=int(os.getenv("FUSION_LLM_MAX_CANDIDATES", "12")),
+                                      proximity_limit=int(os.getenv("FUSION_LLM_PROXIMITY_LIMIT", "2")))
         if not candidates:
             self._ai_lock.release()
             self.set_source_status("openai", "ready", count=len(self.fusion_assessments),
-                                   detail="No candidates require adjudication")
+                                   detail="No new eligible pairs; recently assessed pairs are cooling down")
             return
         self._last_ai_at = now
 
@@ -470,6 +477,7 @@ class FusionState:
                         continue
                     with self.lock:
                         self._remember_assessment(assessment)
+                        self._ai_recent[coverage_key(candidate)] = (time.time(), refresh_signature(candidate))
                         self.fusion_clusters = self.fusion_ai.clusters(self.fusion_assessments.values())
                         args = (self.store, list(self.fusion_candidates), list(self.fusion_assessments.values()),
                                 list(self.fusion_clusters), self.batch_id, "automatic OpenAI")
@@ -500,7 +508,7 @@ class FusionState:
                     count = len(self.fusion_assessments)
                 self.set_source_status("openai", "partial" if errors and completed else "error" if errors else "ready",
                                        count=count, detail=(f"{completed} completed; {errors[0]}" if errors else
-                                       f"{completed} pairs assessed; unsupported links remain visible under Show rejected"))
+                                       f"{completed} pairs assessed; next automatic batch after {cadence:g}s. Show rejected includes unsupported links"))
             finally:
                 self._ai_lock.release()
 
@@ -623,11 +631,14 @@ class FusionState:
         with self.lock:
             return [cluster.to_dict() for cluster in self.fusion_clusters[:limit]]
 
-    def evidence_record(self, kind: str, record_id: str) -> EvidenceRecord | None:
+    def evidence_records(self) -> list[EvidenceRecord]:
         vessels = self.ais_snapshot()["vessels"] if self.ais_snapshot else []
         with self.lock:
-            records = records_from_sources(list(self.events) + list(self.social), list(self.tracks),
-                                           list(self.firms), dict(self.social_posts), vessels=vessels)
+            return records_from_sources(list(self.events) + list(self.social), list(self.tracks),
+                                        list(self.firms), dict(self.social_posts), vessels=vessels)
+
+    def evidence_record(self, kind: str, record_id: str) -> EvidenceRecord | None:
+        records = self.evidence_records()
         record = next((value for value in records if value.kind == kind and value.id == record_id), None)
         if not record:
             return None
@@ -650,6 +661,7 @@ class FusionState:
             if not any(value.id == candidate.id for value in self.fusion_candidates):
                 self.fusion_candidates.append(candidate)
             self._remember_assessment(assessment)
+            self._ai_recent[coverage_key(candidate)] = (time.time(), refresh_signature(candidate))
             self.fusion_clusters = self.fusion_ai.clusters(self.fusion_assessments.values())
             candidates, assessments, clusters, batch_id, store = (
                 list(self.fusion_candidates), list(self.fusion_assessments.values()),

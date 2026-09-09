@@ -25,7 +25,10 @@ Pipeline (`fusion/`):
    250 nm circles around regions of interest.
 2. **Candidate retrieval** — `fusion_ai.generate_candidates()` uses a different permissive time and
    distance window for each source pair. It suppresses routine FIRMS pixels and ordinary high-altitude
-   civil traffic, adds shared source entities/themes, uses a spatial index, and keeps a bounded top set.
+   civil traffic unless explicitly identified in reporting. Exact MMSIs, IMO numbers, aircraft
+   identifiers and complete vessel names rank first, then shared persons/organizations and relevant
+   reporting. Distinct news articles can be compared; repeated event rows from one article share a
+   retrieval slot. Spatial and identity indexes keep the candidate set bounded.
    These are explicitly cues, not findings. The older OSINT/ADS-B proximity score remains visible as a
    dashed heuristic link for comparison and no longer receives a fake same-cell “corroboration” boost.
 3. **OpenAI evidence adjudication** — one structured Responses API prompt classifies each pair as
@@ -94,18 +97,37 @@ previews and NASA GIBS need no key.
 
 **Test AIS and AI together:** run `docker compose up -d --build api frontend`, then hard-refresh
 `http://localhost:8080` (or your configured `FUSION_PORT`). The live source legend should show
-both **AIS · VESSELS** and **OPENAI · ADJUDICATION**. Enable **Compare with AI**, expand any
+both **AIS · VESSELS** and **AI · ADJUDICATION**. Enable **Compare with AI**, expand any
 clusters, select two individual GDELT, Telegram, ADS-B, AIS, or FIRMS markers, then click
 **Adjudicate evidence**. The result separates article identity from incident association and
 explains the supporting facts and limitations. Repeat in a replay: selecting the first marker
 pauses playback and binds the comparison to that displayed instant. AIS comparisons are live-only.
 The legacy ADS-B/OSINT cues panel is removed; map zoom controls are at the bottom-right.
 
+**Analyze an AOI:** click its purple center marker, then **Analyze**. The summary panel includes
+source counts, findings with numbered citations, evidence gaps and the snapshot time. It uses all
+available GDELT, Telegram, AIS, ADS-B and FIRMS records inside the circle, including hidden layers;
+map viewport limits do not truncate it. Large snapshots are summarized in batches and combined.
+This covers available feed observations, not every real-world event or vessel. It uses structured
+news records rather than fetching every article. In replay, analysis pauses at the displayed instant
+and uses that instant's archived records (two hours of news, twelve hours of FIRMS, aircraft
+positions); live AIS is excluded. Identical snapshots reuse a cached summary. The server deadline
+is `FUSION_AOI_SUMMARY_TIMEOUT_S=180` seconds; errors appear in the panel with a retry action.
+
+Automatic pair analysis is eligible every **3 minutes**, checked each fusion cycle, with at most
+**12 pairs** per pass (`FUSION_LLM_EVERY_S=180`, `FUSION_LLM_MAX_CANDIDATES=12`). Ranking
+prioritizes source evidence and alternates source-pair types within each priority tier. At most
+**two proximity-only pairs** are analyzed per pass (`FUSION_LLM_PROXIMITY_LIMIT=2`). A recently
+assessed report/asset pair has a **30-minute cooldown** (`FUSION_LLM_REPEAT_S=1800`) unless material
+evidence changes; routine position/time updates do not bypass it. Manual comparisons bypass these
+batch limits. Existing `.env` overrides take precedence over these defaults.
+
 Regression checks (with `pytest` installed): `python -m pytest tests -q`.
 
 API: `/api/status`, `/api/alerts`, `/api/events?conflict_only=true`, `/api/aircraft`, `/api/firms`,
 `/api/ais`, `/api/graph`, `/api/entity/{id}`, `/api/regions` (GET/POST/PATCH/DELETE), `POST /api/refresh`,
 `/api/fusion/status|candidates|assessments|clusters`, `POST /api/fusion/adjudicate`,
+`POST /api/regions/{id}/analyze` (`mode`, optional replay `t`, optional `force`),
 `/api/replay/scenarios`, `/api/replay/{id}/config|timeline|at?t=`.
 
 ## Sources

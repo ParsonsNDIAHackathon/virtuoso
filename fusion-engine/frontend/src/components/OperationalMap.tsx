@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import L from "leaflet";
 import { RfSpectrumDialog } from "./RfSpectrumDialog";
-import { ZoomControl, Circle, CircleMarker, MapContainer, Marker, Polyline, Rectangle, TileLayer, useMap, useMapEvents } from "react-leaflet";
+import { ZoomControl, Circle, CircleMarker, MapContainer, Marker, Popup, Polyline, Rectangle, TileLayer, useMap, useMapEvents } from "react-leaflet";
 import type { Alert, Assessment, Event, Firms, RecordRef, Region, Tail, Track, Vessel, Viewport } from "../lib/types";
 import { distanceKm } from "../lib/utils";
 
@@ -72,7 +72,7 @@ type Props = {
   assessments?: Assessment[];
   filterAoi: boolean; drawing: boolean; focus?: [number, number, number]; satelliteDay?: string; replayBounds?: [number, number, number, number];
   compareSelection?: MapDetail[]; compareVerdict?: string; compareArticleMatch?: boolean;
-  onDraft: (draft: Omit<Region, "id">) => void; onSelect: (detail: MapDetail) => void; onAoiZoom: (region: Region) => void; onBackgroundClick: () => void; onViewport: (viewport: Viewport) => void; onLayerToggle: (layer: keyof LayerState) => void;
+  onDraft: (draft: Omit<Region, "id">) => void; onSelect: (detail: MapDetail) => void; onAoiZoom: (region: Region) => void; onAnalyzeAoi: (region: Region) => void; aoiAnalysisPending: boolean; onBackgroundClick: () => void; onViewport: (viewport: Viewport) => void; onLayerToggle: (layer: keyof LayerState) => void;
 };
 
 function cluster<T extends Point>(items: T[], zoom: number): Cluster<T>[] {
@@ -99,12 +99,14 @@ function AreaDrawer({ enabled, onDraft }: { enabled: boolean; onDraft: Props["on
   useEffect(() => { map.getContainer().style.cursor = enabled ? "crosshair" : ""; if (!enabled) map.dragging.enable(); }, [enabled, map]);
   useMapEvents({ mousedown(event) { if (enabled) { origin.current = event.latlng; map.dragging.disable(); } }, mouseup(event) { if (!enabled || !origin.current) return; const center = origin.current; origin.current = null; map.dragging.enable(); const radius_nm = Math.min(250, Math.max(5, Math.round(distanceKm(center.lat, center.lng, event.latlng.lat, event.latlng.lng) / NM_KM))); onDraft({ name: `AOI ${center.lat.toFixed(1)}, ${center.lng.toFixed(1)}`, lat: center.lat, lon: center.lng, radius_nm, user: true }); } }); return null;
 }
-function AoiCircle({ region, drawing, onZoom }: { region: Region; drawing: boolean; onZoom: (region: Region) => void }) {
+function AoiCircle({ region, drawing, onZoom, onAnalyze, pending }: { region: Region; drawing: boolean; onZoom: (region: Region) => void; onAnalyze: (region: Region) => void; pending: boolean }) {
   const radius = region.radius_nm * NM_KM * 1000;
   const zoom = () => { if (!drawing) onZoom(region); };
   return <><Circle center={[region.lat, region.lon]} radius={radius} renderer={renderer} bubblingMouseEvents
     pathOptions={{ color: aoiColor, weight: 1.5, dashArray: "6 4", fill: true, fillOpacity: .08 }} interactive={false} />
-    <Marker position={[region.lat, region.lon]} icon={aoiCenterIcon} zIndexOffset={1000} eventHandlers={{ click: zoom }} /></>;
+    <Marker position={[region.lat, region.lon]} icon={aoiCenterIcon} title={`${region.name}: zoom and analyze`} zIndexOffset={1000} eventHandlers={{ click: zoom }}>
+      {!drawing && <Popup autoPan={false}><div className="space-y-2 text-xs"><strong>{region.name}</strong><div>{region.radius_nm} nm radius</div><button type="button" disabled={pending} className="w-full rounded bg-slate-900 px-3 py-2 font-semibold text-white disabled:opacity-50" onClick={() => onAnalyze(region)}>{pending ? "Analyzing…" : "Analyze"}</button></div></Popup>}
+    </Marker></>;
 }
 function ClusterLayer<T extends Point>({ values, zoom, color, pointColor, renderPoint, markerIcon, onSelect }: { values: T[]; zoom: number; color: string; pointColor?: (value: T) => string; renderPoint: (value: T) => MapDetail; markerIcon?: (value: T) => L.DivIcon | undefined; onSelect: (detail: MapDetail) => void }) {
   const map = useMap(); const groups = useMemo(() => cluster(values, zoom), [values, zoom]);
@@ -123,7 +125,7 @@ function ThermalLayer({ values, zoom, onSelect }: { values: Firms[]; zoom: numbe
   return <>{groups.map((group, index) => { const item = group.items[0]; const novel = (item.novelty ?? 0) >= .9; return group.items.length === 1 && zoom >= 5 ? <Marker key={`thermal-${item.lat}-${item.lon}-${item.ts}`} position={[group.lat, group.lon]} icon={thermalIcon(novel)} eventHandlers={{ click: () => onSelect(detail(item)) }} /> : group.items.length === 1 ? <CircleMarker key={`thermal-point-${item.lat}-${item.lon}-${item.ts}`} center={[group.lat, group.lon]} renderer={renderer} radius={novel ? 4 : 3} pathOptions={{ color: novel ? "#f87171" : "#8d2b24", fillOpacity: .8, weight: 1 }} eventHandlers={{ click: () => onSelect(detail(item)) }} /> : <Marker key={`thermal-cluster-${index}`} position={[group.lat, group.lon]} icon={clusterIcon(group.items.length, "#f87171")} eventHandlers={{ click: () => map.setView([group.lat, group.lon], Math.min(zoom + 2, 9)) }} />; })}</>;
 }
 
-export function OperationalMap({ events, tracks, vessels, live, alerts, firms, tails, regions, layers, viewport, assessments = [], filterAoi, drawing, focus, satelliteDay, replayBounds, compareSelection = [], compareVerdict, compareArticleMatch, onDraft, onSelect, onAoiZoom, onBackgroundClick, onViewport, onLayerToggle }: Props) {
+export function OperationalMap({ events, tracks, vessels, live, alerts, firms, tails, regions, layers, viewport, assessments = [], filterAoi, drawing, focus, satelliteDay, replayBounds, compareSelection = [], compareVerdict, compareArticleMatch, onDraft, onSelect, onAoiZoom, onAnalyzeAoi, aoiAnalysisPending, onBackgroundClick, onViewport, onLayerToggle }: Props) {
   const [rfOpen, setRfOpen] = useState(false);
   useEffect(() => { if (!layers.rf) setRfOpen(false); }, [layers.rf]);
   const include = (lat: number, lon: number) => !filterAoi || regions.length === 0 || regions.some((region) => distanceKm(lat, lon, region.lat, region.lon) <= region.radius_nm * NM_KM);
@@ -140,7 +142,7 @@ export function OperationalMap({ events, tracks, vessels, live, alerts, firms, t
   return <div className="relative h-full w-full"><MapContainer zoomControl={false} center={[35, 10]} zoom={2} worldCopyJump className="h-full w-full"><ZoomControl position="bottomright" /><FocusMap focus={focus} /><ViewportReporter onViewport={onViewport} /><AreaDrawer enabled={drawing} onDraft={onDraft} /><MapBackgroundClick onClick={onBackgroundClick} /><TileLayer className="dark-tiles" url="https://tile.openstreetmap.org/{z}/{x}/{y}.png" attribution="© OpenStreetMap contributors" maxZoom={18} />
     {layers.imagery && <TileLayer url={`https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/VIIRS_SNPP_CorrectedReflectance_TrueColor/default/${imagery}/GoogleMapsCompatible_Level9/{z}/{y}/{x}.jpg`} attribution={`NASA GIBS VIIRS ${imagery}`} maxNativeZoom={9} maxZoom={18} opacity={.85} />}
     {layers.rf && <Marker position={[26.55, 56.45]} icon={rfIcon} title="RF sample · Strait of Hormuz · Open spectrum" alt="Open simulated RF spectrum" zIndexOffset={1100} eventHandlers={{ click: () => { if (!drawing) setRfOpen(true); } }} />}
-    {regions.map((region) => <AoiCircle key={region.id} region={region} drawing={drawing} onZoom={onAoiZoom} />)}
+    {regions.map((region) => <AoiCircle key={region.id} region={region} drawing={drawing} onZoom={onAoiZoom} onAnalyze={onAnalyzeAoi} pending={aoiAnalysisPending} />)}
     {layers.firms && <ThermalLayer values={firms} zoom={viewport.zoom} onSelect={onSelect} />}
     {layers.events && <ClusterLayer values={filteredEvents} zoom={viewport.zoom} color={eventColor} pointColor={(item) => isTelegram(item) ? "#e879f9" : eventColor} markerIcon={(item) => isTelegram(item) ? telegramIcon : osintIcon} onSelect={onSelect} renderPoint={(item) => ({ title: isTelegram(item) ? `Telegram · ${item.source_domain?.replace(/^t\.me\//, "") || "post"}` : item.root_label, lines: [item.place, `Goldstein ${item.goldstein ?? "–"} · tone ${item.tone?.toFixed(1) ?? "–"}`, `Themes: ${item.themes?.slice(0, 8).join(", ") || "–"}`], entityId: item.id, recordRef: { kind: isTelegram(item) ? "telegram" : "gdelt", id: item.id }, point: [item.lat, item.lon], href: isTelegram(item) || !item.url?.includes("t.me/") ? item.url : undefined, hrefLabel: "Open source" })} />}
     {live && layers.ais && <ClusterLayer values={vessels.filter((vessel) => regions.some((region) => distanceKm(vessel.lat, vessel.lon, region.lat, region.lon) <= region.radius_nm * NM_KM))} zoom={viewport.zoom} color="#34d399" markerIcon={() => vesselIcon} onSelect={onSelect} renderPoint={(vessel) => ({ title: vessel.name || `Vessel ${vessel.mmsi}`, recordRef: { kind: "ais", id: vessel.id }, point: [vessel.lat, vessel.lon], lines: [`AIS · MMSI ${vessel.mmsi}`, `${vessel.sog ?? "–"} kt · course ${vessel.cog ?? "–"}° · heading ${vessel.heading ?? "–"}°`, `${vessel.lat.toFixed(4)}, ${vessel.lon.toFixed(4)}`, `Last report ${vessel.ts} · ${vessel.age_min.toFixed(1)} min ago`, vessel.age_min >= 15 ? "Stale position · no report for at least 15 minutes; coverage may be interrupted." : "Live AIS · aisstream.io"] })} />}

@@ -23,6 +23,7 @@ import requests
 
 from .geo import haversine_km
 from .source_documents import FAILURE_TTL, article_url_key, document_text
+from .retrieval import NEWS, features, identity_matches, match, source_key
 
 PROMPT_VERSION = "fusion-evidence-v3-article-identity"
 VERDICTS = ("SUPPORTED", "PLAUSIBLE", "INSUFFICIENT_EVIDENCE", "CONTRADICTED")
@@ -76,6 +77,7 @@ class Candidate:
     candidate_score: float
     reasons: list[str]
     entity_overlap: list[str] = field(default_factory=list)
+    match_type: str = "proximity"
 
     def to_dict(self, include_records: bool = True) -> dict:
         out = {
@@ -84,6 +86,7 @@ class Candidate:
             "distance_km": self.distance_km, "dt_min": self.dt_min,
             "candidate_score": self.candidate_score, "reasons": self.reasons,
             "entity_overlap": self.entity_overlap,
+            "match_type": self.match_type,
         }
         if include_records:
             out.update(left=self.left.to_dict(), right=self.right.to_dict())
@@ -213,7 +216,7 @@ class OpenAIResponses:
     def available(self) -> bool:
         return bool(self.api_key)
 
-    def structured(self, instructions: str, input_text: str, name: str, schema: dict) -> dict:
+    def structured(self, instructions: str, input_text: str, name: str, schema: dict, *, max_output_tokens: int = 1400) -> dict:
         if not self.api_key:
             raise AIUnavailable("OPENAI_API_KEY is not configured")
         response = requests.post(
@@ -223,7 +226,7 @@ class OpenAIResponses:
                 "model": self.model, "store": False, "instructions": instructions,
                 "input": [{"role": "user", "content": [{"type": "input_text", "text": input_text}]}],
                 "text": {"format": {"type": "json_schema", "name": name, "strict": True, "schema": schema}},
-                "max_output_tokens": 1400,
+                "max_output_tokens": max_output_tokens,
             },
             timeout=float(os.getenv("FUSION_OPENAI_TIMEOUT_S", "45")),
         )
@@ -256,21 +259,6 @@ def _iso_ts(value: str) -> float:
     return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
 
 
-def _tokens(value: Any) -> set[str]:
-    if isinstance(value, list):
-        value = " ".join(str(x) for x in value)
-    return {token for token in re.findall(r"[A-Z0-9]{3,}", str(value).upper())
-            if token not in {"THE", "AND", "FOR", "FROM", "WITH", "SOCIAL", "POST"}}
-
-
-def _entities(record: EvidenceRecord) -> set[str]:
-    values = []
-    for key in ("actor1", "actor2", "persons", "orgs", "themes", "keywords", "callsign", "registration", "hex"):
-        if record.data.get(key):
-            values.append(record.data[key])
-    return _tokens(values)
-
-
 def _pair_id(left: EvidenceRecord, right: EvidenceRecord) -> str:
     parts = sorted((f"{left.kind}:{left.id}:{left.fingerprint()}", f"{right.kind}:{right.id}:{right.fingerprint()}"))
     return "candidate:" + hashlib.sha256("|".join(parts).encode()).hexdigest()[:24]
@@ -279,6 +267,8 @@ def _pair_id(left: EvidenceRecord, right: EvidenceRecord) -> str:
 # Candidate windows are deliberately pair-specific.  They are permissive retrieval windows,
 # not claims that records inside them are related.
 PAIR_RULES: tuple[tuple[str, str, float, float], ...] = (
+    ("gdelt", "gdelt", 100.0, 12 * 60),
+    ("telegram", "telegram", 100.0, 12 * 60),
     ("gdelt", "telegram", 100.0, 12 * 60),
     ("gdelt", "adsb", 75.0, 4 * 60),
     ("telegram", "adsb", 75.0, 4 * 60),
@@ -305,84 +295,125 @@ def _retrieval_worthy(record: EvidenceRecord) -> bool:
 
 
 def generate_candidates(records: Iterable[EvidenceRecord], limit: int = 250) -> list[Candidate]:
-    """Return the best cross-source retrieval candidates without an all-pairs scan.
+    """Rank source evidence first, using spatial and identity indexes with bounded output.
 
-    Each source pair gets its own spatial grid and time window.  A bounded heap means a global
-    live feed cannot make candidate generation consume memory proportional to every nearby pair.
+    Exact reported identifiers/names may retrieve an asset outside the spatial window.
+    Timestamp windows still apply. Distinct rows from the same article/asset pair share
+    one retrieval slot; article identity is never treated as independent corroboration.
     """
     if limit <= 0:
         return []
-    by_kind: dict[str, list[EvidenceRecord]] = {}
-    timestamps: dict[int, float] = {}
+    by_kind = {}
+    details, timestamps = {}, {}
     for record in records:
-        if record.kind not in RETRIEVAL_KINDS or not _retrieval_worthy(record):
+        if record.kind not in RETRIEVAL_KINDS:
             continue
         by_kind.setdefault(record.kind, []).append(record)
+        details[id(record)] = features(record)
         timestamps[id(record)] = _iso_ts(record.ts)
-
-    best: list[tuple[float, int, Candidate]] = []
+    best, heap = {}, []
     serial = 0
+
+    def offer(left, right, radius, minutes):
+        nonlocal serial, heap
+        if left.id == right.id or (left.kind == right.kind and left.id >= right.id):
+            return
+        dt = abs(timestamps[id(left)] - timestamps[id(right)]) / 60
+        if dt > minutes:
+            return
+        kind, overlap, reasons = match(left, right, details[id(left)], details[id(right)])
+        distance = haversine_km(left.lat, left.lon, right.lat, right.lon)
+        if distance > radius and kind not in {"identifier", "name"}:
+            return
+        if kind not in {"identifier", "name"} and (not _retrieval_worthy(left) or not _retrieval_worthy(right)):
+            return
+        if kind == "proximity" and (left.kind == right.kind or any(
+            record.kind == "gdelt" and record.data.get("geo_type") in {1, 2, 5} for record in (left, right)
+        )):
+            return
+        if left.kind in NEWS and right.kind in NEWS and coverage_key_pair(left, right)[0] == coverage_key_pair(left, right)[1]:
+            return
+        spatial, temporal = max(0, 1 - distance / radius), max(0, 1 - dt / minutes)
+        base = {"identifier": .92, "name": .82, "entity": .68, "topic": .5, "proximity": 0}[kind]
+        score = round(base + (.03 * spatial + .03 * temporal if base else .22 * spatial + .17 * temporal), 3)
+        group = coverage_key_pair(left, right)
+        serial += 1
+        rank = (score, serial)
+        previous = best.get(group)
+        if previous and score <= previous[0]:
+            return
+        while heap and best.get(heap[0][2]) != heap[0]:
+            heapq.heappop(heap)
+        if not previous and len(best) >= limit and rank <= heap[0][:2]:
+            return
+        candidate = Candidate(
+            id=_pair_id(left, right), left=left, right=right, distance_km=round(distance, 1),
+            dt_min=round(dt, 1), candidate_score=score, entity_overlap=overlap, match_type=kind,
+            reasons=reasons + [f"within {distance:.1f} km", f"timestamps {dt:.0f} min apart"],
+        )
+        item = (score, serial, group, candidate)
+        best[group] = item
+        heapq.heappush(heap, item)
+        while len(best) > limit:
+            lowest = heapq.heappop(heap)
+            if best.get(lowest[2]) == lowest:
+                del best[lowest[2]]
+        if len(heap) > max(4 * limit, 1):
+            heap = list(best.values())
+            heapq.heapify(heap)
+
     for left_kind, right_kind, radius, minutes in PAIR_RULES:
         left_records, right_records = by_kind.get(left_kind, []), by_kind.get(right_kind, [])
         if not left_records or not right_records:
             continue
         cell_degrees = radius / 111.0
-        spatial_index: dict[tuple[int, int], list[EvidenceRecord]] = {}
+        spatial_index = {}
         for right in right_records:
             lat_cell = math.floor(right.lat / cell_degrees)
-            # Mirror longitude at the antimeridian so -179.9 and +179.9 are neighbors.
             for longitude in (right.lon - 360, right.lon, right.lon + 360):
-                cell = (lat_cell, math.floor(longitude / cell_degrees))
-                spatial_index.setdefault(cell, []).append(right)
+                spatial_index.setdefault((lat_cell, math.floor(longitude / cell_degrees)), []).append(right)
         for left in left_records:
-            lat_cell = math.floor(left.lat / cell_degrees)
-            lon_cell = math.floor(left.lon / cell_degrees)
-            # Longitude degrees become physically narrower toward the poles.
+            lat_cell, lon_cell = math.floor(left.lat / cell_degrees), math.floor(left.lon / cell_degrees)
             latitude_scale = abs(math.cos(math.radians(left.lat)))
-            if latitude_scale < 0.05:
-                nearby = iter(right_records)
+            if latitude_scale < .05:
+                nearby = right_records
             else:
-                lon_span = math.ceil(1 / latitude_scale) + 1
-                nearby = (record for d_lat in range(-1, 2) for d_lon in range(-lon_span, lon_span + 1)
-                          for record in spatial_index.get((lat_cell + d_lat, lon_cell + d_lon), ()))
+                span = math.ceil(1 / latitude_scale) + 1
+                nearby = (record for dlat in range(-1, 2) for dlon in range(-span, span + 1)
+                          for record in spatial_index.get((lat_cell + dlat, lon_cell + dlon), ()))
             for right in nearby:
-                dt = abs(timestamps[id(left)] - timestamps[id(right)]) / 60
-                if dt > minutes:
-                    continue
-                distance = haversine_km(left.lat, left.lon, right.lat, right.lon)
-                if distance > radius:
-                    continue
-                overlap = sorted(_entities(left) & _entities(right))[:12]
-                spatial = max(0.0, 1 - distance / radius)
-                temporal = max(0.0, 1 - dt / minutes)
-                semantic = min(1.0, len(overlap) / 3)
-                score = round(0.4 * spatial + 0.3 * temporal + 0.3 * semantic, 3)
-                reasons = [f"within {distance:.1f} km", f"timestamps {dt:.0f} min apart"]
-                if overlap:
-                    reasons.append("shared entities/themes: " + ", ".join(overlap[:5]))
-                candidate = Candidate(
-                    id=_pair_id(left, right), left=left, right=right,
-                    distance_km=round(distance, 1), dt_min=round(dt, 1),
-                    candidate_score=score, reasons=reasons, entity_overlap=overlap,
-                )
-                item = (score, serial, candidate)
-                serial += 1
-                if len(best) < limit:
-                    heapq.heappush(best, item)
-                elif item[:2] > best[0][:2]:
-                    heapq.heapreplace(best, item)
-    return [item[2] for item in sorted(best, key=lambda item: (item[0], item[1]), reverse=True)]
+                offer(left, right, radius, minutes)
+        # Full names/identifiers can be mentioned by reporting geocoded to a different
+        # place. Match only anchored phrases; never widen a proximity-only search.
+        if left_kind in NEWS and right_kind in {"ais", "adsb"}:
+            index = {}
+            for left in left_records:
+                for token in details[id(left)].tokens:
+                    index.setdefault(token, []).append(left)
+            for right in right_records:
+                possible = {}
+                for identity in details[id(right)].identities:
+                    anchor = min(identity.phrase.split(), key=lambda token: len(index.get(token, [])))
+                    possible.update((id(left), left) for left in index.get(anchor, []))
+                for left in possible.values():
+                    if identity_matches(details[id(left)], details[id(right)]):
+                        offer(left, right, radius, minutes)
+    return [item[3] for item in sorted(best.values(), key=lambda item: item[:2], reverse=True)]
+
+
+def coverage_key_pair(left, right):
+    return tuple(sorted((source_key(left), source_key(right))))
 
 
 def candidate_for_pair(left: EvidenceRecord, right: EvidenceRecord) -> Candidate:
     distance = haversine_km(left.lat, left.lon, right.lat, right.lon)
     dt = abs(_iso_ts(left.ts) - _iso_ts(right.ts)) / 60
-    overlap = sorted(_entities(left) & _entities(right))[:12]
+    kind, overlap, reasons = match(left, right, features(left), features(right))
     return Candidate(
         id=_pair_id(left, right), left=left, right=right,
         distance_km=round(distance, 1), dt_min=round(dt, 1), candidate_score=0,
-        reasons=["analyst-selected pair", f"within {distance:.1f} km", f"timestamps {dt:.0f} min apart"],
-        entity_overlap=overlap,
+        reasons=["analyst-selected pair", *reasons, f"within {distance:.1f} km", f"timestamps {dt:.0f} min apart"],
+        entity_overlap=overlap, match_type=kind,
     )
 
 
