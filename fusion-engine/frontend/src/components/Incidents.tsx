@@ -94,8 +94,10 @@ function IncidentCard({ inc, selected, onSelect, onFocus }: { inc: Incident; sel
 /** Replay-mode incident queue: persistent objects formed from cells that departed their hour-of-day reference. */
 export type IncidentsMeta = { status?: string; built_at?: string | null; assessed_through?: string | null; aircraft_history?: { from: string; to: string } | null; mode: "live" | "replay" };
 const hhmm = (iso?: string | null) => iso ? `${iso.slice(11, 16)}Z` : null;
-export function Incidents({ incidents, baseline, status, meta, onFocus }: { incidents: Incident[]; baseline?: { z_threshold: number; reference: string; days: number; note?: string }; status?: string; meta?: IncidentsMeta; onFocus: (cell: [number, number]) => void }) {
-  const [selected, setSelected] = useState<string | null>(null);
+export function Incidents({ incidents, baseline, status, meta, onFocus, selected: selectedProp, onSelectChange }: { incidents: Incident[]; baseline?: { z_threshold: number; reference: string; days: number; note?: string }; status?: string; meta?: IncidentsMeta; onFocus: (cell: [number, number]) => void; selected?: string | null; onSelectChange?: (id: string | null) => void }) {
+  const [internal, setInternal] = useState<string | null>(null);
+  const selected = selectedProp !== undefined ? selectedProp : internal;
+  const setSelected = (id: string | null) => { setInternal(id); onSelectChange?.(id); };
   const ordered = [...incidents].sort((a, b) => {
     const rank = (x: Incident) => (x.state === "recovering" ? 2 : x.state === "persistent" ? 1 : 0);
     const multi = (x: Incident) => Object.values(x.streams).filter((s) => s.departed).length;

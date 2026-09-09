@@ -401,15 +401,18 @@ class FusionState:
                 key: assessment for key, assessment in self.fusion_assessments.items()
                 if assessment.candidate_id in current_candidate_ids
             }
-            have = {a.candidate_id for a in self.fusion_assessments.values()}
+            # Re-read the cache for every current pair. The cache key includes the records' claim
+            # content, so a pair whose article was edited or withdrawn misses and its old verdict is
+            # dropped immediately (outdated), rather than lingering until the next model pass.
+            refreshed: dict[str, Assessment] = {}
             for candidate in self.fusion_candidates:
-                if candidate.id not in have:
-                    try:
-                        cached = self.fusion_ai.cached_assessment(candidate)
-                    except Exception:
-                        cached = None
-                    if cached is not None:
-                        self.fusion_assessments[cached.id] = cached
+                try:
+                    cached = self.fusion_ai.cached_assessment(candidate)
+                except Exception:
+                    cached = None
+                if cached is not None:
+                    refreshed[cached.id] = cached
+            self.fusion_assessments = refreshed
             self.fusion_clusters = self.fusion_ai.clusters(self.fusion_assessments.values())
             now_ts = datetime.now(timezone.utc).timestamp()
             # levels (what is present now) and flows (first seen since the previous fuse) — the live

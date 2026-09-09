@@ -1,15 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import L from "leaflet";
 import { RfSpectrumDialog } from "./RfSpectrumDialog";
-import { Circle, CircleMarker, MapContainer, Marker, Polyline, Rectangle, TileLayer, useMap, useMapEvents } from "react-leaflet";
-import type { Alert, Assessment, Event, Firms, RecordRef, Region, Sar, Tail, Track, Viewport } from "../lib/types";
+import { Circle, CircleMarker, MapContainer, Marker, Polyline, Rectangle, TileLayer, Tooltip, useMap, useMapEvents } from "react-leaflet";
+import type { Alert, Assessment, Event, Firms, Incident, RecordRef, Region, Sar, Tail, Track, Viewport } from "../lib/types";
 import { distanceKm } from "../lib/utils";
 
 const NM_KM = 1.852;
 const renderer = L.canvas({ padding: .5 });
 const eventColor = "#eab85a";
 const aoiColor = "#a78bfa";
-const LAYER_LABELS: Record<keyof LayerState, string> = { events: "OSINT", tracks: "ADS-B", firms: "Thermal", sar: "SAR", links: "Links", imagery: "Imagery", rf: "RF" };
+const LAYER_LABELS: Record<keyof LayerState, string> = { events: "OSINT", tracks: "ADS-B", firms: "Thermal", sar: "SAR", links: "Links", imagery: "Imagery", rf: "RF", incidents: "Incidents" };
 const clusterIcon = (count: number, color: string) => L.divIcon({ className: "", iconSize: [34, 34], iconAnchor: [17, 17], html: `<span style="display:grid;place-items:center;width:34px;height:34px;border-radius:50%;border:2px solid ${color};background:#101710e8;color:${color};font:600 10px monospace">${count > 999 ? "999+" : count}</span>` });
 const rfIcon = L.divIcon({
   className: "", iconSize: [32, 32], iconAnchor: [16, 16],
@@ -109,13 +109,16 @@ function planeIcon(track: Track) {
 }
 
 export type MapDetail = { title: string; lines: string[]; href?: string; hrefLabel?: string; entityId?: string; recordRef?: RecordRef; point?: [number, number]; connections?: Array<{ kind: "event" | "aircraft"; label: string; detail: string; selected?: boolean }> };
-export type LayerState = { events: boolean; tracks: boolean; firms: boolean; sar: boolean; links: boolean; imagery: boolean; rf: boolean };
+export type LayerState = { events: boolean; tracks: boolean; firms: boolean; sar: boolean; links: boolean; imagery: boolean; rf: boolean; incidents: boolean };
+const INCIDENT_COLOR: Record<string, string> = { new_change: "#df5e55", persistent: "#eab85a", recovering: "#5cc7da" };
+const STREAM_SHORT: Record<string, string> = { news: "news", conflict: "conflict", social: "social", tracks: "aircraft", military: "military", firms_new: "thermal", navint: "nav integrity" };
 type Cluster<T> = { lat: number; lon: number; items: T[] };
 type Point = { lat: number; lon: number };
 type Props = {
   events: Event[]; tracks: Track[]; alerts: Alert[]; firms: Firms[]; sar: Sar[]; sarCore: Sar[]; tails: Tail[]; regions: Region[]; layers: LayerState; viewport: Viewport;
   assessments?: Assessment[];
   filterAoi: boolean; drawing: boolean; focus?: [number, number, number]; satelliteDay?: string; replayBounds?: [number, number, number, number];
+  incidents?: Incident[]; selectedIncident?: string | null; onIncidentSelect?: (id: string) => void;
   compareSelection?: MapDetail[]; compareVerdict?: string; compareArticleMatch?: boolean;
   onDraft: (draft: Omit<Region, "id">) => void; onSelect: (detail: MapDetail) => void; onAoiZoom: (region: Region) => void; onBackgroundClick: () => void; onViewport: (viewport: Viewport) => void; onLayerToggle: (layer: keyof LayerState) => void;
 };
@@ -168,7 +171,7 @@ function ThermalLayer({ values, zoom, onSelect }: { values: Firms[]; zoom: numbe
   return <>{groups.map((group, index) => { const item = group.items[0]; const novel = (item.novelty ?? 0) >= .9; return group.items.length === 1 && zoom >= 5 ? <Marker key={`thermal-${item.lat}-${item.lon}-${item.ts}`} position={[group.lat, group.lon]} icon={thermalIcon(novel)} eventHandlers={{ click: () => onSelect(detail(item)) }} /> : group.items.length === 1 ? <CircleMarker key={`thermal-point-${item.lat}-${item.lon}-${item.ts}`} center={[group.lat, group.lon]} renderer={renderer} radius={novel ? 4 : 3} pathOptions={{ color: novel ? "#f87171" : "#8d2b24", fillOpacity: .8, weight: 1 }} eventHandlers={{ click: () => onSelect(detail(item)) }} /> : <Marker key={`thermal-cluster-${index}`} position={[group.lat, group.lon]} icon={clusterIcon(group.items.length, "#f87171")} eventHandlers={{ click: () => map.setView([group.lat, group.lon], Math.min(zoom + 2, 9)) }} />; })}</>;
 }
 
-export function OperationalMap({ events, tracks, alerts, firms, sar, sarCore, tails, regions, layers, viewport, assessments = [], filterAoi, drawing, focus, satelliteDay, replayBounds, compareSelection = [], compareVerdict, compareArticleMatch, onDraft, onSelect, onAoiZoom, onBackgroundClick, onViewport, onLayerToggle }: Props) {
+export function OperationalMap({ events, tracks, alerts, firms, sar, sarCore, tails, regions, layers, viewport, assessments = [], incidents = [], selectedIncident = null, onIncidentSelect, filterAoi, drawing, focus, satelliteDay, replayBounds, compareSelection = [], compareVerdict, compareArticleMatch, onDraft, onSelect, onAoiZoom, onBackgroundClick, onViewport, onLayerToggle }: Props) {
   const [rfOpen, setRfOpen] = useState(false);
   useEffect(() => { if (!layers.rf) setRfOpen(false); }, [layers.rf]);
   const include = (lat: number, lon: number) => !filterAoi || regions.length === 0 || regions.some((region) => distanceKm(lat, lon, region.lat, region.lon) <= region.radius_nm * NM_KM);
@@ -195,5 +198,14 @@ export function OperationalMap({ events, tracks, alerts, firms, sar, sarCore, ta
     {layers.links && assessments.slice(0, 100).flatMap((assessment) => { const left = evidencePoints.get(assessment.left_id); const right = evidencePoints.get(assessment.right_id); const color = assessment.verdict === "SUPPORTED" ? "#94c973" : assessment.verdict === "PLAUSIBLE" ? "#eab85a" : assessment.has_article_match ? "#a78bfa" : "#df5e55"; return left && right ? [<Polyline key={`assessment-${assessment.id}`} positions={[left, right]} renderer={renderer} pathOptions={{ color, weight: 2 + 3 * assessment.evidence_strength, opacity: .85, dashArray: assessment.verdict === "SUPPORTED" ? undefined : "8 4" }} />] : []; })}
     {compareSelection.length === 2 && compareSelection[0].point && compareSelection[1].point && <Polyline positions={[compareSelection[0].point, compareSelection[1].point]} renderer={renderer} pathOptions={{ color: compareVerdict === "SUPPORTED" ? "#94c973" : compareVerdict === "PLAUSIBLE" ? "#eab85a" : compareArticleMatch ? "#a78bfa" : compareVerdict ? "#df5e55" : "#a78bfa", weight: 4, opacity: .9, dashArray: compareVerdict === "SUPPORTED" ? undefined : "7 5" }} />}
     {replayBounds && <Rectangle bounds={[[replayBounds[0], replayBounds[1]], [replayBounds[2], replayBounds[3]]]} renderer={renderer} pathOptions={{ color: eventColor, weight: 1, fill: false, dashArray: "4 4" }} />}
+    {layers.incidents && incidents.flatMap((inc) => inc.cells.map((cell) => {
+      const color = INCIDENT_COLOR[inc.state] ?? "#df5e55"; const on = selectedIncident === inc.id;
+      const departed = Object.entries(inc.streams).filter(([, st]) => st.departed).map(([k, st]) => `${STREAM_SHORT[k] ?? k}${st.best?.z != null ? ` z${st.best.z}` : ""}`);
+      return <Rectangle key={`${inc.id}:${cell[0]}:${cell[1]}`} bounds={[[cell[0], cell[1]], [cell[0] + 1, cell[1] + 1]]} renderer={renderer}
+        pathOptions={{ color, weight: on ? 3 : 1.5, fillColor: color, fillOpacity: on ? 0.28 : 0.14, dashArray: inc.state === "recovering" ? "4 4" : undefined }}
+        eventHandlers={{ click: () => { if (!drawing) onIncidentSelect?.(inc.id); } }}>
+        <Tooltip sticky direction="top" opacity={0.95}><span className="font-mono text-[10px]">{inc.id.replace("incident:", "#")} · {inc.state.replace("_", " ")} · {departed.join(", ") || "no stream departed"}<br />{inc.explanations[0]?.title ?? ""}</span></Tooltip>
+      </Rectangle>;
+    }))}
   </MapContainer><div className="absolute right-3 top-3 z-[1000] grid grid-cols-2 gap-1 border border-line bg-panel/95 p-1">{(Object.keys(layers) as Array<keyof LayerState>).map((layer) => <button key={layer} onClick={() => onLayerToggle(layer)} aria-pressed={layers[layer]} className={`border px-2 py-1 font-mono text-[9px] uppercase ${layers[layer] ? "border-command/50 text-command" : "border-line text-muted"}`}>{LAYER_LABELS[layer]}</button>)}</div>{layers.rf && rfOpen && <RfSpectrumDialog onClose={() => setRfOpen(false)} />}</div>;
 }

@@ -319,6 +319,11 @@ class IncidentTracker:
         reporting = [s for s in departed if s in REPORTING]
         insufficient = [s for s in STREAMS if not inc.streams[s]["adequate"]]
         lead = inc.explanations[0] if inc.explanations else None
+        # An explanation is adequately supported only if it is eligible to lead (no untested positive
+        # claim), has at least one supported prediction and no contradicted one. Otherwise say so.
+        def _eligible(e):
+            return not any(p.status == "untested" and not p.prediction.startswith("quiet:") for p in e.predictions)
+        adequate = bool(lead and _eligible(lead) and lead.supported >= 1 and lead.contradicted == 0)
         established = (f"{', '.join(departed)} departed from their hour-of-day reference in {len(inc.cells)} cell(s)"
                        if departed else "no stream currently departed")
         if physical and reporting:
@@ -326,12 +331,16 @@ class IncidentTracker:
         elif physical:
             established += "; physical change without reporting"
         elif reporting:
-            established += "; reporting without a measured physical change"
-        disputed = (f"leading explanation '{lead.title}' has {lead.contradicted} contradicted prediction(s)"
-                    if lead and lead.contradicted else "no contradicted predictions under the leading explanation")
+            phys_insufficient = [s for s in PHYSICAL if not inc.streams[s]["adequate"]]
+            established += ("; physical change unverified (coverage insufficient for " + ", ".join(phys_insufficient) + ")"
+                            if phys_insufficient else "; reporting without a measured physical change")
+        if not adequate:
+            disputed = ("no explanation adequately supported: " + (f"best candidate '{lead.title}' has {lead.contradicted} contradicted and {len(lead.predictions) - lead.supported - lead.contradicted} untested prediction(s)" if lead else "no explanations configured"))
+        else:
+            disputed = "no contradicted predictions under the leading explanation"
         unresolved = (f"coverage insufficient for {', '.join(insufficient)}" if insufficient else "all streams had adequate coverage")
         return {"established": established, "disputed": disputed, "unresolved": unresolved,
-                "leading": lead.title if lead else None,
+                "leading": lead.title if (lead and adequate) else None, "adequately_supported": adequate,
                 "relevance": f"{len(inc.cells)} cell(s) in the monitored area; {inc.state}"}
 
     def at(self, t: float) -> list[Incident]:
