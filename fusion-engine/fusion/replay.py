@@ -15,7 +15,7 @@ from pathlib import Path
 
 from .ingest_gdelt import OsintEvent
 from .store import make_store
-from .ingest_telegram import SocialPost, social_to_event
+from .ingest_social import SocialPost, is_social_event, social_to_event
 from .replay_adsb import load_tracks, snapshot_at, track_polylines
 from .replay_gdelt import HORMUZ_BBOX, HORMUZ_KW, load_day
 
@@ -108,13 +108,42 @@ class ReplayState:
                     self.loaded_layers["gdelt"].append(day)
                 else:
                     log.warning("replay: no GDELT file for %s (run: python -m fusion.replay_gdelt %s)", day, day)
-                tpath = DATA / "replay" / f"{day}_telegram.json"
-                if tpath.exists():
-                    posts = [SocialPost(**d) for d in json.loads(tpath.read_text(encoding="utf-8"))]
-                    social = [social_to_event(p) for p in posts if p.lat is not None]
+                # Social: legacy per-day Telegram file plus the multi-platform
+                # aggregate (<day>_social.json) and per-platform files
+                # (<day>_reddit.json, <day>_bluesky.json, ...). All share the same
+                # SocialPost contract; ids dedupe across files.
+                if "social" not in self.loaded_layers:
+                    self.loaded_layers["social"] = []
+                seen_social: set[str] = set()
+                n_geo = n_tot = 0
+                for name in (f"{day}_telegram.json", f"{day}_social.json",
+                             f"{day}_reddit.json", f"{day}_bluesky.json",
+                             f"{day}_mastodon.json"):
+                    tpath = DATA / "replay" / name
+                    if not tpath.exists():
+                        continue
+                    try:
+                        raw = json.loads(tpath.read_text(encoding="utf-8"))
+                    except Exception as e:
+                        log.warning("replay social %s unreadable: %s", name, e)
+                        continue
+                    posts = [SocialPost.from_dict(d) for d in raw]
+                    fresh = []
+                    for p in posts:
+                        if p.id not in seen_social:
+                            seen_social.add(p.id)
+                            fresh.append(p)
+                    social = [social_to_event(p) for p in fresh if p.lat is not None]
                     self.events += social
-                    self.loaded_layers["telegram"].append(day)
-                    log.info("replay %s: +%d geolocated Telegram posts (%d total posts)", day, len(social), len(posts))
+                    n_geo += len(social)
+                    n_tot += len(fresh)
+                    if name == f"{day}_telegram.json":
+                        self.loaded_layers["telegram"].append(day)
+                    if day not in self.loaded_layers["social"]:
+                        self.loaded_layers["social"].append(day)
+                if n_tot:
+                    log.info("replay %s: +%d geolocated social posts (%d total posts, all platforms)",
+                             day, n_geo, n_tot)
                 fpath = DATA / "replay" / f"{day}_firms.json"
                 if fpath.exists():
                     self.firms += json.loads(fpath.read_text(encoding="utf-8"))
@@ -247,7 +276,7 @@ class ReplayState:
             i = idx(datetime.fromisoformat(e.ts).timestamp())
             if i is None:
                 continue
-            if e.source_domain.startswith("t.me/"):
+            if is_social_event(e):
                 bins[i]["social"] += 1
             else:
                 bins[i]["events"] += 1

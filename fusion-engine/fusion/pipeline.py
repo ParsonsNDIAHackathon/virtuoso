@@ -19,7 +19,11 @@ from pathlib import Path
 from .store import make_store
 from .ingest_adsb import AirTrack, fetch_military, fetch_regions
 from .ingest_gdelt import OsintEvent, fetch_window
-from .ingest_telegram import DEFAULT_CHANNELS, fetch_latest, social_to_event
+from .ingest_social import (
+    PLATFORM_LABELS,
+    enabled_platforms,
+    social_to_event,
+)
 from .ingest_firms import fetch as fetch_firms, novelty as firms_novelty
 from .backfill import Backfill
 
@@ -81,6 +85,7 @@ class FusionState:
         "gdelt": {"state": "starting", "label": "GDELT OSINT"},
         "adsb": {"state": "starting", "label": "ADS-B aircraft"},
         "firms": {"state": "starting", "label": "NASA FIRMS thermal"},
+        "social": {"state": "starting", "label": "Social (all platforms)"},
         "telegram": {"state": "starting", "label": "Telegram previews"},
         "fusion": {"state": "starting", "label": "Fusion correlations"},
     })
@@ -153,16 +158,45 @@ class FusionState:
                  len(all_ev), sum(e.is_conflict for e in all_ev), windows)
         self.set_source_status("gdelt", "ready", count=len(all_ev), detail=f"{windows} × 15-minute window")
 
-    def refresh_social(self, channels=None):
-        """Poll public Telegram channel previews; keep the last 6 h of geolocated posts."""
-        posts = []
-        failures = 0
-        for ch in channels or DEFAULT_CHANNELS:
+    def refresh_social(self, channels=None, platforms=None, targets=None):
+        """Poll every enabled social platform; keep the last 6 h of geolocated posts.
+
+        `channels` is the legacy Telegram-only override (list of channel names).
+        `platforms` / `targets` select a subset, e.g. platforms=["reddit"],
+        targets={"reddit": ["worldnews"]}. Failures are isolated per platform so
+        one down website never blocks the others.
+        """
+        import importlib
+        from .ingest_social import _ADAPTERS, default_targets
+
+        plats = enabled_platforms(platforms)
+        if channels:  # legacy Telegram-only call path
+            targets = {**(targets or {}), "telegram": list(channels)}
+            plats = ["telegram"] if platforms is None else plats
+        eff_targets = {p: (targets or {}).get(p) or default_targets(p) for p in plats}
+        # Fan out per platform/target with explicit failure accounting: a
+        # platform returning zero posts is healthy (nothing geolocated this
+        # tick); only exceptions count as failures.
+        posts, failures = [], 0
+        per_platform: dict[str, int] = {}
+        for plat in plats:
             try:
-                posts += fetch_latest(ch)
+                mod = importlib.import_module(_ADAPTERS[plat])
             except Exception as e:
-                log.warning("telegram %s failed: %s", ch, e)
+                log.warning("social %s unavailable: %s", plat, e)
                 failures += 1
+                continue
+            for t in eff_targets.get(plat) or []:
+                try:
+                    chunk = mod.fetch_latest(t)
+                except Exception as e:
+                    log.warning("social %s %s failed: %s", plat, t, e)
+                    failures += 1
+                    continue
+                for p in chunk:
+                    per_platform[p.platform] = per_platform.get(p.platform, 0) + 1
+                posts += chunk
+        posts.sort(key=lambda p: p.ts or "")
         cutoff = datetime.now(timezone.utc).timestamp() - 6 * 3600
         fresh = [social_to_event(p) for p in posts
                  if p.lat is not None and datetime.fromisoformat(p.ts).timestamp() >= cutoff]
@@ -173,10 +207,35 @@ class FusionState:
             all_events = self.events + self.social
             self.event_ids = [event.id for event in all_events]
             self.conflict_event_count = sum(event.is_conflict for event in all_events)
-        log.info("Telegram: %d posts polled, %d geolocated in last 6 h", len(posts), len(self.social))
-        state = "error" if failures and not posts else "partial" if failures else "ready"
-        detail = "Some channel previews were unavailable" if failures else "Public channel previews only"
-        self.set_source_status("telegram", state, count=len(self.social), detail=detail)
+        # Per-platform geolocated counts (what actually enters the correlator).
+        by_plat: dict[str, int] = {}
+        for e in self.social:
+            plat = "telegram" if e.source_domain.startswith("t.me/") else (
+                "reddit" if "reddit.com" in e.source_domain else (
+                    "bluesky" if "bsky.app" in e.source_domain else "mastodon"))
+            by_plat[plat] = by_plat.get(plat, 0) + 1
+        log.info("Social: %d posts polled (%s), %d geolocated in last 6 h",
+                 len(posts), ", ".join(f"{k}={v}" for k, v in sorted(per_platform.items())) or "none",
+                 len(self.social))
+        # Aggregate status (new) + legacy "telegram" key + per-platform keys.
+        if failures and not posts:
+            state, detail = "error", "All social sources unavailable; retaining the last result"
+        elif failures:
+            state, detail = "partial", "Some social sources were unavailable"
+        else:
+            state, detail = "ready", "Keyless public posts; geolocated only"
+        self.set_source_status("social", state, count=len(self.social), detail=detail)
+        tg_n = by_plat.get("telegram", 0)
+        self.set_source_status("telegram",  # backwards-compat alias for old dashboards
+                               state if "telegram" in plats else self.source_status.get("telegram", {}).get("state", "starting"),
+                               count=tg_n if "telegram" in plats else self.source_status.get("telegram", {}).get("count"),
+                               detail="Public channel previews only" if "telegram" in plats else None)
+        for plat in plats:
+            label = PLATFORM_LABELS.get(plat, plat)
+            n = by_plat.get(plat, 0)
+            # A platform that returned nothing this tick keeps its previous count
+            # unless it errored on every target; fetch_latest_all already logged.
+            self.set_source_status(f"social:{plat}", state, count=n, detail=label)
 
     def refresh_firms(self):
         """Latest 24 h of VIIRS thermal anomalies inside every area-of-interest circle, scored for
@@ -340,7 +399,7 @@ class FusionState:
             }
 
     def api_timeline(self, hours: float = 24.0) -> dict:
-        """15-min bins for the last `hours`: GDELT/Telegram backfilled inside the drawn circles,
+        """15-min bins for the last `hours`: GDELT/social backfilled inside the drawn circles,
         FIRMS novel anomalies, plus our own aircraft levels and correlation flows."""
         hours = hours if hours > 0 else 24 * 7
         with self.lock:
@@ -441,6 +500,7 @@ def run_loop(state: FusionState, gdelt_every=900, adsb_every=60, windows=2, prim
                 last_s = now
             except Exception as e:
                 log.warning("social refresh failed: %s", e)
+                state.set_source_status("social", "error", detail="Social sources unavailable; retaining the last result")
                 state.set_source_status("telegram", "error", detail="Telegram previews unavailable; retaining the last result")
         if now - last_g >= gdelt_every:
             try:

@@ -70,7 +70,9 @@ same alerts on one snapshot (last run: 568/568 identical).
 previews and NASA GIBS need no key.
 
 API: `/api/status`, `/api/alerts`, `/api/events?conflict_only=true`, `/api/aircraft`, `/api/firms`,
-`/api/graph`, `/api/entity/{id}`, `/api/regions` (GET/POST/PATCH/DELETE), `POST /api/refresh`,
+`/api/graph`, `/api/entity/{id}`, `/api/source/preview?url=…`,
+`/api/social?platform=reddit&limit=500`, `/api/social/platforms`,
+`/api/regions` (GET/POST/PATCH/DELETE), `POST /api/refresh`,
 `/api/replay/scenarios`, `/api/replay/{id}/config|timeline|at?t=`.
 
 ## Sources
@@ -79,7 +81,7 @@ API: `/api/status`, `/api/alerts`, `/api/events?conflict_only=true`, `/api/aircr
 |---|---|---|---|
 | OSINT events + GKG entities | GDELT 2.0, every 15 min | all 96 windows of the day, Hormuz bbox/keywords | `ingest_gdelt.py`, `replay_gdelt.py` |
 | Air tracks | adsb.lol military feed + one query per drawn circle, every 60 s | adsb.lol `globe_history` daily archive (ODbL), traces filtered to the Gulf | `ingest_adsb.py`, `replay_adsb.py`, `scripts/fetch_archive.py` |
-| Social posts | Telegram public channel previews, every 5 min | same channels paged back to the day | `ingest_telegram.py` |
+| Social posts | Telegram + Reddit + Bluesky + Mastodon (keyless public endpoints), every 5 min. Configure with `SOCIAL_PLATFORMS` / `SOCIAL_REDDIT_SUBS` / `SOCIAL_BLUESKY_QUERIES` / `SOCIAL_MASTODON_INSTANCES` | same sources paged back to the day (`python -m fusion.ingest_social --since 2026-08-18`) | `ingest_social.py` registry + `ingest_telegram.py`, `ingest_reddit.py`, `ingest_bluesky.py`, `ingest_mastodon.py` |
 | Thermal anomalies | NASA FIRMS VIIRS inside each circle, every 15 min, novelty vs 7 days earlier | FIRMS for the day, novelty vs Aug 11 | `ingest_firms.py` |
 | Radar ship detections | n/a (revisit is days) | Sentinel-1 GRD COG scenes from Copernicus S3, nearest scene within 3 days, age labeled | `sar_ships.py` |
 | Vessels (AIS) | aisstream.io (no coverage in the Gulf; works in the Med) | none free | `ingest_ais.py` |
@@ -93,7 +95,7 @@ Both replay layers are **real data for that day**, no relocation or synthetic po
 |---|---|---|
 | OSINT | GDELT 2.0, all 96 windows of 2026-08-18, filtered to the Hormuz bbox (23.5–28.5 N, 52–59 E) or Hormuz/tanker keywords | `python -m fusion.replay_gdelt 2026-08-18` |
 | Air tracks | adsb.lol `globe_history_2026` release `v2026.08.18-planes-readsb-prod-0` (two split tar parts, ~4 GB, ODbL) | `python scripts/fetch_archive.py 2026-08-18 <folder>` then `python -m fusion.replay_adsb extract <folder>` |
-| Social | Telegram public channels | `python -m fusion.ingest_telegram --since 2026-08-18 --until 2026-08-19` |
+| Social | Telegram + Reddit + Bluesky + Mastodon public posts | `python -m fusion.ingest_social --since 2026-08-18 --until 2026-08-19` (or per-platform `ingest_telegram` / `ingest_reddit` / `ingest_bluesky` / `ingest_mastodon`) |
 | Thermal | NASA FIRMS | `python -m fusion.ingest_firms 2026-08-18 --baseline 2026-08-11` |
 | Radar ships | Sentinel-1 GRD COG (Copernicus S3) | download VV tiff + annotation XML for a scene, then `python -m fusion.sar_ships <scene folder>` |
 
@@ -129,4 +131,4 @@ feed such as aisstream.io labeled as current.
   API projections query Neo4j directly.
 - LLM summarization of each alert's corroborating articles (Claude API) into an analyst BLUF.
 - Track history: persist ADS-B snapshots to detect loitering / orbit patterns, not just presence.
-- Social stream (Telegram/X) ingest for true "social media spike" detection.
+- Social spike detection across all four platforms (per-platform bursts in `/api/social/platforms` + timeline).
