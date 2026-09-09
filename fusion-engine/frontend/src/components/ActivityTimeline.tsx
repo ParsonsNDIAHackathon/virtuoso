@@ -101,13 +101,6 @@ export function ActivityTimeline({ timeline, activeTime, mode, onSeek }: Props) 
         context.textAlign = i === 0 ? "left" : i === ticks ? "right" : "center"; context.fillText(stampUtc(t, spanHours > 36), px, rect.height - 6);
       }
       context.textAlign = "left";
-      // Radar scene markers (replay).
-      for (const scene of timeline?.sar_scenes ?? []) {
-        if (scene.t < start || scene.t > end) continue;
-        const px = x(scene.t);
-        context.strokeStyle = "#e5e7df"; context.setLineDash([3, 3]); context.beginPath(); context.moveTo(px, MARGIN.top); context.lineTo(px, MARGIN.top + height); context.stroke(); context.setLineDash([]);
-        context.fillStyle = "#e5e7df"; context.fillText(`radar ${scene.n} ships`, px + 3, MARGIN.top + height - 4);
-      }
       // Scrubber cursor (replay).
       if (activeTime && activeTime >= start && activeTime <= end) {
         const px = x(activeTime);
