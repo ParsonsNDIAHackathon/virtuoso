@@ -1,7 +1,9 @@
 """Article extraction used to enrich GDELT adjudication records."""
 from unittest.mock import patch
+import threading
 
 from fusion.source_documents import FAILURE_TTL, _cache, document_text
+from fusion.bounded import BoundedCalls
 
 
 def test_article_paragraphs_are_extracted_without_page_chrome():
@@ -54,6 +56,22 @@ def test_truncation_is_reported_for_cached_and_internal_text_limits():
         long = document_text(url, max_chars=200_000)
         assert long["truncated"] and len(long["text"]) == 100_000
         assert fetch.call_count == 1
+
+
+def test_stalled_article_is_an_evidence_gap_and_cannot_spawn_unbounded_work():
+    release = threading.Event()
+    fetches = BoundedCalls(capacity=1)
+    with patch("fusion.source_documents._fetches", fetches), patch.dict(
+        "os.environ", {"FUSION_SOURCE_DOC_TIMEOUT_S": "0.01"}
+    ), patch("fusion.source_documents._safe_html", side_effect=lambda url: release.wait(1)) as fetch:
+        try:
+            first = document_text("https://news.example/stalled-one", force=True)
+            second = document_text("https://news.example/stalled-two", force=True)
+            assert not first["available"] and "exceeded" in first["error"]
+            assert not second["available"] and "busy" in second["error"]
+            assert fetch.call_count == 1
+        finally:
+            release.set()
 
 
 if __name__ == "__main__":

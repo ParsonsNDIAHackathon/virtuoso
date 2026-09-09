@@ -41,11 +41,12 @@ class InMemoryStore:
         self.batches: "OrderedDict[str, dict]" = OrderedDict()
 
     def ingest(self, events: list[OsintEvent], tracks: list[AirTrack], batch_id: str,
-               hotspots: list[dict] | None = None, social_posts: dict | None = None):
+               hotspots: list[dict] | None = None, social_posts: dict | None = None,
+               vessels: list[dict] | None = None):
         for e in events:
             self._events[e.id] = e
         self.batches[batch_id] = {"tracks": list(tracks), "hotspots": list(hotspots or []),
-                                  "social_posts": dict(social_posts or {}), "alerts": [],
+                                  "social_posts": dict(social_posts or {}), "vessels": list(vessels or []), "alerts": [],
                                   "candidates": [], "assessments": [], "clusters": [],
                                   "G": None, "gj": None}
         self.batches.move_to_end(batch_id)
@@ -69,6 +70,8 @@ class InMemoryStore:
             if event_id in G:
                 G.nodes[event_id].update(kind="telegram", text=post.text, channel=post.channel,
                                          keywords=post.keywords)
+        for vessel in b["vessels"]:
+            G.add_node(vessel["id"], **{**vessel, "kind": "ais", "label": vessel.get("name") or str(vessel["mmsi"])})
         b["G"], b["alerts"], b["gj"] = G, alerts, None
         return alerts
 
@@ -84,6 +87,9 @@ class InMemoryStore:
         if G is None:
             return
         for candidate in candidates:
+            for record in (candidate.left, candidate.right):
+                if record.kind == "ais" and record.id not in G:
+                    G.add_node(record.id, kind="ais", label=record.label, lat=record.lat, lon=record.lon, ts=record.ts)
             G.add_node(candidate.id, kind="candidate", label="Proximity candidate",
                        candidate_score=candidate.candidate_score, distance_km=candidate.distance_km,
                        dt_min=candidate.dt_min, batch_id=batch_id)

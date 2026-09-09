@@ -1,6 +1,9 @@
 """The click-two HTTP workflow must coexist with the live AIS routes."""
 import importlib
+import tempfile
+import threading
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 from fusion.fusion_ai import AIProviderError, AIUnavailable
@@ -74,6 +77,42 @@ class FusionApiTests(unittest.TestCase):
                 response = self.client.post("/api/fusion/adjudicate", json=self.pair)
                 self.assertEqual(response.status_code, status)
                 self.assertIn(detail, response.json()["detail"])
+
+    def test_ais_and_thermal_are_adjudicated_from_live_feed_records(self):
+        from fusion.fusion_ai import FusionAI
+        from fusion.pipeline import FusionState
+        from fusion.store import InMemoryStore
+        from tests.test_ais_fusion import evidence
+        from tests.test_fusion_ai import FakeOpenAI
+        vessel, thermal = evidence()
+        with tempfile.TemporaryDirectory() as directory:
+            state = FusionState(store=InMemoryStore(), fusion_ai=FusionAI(Path(directory), FakeOpenAI()), history=[])
+            state.ais_snapshot = lambda: {"vessels": [vessel]}
+            state.firms = [thermal]
+            with patch.object(self.server, "state", state):
+                response = self.client.post("/api/fusion/adjudicate", json={
+                    "left": {"kind": "ais", "id": vessel["id"]},
+                    "right": {"kind": "firms", "id": thermal["id"]},
+                })
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["left_kind"], "ais")
+        self.assertEqual(response.json()["evidence"][0]["ts"], vessel["ts"])
+
+    def test_slow_analysis_returns_a_deadline_error(self):
+        release = threading.Event()
+        self.state.adjudicate_pair.side_effect = lambda *args, **kwargs: release.wait(1)
+        with patch.dict("os.environ", {"FUSION_ADJUDICATION_TIMEOUT_S": "0.01"}):
+            # The ASGI test's asyncio.run waits for its worker executor when closing.
+            # Release it separately; assert the HTTP response still contains the timeout.
+            timer = threading.Timer(0.1, release.set)
+            timer.start()
+            try:
+                response = self.client.post("/api/fusion/adjudicate", json=self.pair)
+            finally:
+                release.set()
+                timer.join()
+        self.assertEqual(response.status_code, 504)
+        self.assertIn("exceeded", response.json()["detail"])
 
 
 if __name__ == "__main__":

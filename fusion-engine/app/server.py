@@ -5,7 +5,9 @@
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
 import threading
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
@@ -80,6 +82,7 @@ def _startup():
     _sync_ais()
     ais.start()
     state.ais_count = ais.timeline_count
+    state.ais_snapshot = ais.snapshot
     _worker = threading.Thread(target=run_loop, args=(state,), kwargs={"windows": 2, "primed": False}, daemon=True)
     _worker.start()
 
@@ -220,7 +223,15 @@ class AdjudicationIn(BaseModel):
 
 
 @app.post("/api/fusion/adjudicate")
-def adjudicate(body: AdjudicationIn):
+async def adjudicate(body: AdjudicationIn):
+    timeout = float(os.getenv("FUSION_ADJUDICATION_TIMEOUT_S", "90"))
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(_adjudicate, body), timeout=timeout)
+    except asyncio.TimeoutError:
+        raise HTTPException(504, f"Evidence analysis exceeded {timeout:g} seconds. Check source/provider status and retry shortly.") from None
+
+
+def _adjudicate(body: AdjudicationIn):
     if body.left.id == body.right.id and body.left.kind == body.right.kind:
         raise HTTPException(422, "select two different records")
     try:

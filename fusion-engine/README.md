@@ -39,7 +39,7 @@ Pipeline (`fusion/`):
    distinct modalities and evidence strength. OpenAI produces a cached analyst BLUF for the top cluster.
 5. **Knowledge graph and dashboard** — Neo4j stores source records, retrieval candidates, LLM
    assessments, resolved entities, and clusters. The map supports selecting any two individual GDELT,
-   Telegram, ADS-B, or FIRMS markers and invoking the same adjudicator on demand. Rejected assessments
+   Telegram, ADS-B, AIS, or FIRMS markers and invoking the same adjudicator on demand. Rejected assessments
    are persisted but hidden unless **Show rejected** is enabled.
 
 Two GDELT records can come from the same article while describing different incidents. Comparisons
@@ -95,11 +95,11 @@ previews and NASA GIBS need no key.
 **Test AIS and AI together:** run `docker compose up -d --build api frontend`, then hard-refresh
 `http://localhost:8080` (or your configured `FUSION_PORT`). The live source legend should show
 both **AIS · VESSELS** and **OPENAI · ADJUDICATION**. Enable **Compare with AI**, expand any
-clusters, select two individual GDELT, Telegram, ADS-B, or FIRMS markers, then click
+clusters, select two individual GDELT, Telegram, ADS-B, AIS, or FIRMS markers, then click
 **Adjudicate evidence**. The result separates article identity from incident association and
 explains the supporting facts and limitations. Repeat in a replay: selecting the first marker
-pauses playback and binds the comparison to that displayed instant. AIS markers remain live
-position details and are not inputs to the restored adjudicator.
+pauses playback and binds the comparison to that displayed instant. AIS comparisons are live-only.
+The legacy ADS-B/OSINT cues panel is removed; map zoom controls are at the bottom-right.
 
 Regression checks (with `pytest` installed): `python -m pytest tests -q`.
 
@@ -184,7 +184,9 @@ feed such as aisstream.io labeled as current.
 
 Set `AISSTREAM_API_KEY` in `fusion-engine/.env` and restart the API service. In Live mode,
 add an area of interest and enable **AIS**. Green markers show vessel positions; clicking
-one shows MMSI, name, speed, course, heading, report time, and position age. The display
+one shows MMSI, name, speed, course, heading, report time, and position age. Enable
+**Compare with AI** to compare a vessel against another vessel, news item, aircraft, Telegram
+post, or thermal anomaly. The display
 refreshes every 10 seconds. The AIS source indicator reports missing credentials,
 connection failures, and the current vessel count.
 
@@ -206,3 +208,24 @@ persist in `data/history.jsonl`. Missing credentials, disconnected feeds, and no
 gaps, not zero counts. Older history has no AIS values; no historical AIS is backfilled.
 Counts reflect the AOIs active at recording time and use the same latest-position expiry
 as the map. The timeline continues recording when the AIS map layer is hidden.
+
+### AI result updates
+
+Live AIS joins cross-source candidate retrieval with news, Telegram, ADS-B, and FIRMS.
+Proximity retrieves candidates; the AI still requires supporting source facts before asserting
+an association. Vessel identity, ownership, intent, and deliberate transmitter shutdown are
+not inferred from positions or coverage gaps.
+
+Automatic verdicts appear as each pair completes and survive live refreshes. The latest assessment
+per record pair is retained for up to an hour while both records remain available, bounded to 500
+pairs. Every new verdict includes the actual observation timestamps and positions; retained results
+do not become cached verdicts for newer positions. The map draws assessed links at their evaluated
+positions. **AI ASSESSMENTS** counts all returned verdicts; **Show rejected** reveals unsupported
+or contradicted links. The count can be positive even when no association is supported.
+
+Graph artifact writes run in a single background worker so database delays cannot block ingestion
+or automatic analysis. Queries default to a 20-second transaction timeout. Article retrieval has a
+12-second overall budget per article, falling back to the supplied record fields with an explicit
+evidence gap. Manual requests return an error after 90 seconds instead of spinning indefinitely;
+the browser also has a 100-second timeout. Timeouts do not guarantee cancellation of an already
+running provider call.

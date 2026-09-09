@@ -22,6 +22,8 @@ export function AssessmentResult({ assessment, compact = false }: { assessment: 
       <span className="ml-auto font-mono text-muted" title="Strength of evidence for the incident or observation link, separate from article identity.">Strength {assessment.evidence_strength.toFixed(2)}</span>
     </div>
     <p className="text-muted">{assessment.verdict.replace(/_/g, " ")}{assessment.needs_review ? " · Needs review" : ""} · {assessment.cached ? "cached" : assessment.model}</p>
+    <p className="text-muted">Assessed {new Date(assessment.created_at).toLocaleTimeString()}</p>
+    {(assessment.evidence ?? []).map((record) => <p key={`${record.kind}:${record.id}`} className="text-muted">{record.kind.toUpperCase()} · {record.label} · observation {record.ts}</p>)}
     <p className="leading-snug text-ink">{assessment.rationale}</p>
     {!compact && <>
       <p className="text-muted">Limitation: {assessment.strongest_limitation}</p>

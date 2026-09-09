@@ -13,6 +13,7 @@ from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 import requests
 
 from .preview import _meta, _public
+from .bounded import BoundedCalls
 
 UA = "Mozilla/5.0 (compatible; ParsonsOfInterest-MultiINT/0.1; source evidence retrieval)"
 CACHE_TTL = 24 * 3600
@@ -20,6 +21,7 @@ FAILURE_TTL = 5 * 60
 CACHE_MAX = 500
 _cache: "OrderedDict[str, dict]" = OrderedDict()
 _lock = threading.Lock()
+_fetches = BoundedCalls()
 
 
 def article_url_key(url: str) -> str | None:
@@ -114,16 +116,16 @@ def _safe_html(url: str) -> tuple[str, str, int]:
         response.close()
         raise ValueError("source is not HTML")
     max_bytes = max(64_000, int(os.getenv("FUSION_SOURCE_DOC_MAX_BYTES", "2000000")))
-    raw = bytearray()
-    for chunk in response.iter_content(64 * 1024):
-        raw.extend(chunk)
-        if len(raw) >= max_bytes:
-            del raw[max_bytes:]
-            break
-    encoding = response.encoding or "utf-8"
-    status = response.status_code
-    response.close()
-    return bytes(raw).decode(encoding, errors="replace"), current, status
+    try:
+        raw = bytearray()
+        for chunk in response.iter_content(64 * 1024):
+            raw.extend(chunk)
+            if len(raw) >= max_bytes:
+                del raw[max_bytes:]
+                break
+        return bytes(raw).decode(response.encoding or "utf-8", errors="replace"), current, response.status_code
+    finally:
+        response.close()
 
 
 def document_text(url: str, max_chars: int | None = None, *, force: bool = False) -> dict:
@@ -143,7 +145,10 @@ def document_text(url: str, max_chars: int | None = None, *, force: bool = False
         "available": False, "truncated": False, "fetched_at_epoch": now,
     }
     try:
-        page, resolved_url, status = _safe_html(url)
+        page, resolved_url, status = _fetches.call(
+            lambda: _safe_html(url), timeout=float(os.getenv("FUSION_SOURCE_DOC_TIMEOUT_S", "12")),
+            label="Article retrieval",
+        )
         parser = _ArticleParser()
         parser.feed(page)
         # Publishers commonly repeat mobile/desktop paragraphs; retain one copy in source order.

@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from neo4j import GraphDatabase
+from neo4j import GraphDatabase, Query
 from neo4j.exceptions import TransientError
 from dotenv import load_dotenv
 
@@ -26,6 +26,8 @@ log = logging.getLogger(__name__)
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 SCHEMA = (
+    "CREATE CONSTRAINT fusion_record_id IF NOT EXISTS FOR (n:FusionRecord) REQUIRE n.id IS UNIQUE",
+    "CREATE CONSTRAINT vessel_id IF NOT EXISTS FOR (n:Vessel) REQUIRE n.id IS UNIQUE",
     "CREATE CONSTRAINT event_id IF NOT EXISTS FOR (n:Event) REQUIRE n.id IS UNIQUE",
     "CREATE CONSTRAINT actor_id IF NOT EXISTS FOR (n:Actor) REQUIRE n.id IS UNIQUE",
     "CREATE CONSTRAINT location_id IF NOT EXISTS FOR (n:Location) REQUIRE n.id IS UNIQUE",
@@ -39,6 +41,7 @@ SCHEMA = (
     "CREATE CONSTRAINT resolved_entity_id IF NOT EXISTS FOR (n:ResolvedEntity) REQUIRE n.id IS UNIQUE",
     "CREATE RANGE INDEX event_observed_at IF NOT EXISTS FOR (n:Event) ON (n.observed_at)",
     "CREATE RANGE INDEX observation_grid_time IF NOT EXISTS FOR (n:AirObservation) ON (n.grid, n.observed_at)",
+    "CREATE RANGE INDEX observation_batch IF NOT EXISTS FOR (n:AirObservation) ON (n.batch_id)",
 )
 
 
@@ -71,6 +74,8 @@ def _node_kind(node) -> str:
         return "source"
     if "ThermalObservation" in labels:
         return "firms"
+    if "Vessel" in labels:
+        return "ais"
     if "LLMAssessment" in labels:
         return "assessment"
     if "FusionCandidate" in labels:
@@ -114,7 +119,8 @@ class Neo4jStore:
         for attempt in range(retries + 1):
             try:
                 records, _, _ = self.driver.execute_query(
-                    query, parameters_=parameters, database_=self.database,
+                    Query(query, timeout=float(os.getenv("NEO4J_QUERY_TIMEOUT_S", "20"))),
+                    parameters_=parameters, database_=self.database,
                 )
                 return records
             except TransientError as error:
@@ -135,7 +141,8 @@ class Neo4jStore:
         self._schema_ready = True
 
     def ingest(self, events: list[OsintEvent], tracks: list[AirTrack], batch_id: str,
-               hotspots: list[dict] | None = None, social_posts: dict | None = None):
+               hotspots: list[dict] | None = None, social_posts: dict | None = None,
+               vessels: list[dict] | None = None):
         """Idempotently persist source facts and their entity relationships."""
         self.ensure_schema()
         event_rows = []
@@ -164,6 +171,7 @@ class Neo4jStore:
                 """
                 UNWIND $rows AS row
                 MERGE (e:Event {id: row.id})
+                SET e:FusionRecord
                 SET e += row.props, e.observed_at = row.observed_at, e.severity = row.severity,
                     e.position = point({latitude: row.lat, longitude: row.lon}), e.neighbor_grids = row.neighbor_grids,
                     e.label = e.root_label + ': ' + e.place
@@ -207,6 +215,7 @@ class Neo4jStore:
                 """
                 UNWIND $rows AS row
                 MERGE (a:Aircraft {id: row.aircraft_id})
+                SET a:FusionRecord
                 SET a += row.props, a.label = coalesce(row.props.callsign, row.props.registration, row.props.hex)
                 MERGE (o:AirObservation {id: row.id})
                 SET o += row.observation_props, o.aircraft_id = row.aircraft_id,
@@ -228,14 +237,27 @@ class Neo4jStore:
                 """
                 UNWIND $rows AS row
                 MERGE (h:ThermalObservation {id: row.id})
+                SET h:FusionRecord
                 SET h += row.props, h.observed_at = row.observed_at, h.batch_id = row.batch_id,
                     h.position = point({latitude: row.lat, longitude: row.lon}),
                     h.label = 'FIRMS thermal anomaly'
                 """, rows=hotspot_rows,
             )
+        self._record_vessels(vessels or [], batch_id)
+
+    def _record_vessels(self, vessels, batch_id):
+        if vessels:
+            self._query("""
+                UNWIND $rows AS row
+                MERGE (v:Vessel {id: row.id}) SET v:FusionRecord
+                SET v += row, v.batch_id = $batch_id, v.label = coalesce(row.name, toString(row.mmsi))
+                """, rows=[{key: value for key, value in vessel.items() if key != "age_min"}
+                            for vessel in vessels], batch_id=batch_id)
 
     def record_fusion(self, candidates, assessments, clusters, batch_id: str):
         """Persist candidate generation, LLM adjudication, entity resolution and clusters."""
+        self._record_vessels([record.data for candidate in candidates
+                              for record in (candidate.left, candidate.right) if record.kind == "ais"], batch_id)
         candidate_rows = [{**candidate.to_dict(False), "batch_id": batch_id} for candidate in candidates]
         if candidate_rows:
             self._query(
@@ -244,7 +266,7 @@ class Neo4jStore:
                 MERGE (c:FusionCandidate {id: row.id})
                 SET c += row, c.label = 'Proximity candidate'
                 WITH c, row
-                MATCH (left {id: row.left_id}), (right {id: row.right_id})
+                MATCH (left:FusionRecord {id: row.left_id}), (right:FusionRecord {id: row.right_id})
                 MERGE (c)-[cl:CANDIDATE_MEMBER {role: 'left'}]->(left) SET cl.kind = 'CANDIDATE_MEMBER'
                 MERGE (c)-[cr:CANDIDATE_MEMBER {role: 'right'}]->(right) SET cr.kind = 'CANDIDATE_MEMBER'
                 """, rows=candidate_rows,
@@ -263,6 +285,7 @@ class Neo4jStore:
                 "article_match_json": json.dumps(value["article_match"], ensure_ascii=False),
                 "source_documents_json": json.dumps(value["source_documents"], ensure_ascii=False),
                 "source_groups_json": json.dumps(value["source_groups"], ensure_ascii=False),
+                "evidence_json": json.dumps(value["evidence"], ensure_ascii=False),
                 "batch_id": batch_id,
             })
             for entity in assessment.resolved_entities:
@@ -284,7 +307,7 @@ class Neo4jStore:
                 SET a += row, a.label = CASE WHEN row.has_article_match THEN 'Same article; incident: ' + row.incident_relationship
                     ELSE row.verdict + ': ' + row.relation END
                 WITH a, row
-                MATCH (left {id: row.left_id}), (right {id: row.right_id})
+                MATCH (left:FusionRecord {id: row.left_id}), (right:FusionRecord {id: row.right_id})
                 MERGE (a)-[al:ASSESSES {role: 'left'}]->(left) SET al.kind = 'ASSESSES'
                 MERGE (a)-[ar:ASSESSES {role: 'right'}]->(right) SET ar.kind = 'ASSESSES'
                 """, rows=assessment_rows,
@@ -293,7 +316,7 @@ class Neo4jStore:
             self._query(
                 """
                 UNWIND $rows AS row
-                MATCH (record {id: row.record_id})
+                MATCH (record:FusionRecord {id: row.record_id})
                 MERGE (entity {id: row.entity_id})
                 SET entity:ResolvedEntity, entity.label = row.label, entity.entity_type = row.entity_type
                 FOREACH (_ IN CASE WHEN row.actor_like THEN [1] ELSE [] END | SET entity:Actor)
@@ -310,7 +333,7 @@ class Neo4jStore:
                 MERGE (c:FusionCluster {id: row.id})
                 SET c += row, c.label = coalesce(row.brief, 'Multi-source fusion cluster')
                 WITH c, row UNWIND row.record_ids AS record_id
-                MATCH (record {id: record_id})
+                MATCH (record:FusionRecord {id: record_id})
                 MERGE (c)-[r:CONTAINS]->(record) SET r.kind = 'CONTAINS'
                 """, rows=cluster_rows,
             )
@@ -338,7 +361,7 @@ class Neo4jStore:
         for record in records:
             value = dict(record["a"])
             value["resolved_entities"] = json.loads(value.pop("resolved_entities_json", "[]"))
-            for field, default in (("article_match", "{}"), ("source_documents", "[]"), ("source_groups", "{}")):
+            for field, default in (("article_match", "{}"), ("source_documents", "[]"), ("source_groups", "{}"), ("evidence", "[]")):
                 value[field] = json.loads(value.pop(field + "_json", default))
             out.append(value)
         return out
@@ -579,9 +602,9 @@ class Neo4jStore:
         )
 
     def entity(self, node_id: str) -> dict | None:
+        label = {"gdelt": "Event", "tg": "Event", "adsb": "Aircraft", "ais": "Vessel", "firms": "ThermalObservation"}.get(node_id.split(":", 1)[0])
         records = self._query(
-            """
-            MATCH (n {id: $node_id})
+            (f"MATCH (n:{label} {{id: $node_id}})" if label else "MATCH (n {id: $node_id})") + """
             OPTIONAL MATCH (n)-[r]-(m)
             WHERE type(r) IN ['INVOLVES', 'LOCATED_AT', 'REPORTED_BY', 'NEAR', 'CO_LOCATED',
                               'CANDIDATE_MEMBER', 'ASSESSES', 'RESOLVES_TO', 'CONTAINS']

@@ -115,6 +115,7 @@ class Assessment:
     article_match: dict[str, Any] = field(default_factory=dict)
     source_documents: list[dict[str, Any]] = field(default_factory=list)
     source_groups: dict[str, str] = field(default_factory=dict)
+    evidence: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def has_article_match(self) -> bool:
@@ -284,6 +285,10 @@ PAIR_RULES: tuple[tuple[str, str, float, float], ...] = (
     ("gdelt", "firms", 50.0, 12 * 60),
     ("telegram", "firms", 50.0, 12 * 60),
     ("adsb", "firms", 30.0, 3 * 60),
+    ("gdelt", "ais", 75.0, 4 * 60),
+    ("telegram", "ais", 75.0, 4 * 60),
+    ("ais", "firms", 30.0, 3 * 60),
+    ("adsb", "ais", 30.0, 60.0),
 )
 RETRIEVAL_KINDS = {kind for pair in PAIR_RULES for kind in pair[:2]}
 
@@ -498,6 +503,9 @@ class FusionAI:
             "INSUFFICIENT_EVIDENCE when proximity "
             "is the only bridge. State the strongest limitation before deciding confidence. Resolve only entities "
             "explicitly present in the records; canonical names must not add facts."
+            " AIS records are reported vessel positions, not proof of vessel activity, ownership, "
+            "cargo, intent, or association. MMSI and names are transmitted identifiers. A stale "
+            "report or coverage gap does not establish deliberate AIS shutdown."
             "\nArticle identity and incident relationship are separate questions. article_identity is computed "
             "by the application. SAME_ARTICLE confirms shared reporting provenance, not the same incident or "
             "independent corroboration. One GDELT article may yield many records for different actions, actors "
@@ -569,6 +577,8 @@ class FusionAI:
             distance_km=candidate.distance_km, dt_min=candidate.dt_min,
             incident_relationship=incident, article_match=article_match,
             source_documents=source_documents, source_groups=source_groups,
+            evidence=[{key: record.to_dict()[key] for key in ("id", "kind", "label", "ts", "lat", "lon")}
+                      for record in (candidate.left, candidate.right)],
         )
         self.cache.put(cache_key, "assessment", assessment.to_dict())
         return assessment
@@ -583,6 +593,9 @@ class FusionAI:
             if age >= FAILURE_TTL:
                 return None
         cached["cached"] = True
+        if not cached.get("evidence"):
+            cached["evidence"] = [{key: record.to_dict()[key] for key in ("id", "kind", "label", "ts", "lat", "lon")}
+                                  for record in (candidate.left, candidate.right)]
         return Assessment(**{key: value for key, value in cached.items() if key in Assessment.__dataclass_fields__})
 
     def clusters(self, assessments: Iterable[Assessment]) -> list[FusionCluster]:
@@ -677,7 +690,7 @@ class FusionAI:
 
 
 def records_from_sources(events, tracks, hotspots, social_posts: dict[str, Any] | None = None,
-                         graph_context: dict[str, list[dict]] | None = None) -> list[EvidenceRecord]:
+                         graph_context: dict[str, list[dict]] | None = None, *, vessels=None) -> list[EvidenceRecord]:
     """Build canonical records without changing the providers' source dataclasses."""
     social_posts = social_posts or {}
     graph_context = graph_context or {}
@@ -718,5 +731,15 @@ def records_from_sources(events, tracks, hotspots, social_posts: dict[str, Any] 
             ts=hotspot["ts"], timestamp_kind="satellite_acquisition_time",
             lat=float(hotspot["lat"]), lon=float(hotspot["lon"]), source="NASA FIRMS",
             data=data, graph_context=graph_context.get(hotspot["id"], []),
+        ))
+    for vessel in vessels or []:
+        # age_min changes on every poll without a new observation. Keep it out of the
+        # fingerprint; the report timestamp identifies the evidence being assessed.
+        data = {key: value for key, value in vessel.items() if key != "age_min"}
+        records.append(EvidenceRecord(
+            id=vessel["id"], kind="ais", label=vessel.get("name") or f"Vessel {vessel['mmsi']}",
+            ts=vessel["ts"], timestamp_kind="vessel_position_report_time",
+            lat=vessel["lat"], lon=vessel["lon"], source="aisstream.io", data=data,
+            graph_context=graph_context.get(vessel["id"], []),
         ))
     return records
