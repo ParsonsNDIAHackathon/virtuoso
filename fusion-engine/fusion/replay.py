@@ -17,6 +17,7 @@ from .ingest_gdelt import OsintEvent
 from .store import make_store
 from .ingest_social import SocialPost, is_social_event, social_to_event
 from .replay_adsb import load_tracks, snapshot_at, track_polylines
+from .navint import MIN_KNOWN, timeline_counts as navint_timeline, window_from_tracks as navint_window
 from .replay_gdelt import HORMUZ_BBOX, HORMUZ_KW
 from .fusion_ai import FusionAI, asserted_graph_context, candidate_for_pair, generate_candidates, records_from_sources
 
@@ -177,6 +178,7 @@ class ReplayState:
             "n_events": len(self.events), "n_conflict": sum(e.is_conflict for e in self.events),
             "n_aircraft": len(self.tracks), "n_military": sum(1 for a in self.tracks.values() if a["military"]),
             "adsb_available": bool(self.tracks), "n_firms": len(self.firms), "n_sar": len(self.sar),
+            "n_navint_aircraft": sum(1 for a in self.tracks.values() if any(len(p) > 9 and (p[8] is not None or p[9] is not None) for p in a["points"])),
             "sar_scenes": sorted({d["ts"] for d in self.sar}),
             "sar_summary": self._sar_summary(),
         }
@@ -246,6 +248,9 @@ class ReplayState:
             "clusters": [cluster.to_dict() for cluster in clusters],
             "graph": self.store.graph(event_ids, batch_id, max_nodes=220, max_links=400),
             "tails": track_polylines(self.tracks, t - tail_min * 60, t) if self.tracks else [],
+            # navigation integrity over the last hour, per 1-degree cell, with the aircraft count it rests on
+            "navint": navint_window(self.tracks, t - 3600, t) if self.tracks else [],
+            "navint_min_known": MIN_KNOWN,
             # thermal anomalies seen in the last 12 h (satellite passes are ~2x/day)
             "firms": current_firms,
             # radar ship detections from the most recent scene at or before t (within 12 h)
@@ -337,7 +342,7 @@ class ReplayState:
         step = step_min * 60
         n = int((self.t_max + 1 - self.t_min) // step)
         bins = [{"t": self.t_min + i * step, "events": 0, "conflict": 0, "social": 0,
-                 "tracks": 0, "military": 0, "firms_new": 0} for i in range(n)]
+                 "tracks": 0, "military": 0, "firms_new": 0, "navint_known": 0, "navint_degraded": 0} for i in range(n)]
 
         def idx(ts):
             i = int((ts - self.t_min) // step)
@@ -364,6 +369,10 @@ class ReplayState:
         for i in range(n):
             bins[i]["tracks"] = len(seen[i])
             bins[i]["military"] = len(mil[i])
+        nav_known, nav_deg = navint_timeline(self.tracks, self.t_min, n, step)
+        for i in range(n):
+            bins[i]["navint_known"] = nav_known[i]
+            bins[i]["navint_degraded"] = nav_deg[i]
         for h in self.firms:
             i = idx(datetime.fromisoformat(h["ts"]).timestamp())
             if i is not None and h.get("novelty", 0) >= 0.9:

@@ -530,6 +530,13 @@ class FusionState:
             tracks = [track.to_dict() for track in self.tracks]
         return [track for track in tracks if not military_only or track["military"]]
 
+    def api_navint(self) -> list[dict]:
+        """Per-cell navigation-integrity picture from the current snapshot, with the count it rests on."""
+        from .navint import cells_from_snapshot
+        with self.lock:
+            tracks = list(self.tracks)
+        return cells_from_snapshot(tracks)
+
     def api_tails(self, minutes: float = 30.0) -> list[dict]:
         """Recent paths for aircraft in the current snapshot, from rolling ADS-B pulls."""
         with self.lock:
