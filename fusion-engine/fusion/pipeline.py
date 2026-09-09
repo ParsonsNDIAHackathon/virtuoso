@@ -16,12 +16,13 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .store import make_store
+from .store import InMemoryStore, make_store
 from .ingest_adsb import AirTrack, fetch_military, fetch_regions
 from .ingest_gdelt import OsintEvent, fetch_window
-from .ingest_telegram import DEFAULT_CHANNELS, fetch_latest, social_to_event
+from .ingest_social import PLATFORM_LABELS, SocialPost, enabled_platforms, platform_of, social_to_event
 from .ingest_firms import fetch as fetch_firms, novelty as firms_novelty
 from .backfill import Backfill
+from .fusion_ai import Assessment, Candidate, EvidenceRecord, FusionAI, FusionCluster, asserted_graph_context, candidate_for_pair, generate_candidates, records_from_sources
 
 log = logging.getLogger(__name__)
 try:
@@ -64,6 +65,7 @@ class FusionState:
     gdelt_stamp: str | None = None
     events: list[OsintEvent] = field(default_factory=list)
     tracks: list[AirTrack] = field(default_factory=list)
+    track_history: list[AirTrack] = field(default_factory=list, repr=False)
     event_ids: list[str] = field(default_factory=list)
     batch_id: str | None = None
     updated: str | None = None
@@ -73,7 +75,12 @@ class FusionState:
     regions: list[dict] = field(default_factory=load_regions)
     store: object = field(default_factory=make_store, repr=False)
     social: list[OsintEvent] = field(default_factory=list)
+    social_posts: dict[str, SocialPost] = field(default_factory=dict)
     firms: list[dict] = field(default_factory=list)
+    fusion_ai: FusionAI = field(default_factory=lambda: FusionAI(DATA), repr=False)
+    fusion_candidates: list[Candidate] = field(default_factory=list, repr=False)
+    fusion_assessments: dict[str, Assessment] = field(default_factory=dict, repr=False)
+    fusion_clusters: list[FusionCluster] = field(default_factory=list, repr=False)
     # This is deliberately separate from record counts.  An empty result can be
     # valid (for example, no new thermal pixels), while a source can also be
     # waiting, unavailable, or missing configuration.
@@ -81,13 +88,19 @@ class FusionState:
         "gdelt": {"state": "starting", "label": "GDELT OSINT"},
         "adsb": {"state": "starting", "label": "ADS-B aircraft"},
         "firms": {"state": "starting", "label": "NASA FIRMS thermal"},
+        "social": {"state": "starting", "label": "Social (all platforms)"},
         "telegram": {"state": "starting", "label": "Telegram previews"},
-        "fusion": {"state": "starting", "label": "Fusion correlations"},
+        "fusion": {"state": "starting", "label": "Fusion candidate retrieval"},
+        "openai": {"state": "starting", "label": "OpenAI adjudication"},
     })
     history: list[dict] = field(default_factory=lambda: _load_history())   # per-fuse counts, persisted across restarts
     backfill: Backfill = field(default_factory=lambda: Backfill(DATA / "gdelt", hours=float(os.getenv("FUSION_BACKFILL_H", "48"))), repr=False)
     _seen: dict = field(default_factory=lambda: {"events": {}, "social": {}, "alerts": {}, "firms": {}, "tracks": {}}, repr=False)
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    _prune_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    _ai_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    _fusion_persist_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    _last_ai_at: float = field(default=0.0, repr=False)
 
     def set_source_status(self, source: str, state: str, *, count: int | None = None, detail: str | None = None):
         """Publish source readiness without exposing secrets or raw provider errors."""
@@ -153,16 +166,45 @@ class FusionState:
                  len(all_ev), sum(e.is_conflict for e in all_ev), windows)
         self.set_source_status("gdelt", "ready", count=len(all_ev), detail=f"{windows} × 15-minute window")
 
-    def refresh_social(self, channels=None):
-        """Poll public Telegram channel previews; keep the last 6 h of geolocated posts."""
-        posts = []
-        failures = 0
-        for ch in channels or DEFAULT_CHANNELS:
+    def refresh_social(self, channels=None, platforms=None, targets=None):
+        """Poll every enabled social platform; keep the last 6 h of geolocated posts.
+
+        `channels` is the legacy Telegram-only override (list of channel names).
+        `platforms` / `targets` select a subset, e.g. platforms=["reddit"],
+        targets={"reddit": ["worldnews"]}. Failures are isolated per platform so
+        one down website never blocks the others.
+        """
+        import importlib
+        from .ingest_social import _ADAPTERS, default_targets
+
+        plats = enabled_platforms(platforms)
+        if channels:  # legacy Telegram-only call path
+            targets = {**(targets or {}), "telegram": list(channels)}
+            plats = ["telegram"] if platforms is None else plats
+        eff_targets = {p: (targets or {}).get(p) or default_targets(p) for p in plats}
+        # Fan out per platform/target with explicit failure accounting: a
+        # platform returning zero posts is healthy (nothing geolocated this
+        # tick); only exceptions count as failures.
+        posts, failures = [], 0
+        per_platform: dict[str, int] = {}
+        for plat in plats:
             try:
-                posts += fetch_latest(ch)
+                mod = importlib.import_module(_ADAPTERS[plat])
             except Exception as e:
-                log.warning("telegram %s failed: %s", ch, e)
+                log.warning("social %s unavailable: %s", plat, e)
                 failures += 1
+                continue
+            for t in eff_targets.get(plat) or []:
+                try:
+                    chunk = mod.fetch_latest(t)
+                except Exception as e:
+                    log.warning("social %s %s failed: %s", plat, t, e)
+                    failures += 1
+                    continue
+                for p in chunk:
+                    per_platform[p.platform] = per_platform.get(p.platform, 0) + 1
+                posts += chunk
+        posts.sort(key=lambda p: p.ts or "")
         cutoff = datetime.now(timezone.utc).timestamp() - 6 * 3600
         fresh = [social_to_event(p) for p in posts
                  if p.lat is not None and datetime.fromisoformat(p.ts).timestamp() >= cutoff]
@@ -170,13 +212,42 @@ class FusionState:
             have = {e.id for e in self.social}
             self.social = [e for e in self.social
                            if datetime.fromisoformat(e.ts).timestamp() >= cutoff] + [e for e in fresh if e.id not in have]
+            self.social_posts = {
+                **{post_id: post for post_id, post in getattr(self, "social_posts", {}).items()
+                   if datetime.fromisoformat(post.ts).timestamp() >= cutoff},
+                **{post.id: post for post in posts if post.lat is not None
+                   and datetime.fromisoformat(post.ts).timestamp() >= cutoff},
+            }
             all_events = self.events + self.social
             self.event_ids = [event.id for event in all_events]
             self.conflict_event_count = sum(event.is_conflict for event in all_events)
-        log.info("Telegram: %d posts polled, %d geolocated in last 6 h", len(posts), len(self.social))
-        state = "error" if failures and not posts else "partial" if failures else "ready"
-        detail = "Some channel previews were unavailable" if failures else "Public channel previews only"
-        self.set_source_status("telegram", state, count=len(self.social), detail=detail)
+        # Per-platform geolocated counts (what actually enters the correlator).
+        by_plat: dict[str, int] = {}
+        for e in self.social:
+            plat = platform_of(e) or "unknown"
+            by_plat[plat] = by_plat.get(plat, 0) + 1
+        log.info("Social: %d posts polled (%s), %d geolocated in last 6 h",
+                 len(posts), ", ".join(f"{k}={v}" for k, v in sorted(per_platform.items())) or "none",
+                 len(self.social))
+        # Aggregate status (new) + legacy "telegram" key + per-platform keys.
+        if failures and not posts:
+            state, detail = "error", "All social sources unavailable; retaining the last result"
+        elif failures:
+            state, detail = "partial", "Some social sources were unavailable"
+        else:
+            state, detail = "ready", "Keyless public posts; geolocated only"
+        self.set_source_status("social", state, count=len(self.social), detail=detail)
+        tg_n = by_plat.get("telegram", 0)
+        self.set_source_status("telegram",  # backwards-compat alias for old dashboards
+                               state if "telegram" in plats else self.source_status.get("telegram", {}).get("state", "starting"),
+                               count=tg_n if "telegram" in plats else self.source_status.get("telegram", {}).get("count"),
+                               detail="Public channel previews only" if "telegram" in plats else None)
+        for plat in plats:
+            label = PLATFORM_LABELS.get(plat, plat)
+            n = by_plat.get(plat, 0)
+            # A platform that returned nothing this tick keeps its previous count
+            # unless it errored on every target; fetch_latest_all already logged.
+            self.set_source_status(f"social:{plat}", state, count=n, detail=label)
 
     def refresh_firms(self):
         """Latest 24 h of VIIRS thermal anomalies inside every area-of-interest circle, scored for
@@ -243,16 +314,73 @@ class FusionState:
     def fuse(self, radius_km=75.0, window_min=240.0):
         with self.lock:
             ev, tr = list(self.events) + list(self.social), list(self.tracks)
+            hotspots, social_posts = list(self.firms), dict(self.social_posts)
             event_ids = [event.id for event in ev]
+            cutoff = datetime.now(timezone.utc).timestamp() - 120 * 60
+            self.track_history = [track for track in self.track_history if datetime.fromisoformat(track.ts).timestamp() >= cutoff]
+            self.track_history.extend(tr)
         batch_id = f"live:{uuid.uuid4().hex}"
-        self.store.ingest(ev, tr, batch_id)
-        alerts = self.store.correlate(event_ids, batch_id, radius_km, window_min, min_severity=0.35)
+        store = self.store
+        degraded_detail = None
+
+        def persist_and_correlate():
+            self.set_source_status("fusion", "starting", detail="Writing observations to the graph")
+            store.ingest(ev, tr, batch_id, hotspots=hotspots, social_posts=social_posts)
+            self.set_source_status("fusion", "starting", detail="Computing spatial and temporal correlations")
+            return store.correlate(event_ids, batch_id, radius_km, window_min, min_severity=0.35)
+
+        # A graph operation must not be able to freeze the only live-refresh
+        # worker indefinitely.  This has happened while Neo4j is available for
+        # the initial health probe but is still unavailable for a write.  Keep
+        # the graph path as the normal source of truth, but continue the live
+        # dashboard with its equivalent in-memory engine if that happens.
+        if getattr(store, "name", None) == "neo4j":
+            completed = threading.Event()
+            result: list[list] = []
+            failure: list[BaseException] = []
+
+            def graph_work():
+                try:
+                    result.append(persist_and_correlate())
+                except BaseException as exc:
+                    failure.append(exc)
+                finally:
+                    completed.set()
+
+            threading.Thread(target=graph_work, name="fusion-neo4j-pass", daemon=True).start()
+            timeout_s = float(os.getenv("FUSION_NEO4J_PASS_TIMEOUT_S", "20"))
+            if not completed.wait(timeout_s):
+                failure.append(TimeoutError(f"Neo4j graph pass exceeded {timeout_s:g} seconds"))
+            if failure:
+                error = failure[0]
+                log.exception("Neo4j fusion pass failed; using the in-memory engine", exc_info=error)
+                fallback = InMemoryStore()
+                fallback.ingest(ev, tr, batch_id, hotspots=hotspots, social_posts=social_posts)
+                alerts = fallback.correlate(event_ids, batch_id, radius_km, window_min, min_severity=0.35)
+                with self.lock:
+                    if self.store is store:
+                        self.store = fallback
+                degraded_detail = "Neo4j was unresponsive; correlations are running in memory"
+            else:
+                alerts = result[0]
+        else:
+            alerts = persist_and_correlate()
         with self.lock:
             self.event_ids = event_ids
             self.conflict_event_count = sum(event.is_conflict for event in ev)
             self.batch_id = batch_id
             self.updated = datetime.now(timezone.utc).isoformat()
             self.alert_count = len(alerts)
+            # The deterministic pass deliberately creates candidates only. OpenAI adjudication
+            # runs outside this one-minute ingest path and promotes supported evidence separately.
+            records = records_from_sources(ev, tr, hotspots, social_posts)
+            self.fusion_candidates = generate_candidates(records, limit=int(os.getenv("FUSION_CANDIDATE_LIMIT", "250")))
+            current_candidate_ids = {candidate.id for candidate in self.fusion_candidates}
+            self.fusion_assessments = {
+                key: assessment for key, assessment in self.fusion_assessments.items()
+                if assessment.candidate_id in current_candidate_ids
+            }
+            self.fusion_clusters = self.fusion_ai.clusters(self.fusion_assessments.values())
             now_ts = datetime.now(timezone.utc).timestamp()
             # levels (what is present now) and flows (first seen since the previous fuse) — the live
             # timeline plots flows for events/posts/alerts/anomalies, levels for aircraft
@@ -287,11 +415,104 @@ class FusionState:
         log.info("FUSE: persisted %d events / %d tracks, %d alerts (top=%s)",
                  len(ev), len(tr), len(alerts),
                  alerts[0].score if alerts else None)
-        self.set_source_status("fusion", "ready", count=len(alerts), detail="Spatial and temporal correlations")
+        self.set_source_status("fusion", "partial" if degraded_detail else "ready", count=len(alerts),
+                               detail=degraded_detail or "Spatial and temporal candidate generation")
+        self._persist_fusion_artifacts(
+            self.store, self.fusion_candidates, list(self.fusion_assessments.values()),
+            self.fusion_clusters, batch_id, "candidate",
+        )
+        self._start_ai_fusion(batch_id)
         return alerts
+
+    def _persist_fusion_artifacts(self, store, candidates, assessments, clusters,
+                                  batch_id: str, source: str) -> bool:
+        """Serialize graph artifact writes and keep provider results independent of graph health."""
+        try:
+            with self._fusion_persist_lock:
+                store.record_fusion(candidates, assessments, clusters, batch_id)
+            return True
+        except Exception as error:
+            log.warning("%s fusion persistence failed; result retained in memory: %s",
+                        source, str(error)[:300])
+            return False
+
+    def _start_ai_fusion(self, batch_id: str):
+        """Adjudicate the best current candidates without delaying source ingestion."""
+        if not self.fusion_ai.available:
+            self.set_source_status("openai", "error", count=0,
+                                   detail="Set OPENAI_API_KEY to enable evidence adjudication")
+            return
+        now = time.time()
+        cadence = float(os.getenv("FUSION_LLM_EVERY_S", "900"))
+        if now - self._last_ai_at < cadence or not self._ai_lock.acquire(blocking=False):
+            return
+        self._last_ai_at = now
+        with self.lock:
+            candidates = list(self.fusion_candidates[:int(os.getenv("FUSION_LLM_MAX_CANDIDATES", "12"))])
+            store = self.store
+        if not candidates:
+            self._ai_lock.release()
+            self.set_source_status("openai", "ready", count=0, detail="No candidates require adjudication")
+            return
+
+        def work():
+            try:
+                self.set_source_status("openai", "starting", detail=f"Adjudicating {len(candidates)} candidate pairs")
+                completed: list[Assessment] = []
+                for candidate in candidates:
+                    completed.append(self.fusion_ai.adjudicate(candidate))
+                with self.lock:
+                    if self.batch_id != batch_id:
+                        return
+                    for assessment in completed:
+                        self.fusion_assessments[assessment.id] = assessment
+                    clusters = self.fusion_ai.clusters(self.fusion_assessments.values())
+                    all_assessments = list(self.fusion_assessments.values())
+                if clusters:
+                    try:
+                        clusters[0] = self.fusion_ai.brief(clusters[0], all_assessments)
+                    except Exception as error:
+                        log.warning("cluster brief failed; retaining pair assessments: %s", error)
+                with self.lock:
+                    if self.batch_id != batch_id:
+                        return
+                    self.fusion_clusters = clusters
+                self._persist_fusion_artifacts(
+                    store, self.fusion_candidates, all_assessments, clusters,
+                    batch_id, "automatic OpenAI",
+                )
+                self.set_source_status("openai", "ready", count=len(completed),
+                                       detail="Evidence adjudication complete; plausible links need review")
+            except Exception as e:
+                log.exception("OpenAI fusion pass failed: %s", e)
+                self.set_source_status("openai", "error", detail="OpenAI adjudication failed; candidates remain unpromoted")
+            finally:
+                self._ai_lock.release()
+
+        threading.Thread(target=work, name="fusion-openai-pass", daemon=True).start()
 
     def close(self):
         self.store.close()
+
+    def prune_async(self, max_age_h: float = 24.0):
+        """Run graph retention outside the sole live-refresh worker.
+
+        Neo4j pruning can wait on a large delete transaction.  It is routine
+        housekeeping, never a prerequisite for the current fusion picture.
+        """
+        if not self._prune_lock.acquire(blocking=False):
+            return
+        store = self.store
+
+        def work():
+            try:
+                store.prune(max_age_h=max_age_h)
+            except Exception as e:
+                log.warning("store prune failed: %s", e)
+            finally:
+                self._prune_lock.release()
+
+        threading.Thread(target=work, name="fusion-store-prune", daemon=True).start()
 
     def api_events(self, conflict_only: bool = False, limit: int = 3000) -> list[dict]:
         with self.lock:
@@ -299,9 +520,37 @@ class FusionState:
         return self.store.events(event_ids, conflict_only, limit)
 
     def api_aircraft(self, military_only: bool = False) -> list[dict]:
+        """Return the latest ingest snapshot, including the early military result.
+
+        The graph store is updated after all AOI point requests finish and fusion
+        runs.  Serving it here made the map wait on those rate-limited requests
+        even though ``refresh_adsb`` had already received the military feed.
+        """
         with self.lock:
-            batch_id = self.batch_id
-        return self.store.aircraft(batch_id, military_only)
+            tracks = [track.to_dict() for track in self.tracks]
+        return [track for track in tracks if not military_only or track["military"]]
+
+    def api_tails(self, minutes: float = 30.0) -> list[dict]:
+        """Recent paths for aircraft in the current snapshot, from rolling ADS-B pulls."""
+        with self.lock:
+            current_ids = {track.id for track in self.tracks}
+            cutoff = datetime.now(timezone.utc).timestamp() - minutes * 60
+            history = [track for track in self.track_history
+                       if track.id in current_ids and datetime.fromisoformat(track.ts).timestamp() >= cutoff]
+        points: dict[str, list[AirTrack]] = {track_id: [] for track_id in current_ids}
+        for track in history:
+            points[track.id].append(track)
+        out = []
+        for track_id, records in points.items():
+            # The military and AOI feeds can both report one aircraft in a cycle.
+            # Keep one point per timestamp so paths have no zero-length segments.
+            unique = {track.ts: track for track in records}
+            ordered = [unique[ts] for ts in sorted(unique)]
+            if len(ordered) >= 2:
+                last = ordered[-1]
+                out.append({"id": track_id, "hex": last.hex, "callsign": last.callsign,
+                            "military": last.military, "coords": [[track.lat, track.lon] for track in ordered]})
+        return out
 
     def api_alerts(self, min_score: float = 0.0, limit: int = 100) -> list[dict]:
         with self.lock:
@@ -336,11 +585,76 @@ class FusionState:
                     "social": len(self.social),
                     "firms": len(self.firms),
                     "firms_novel": sum(1 for h in self.firms if h.get("novelty", 0) >= 0.9),
+                    "candidates": len(self.fusion_candidates),
+                    "assessments": len(self.fusion_assessments),
+                    "supported": sum(a.verdict == "SUPPORTED" for a in self.fusion_assessments.values()),
+                    "plausible": sum(a.verdict == "PLAUSIBLE" for a in self.fusion_assessments.values()),
+                    "clusters": len(self.fusion_clusters),
                 },
             }
 
+    def api_fusion_candidates(self, limit: int = 300) -> list[dict]:
+        with self.lock:
+            return [candidate.to_dict(False) for candidate in self.fusion_candidates[:limit]]
+
+    def api_fusion_assessments(self, include_rejected: bool = False, limit: int = 300) -> list[dict]:
+        with self.lock:
+            values = sorted(self.fusion_assessments.values(), key=lambda value: value.evidence_strength, reverse=True)
+        if not include_rejected:
+            values = [value for value in values if value.verdict in ("SUPPORTED", "PLAUSIBLE") or value.has_article_match]
+        return [value.to_dict() for value in values[:limit]]
+
+    def api_fusion_clusters(self, limit: int = 100) -> list[dict]:
+        with self.lock:
+            return [cluster.to_dict() for cluster in self.fusion_clusters[:limit]]
+
+    def evidence_record(self, kind: str, record_id: str) -> EvidenceRecord | None:
+        with self.lock:
+            records = records_from_sources(list(self.events) + list(self.social), list(self.tracks),
+                                           list(self.firms), dict(self.social_posts))
+        record = next((value for value in records if value.kind == kind and value.id == record_id), None)
+        if not record:
+            return None
+        # Only asserted source relationships enter the prompt. Proximity candidates and prior
+        # model conclusions are excluded so the adjudicator cannot cite its own output.
+        try:
+            entity = self.store.entity(record_id)
+        except Exception:
+            entity = None
+        record.graph_context = asserted_graph_context(entity, record_id)
+        return record
+
+    def adjudicate_pair(self, left_kind: str, left_id: str, right_kind: str, right_id: str, *, force: bool = False) -> dict:
+        left, right = self.evidence_record(left_kind, left_id), self.evidence_record(right_kind, right_id)
+        if not left or not right:
+            raise KeyError("one or both evidence records are not in the current picture")
+        candidate = candidate_for_pair(left, right)
+        assessment = self.fusion_ai.adjudicate(candidate, force=force)
+        with self.lock:
+            if not any(value.id == candidate.id for value in self.fusion_candidates):
+                self.fusion_candidates.append(candidate)
+            self.fusion_assessments[assessment.id] = assessment
+            self.fusion_clusters = self.fusion_ai.clusters(self.fusion_assessments.values())
+            candidates, assessments, clusters, batch_id, store = (
+                list(self.fusion_candidates), list(self.fusion_assessments.values()),
+                list(self.fusion_clusters), self.batch_id, self.store,
+            )
+        if batch_id:
+            args = (store, candidates, assessments, clusters, batch_id, "analyst OpenAI")
+            if getattr(store, "name", None) == "neo4j":
+                # The verdict is the requested operation. Graph persistence can overlap a live
+                # ingest pass, so it must not hold the HTTP response open or relabel a database
+                # deadlock as an OpenAI failure.
+                threading.Thread(
+                    target=self._persist_fusion_artifacts, args=args,
+                    name="fusion-analyst-persist", daemon=True,
+                ).start()
+            else:
+                self._persist_fusion_artifacts(*args)
+        return assessment.to_dict()
+
     def api_timeline(self, hours: float = 24.0) -> dict:
-        """15-min bins for the last `hours`: GDELT/Telegram backfilled inside the drawn circles,
+        """15-min bins for the last `hours`: GDELT/social backfilled inside the drawn circles,
         FIRMS novel anomalies, plus our own aircraft levels and correlation flows."""
         hours = hours if hours > 0 else 24 * 7
         with self.lock:
@@ -435,12 +749,21 @@ def run_loop(state: FusionState, gdelt_every=900, adsb_every=60, windows=2, prim
         time.sleep(adsb_every)
     while True:
         now = time.time()
+        # Always start the cycle with ADS-B.  GDELT downloads, FIRMS AOI calls,
+        # and timeline backfill may be slow, but should never delay the first
+        # usable air picture after a container restart.
+        try:
+            state.refresh_adsb()
+        except Exception as e:
+            log.warning("ADS-B refresh failed (keeping previous tracks): %s", e)
+            state.set_source_status("adsb", "error", detail="Aircraft feed unavailable; retaining the last result")
         if now - last_s >= social_every:
             try:
                 state.refresh_social()
                 last_s = now
             except Exception as e:
                 log.warning("social refresh failed: %s", e)
+                state.set_source_status("social", "error", detail="Social sources unavailable; retaining the last result")
                 state.set_source_status("telegram", "error", detail="Telegram previews unavailable; retaining the last result")
         if now - last_g >= gdelt_every:
             try:
@@ -454,10 +777,7 @@ def run_loop(state: FusionState, gdelt_every=900, adsb_every=60, windows=2, prim
             except Exception as e:
                 log.warning("FIRMS refresh failed: %s", e)
                 state.set_source_status("firms", "error", detail="Thermal provider unavailable; the map may show cached data")
-            try:
-                state.store.prune(max_age_h=24.0)
-            except Exception as e:
-                log.warning("store prune failed: %s", e)
+            state.prune_async(max_age_h=24.0)
             try:
                 with state.lock:
                     circles = list(state.regions)
@@ -467,11 +787,6 @@ def run_loop(state: FusionState, gdelt_every=900, adsb_every=60, windows=2, prim
                     state.backfill.extend(circles)
             except Exception as e:
                 log.warning("backfill failed: %s", e)
-        try:
-            state.refresh_adsb()
-        except Exception as e:
-            log.warning("ADS-B refresh failed (keeping previous tracks): %s", e)
-            state.set_source_status("adsb", "error", detail="Aircraft feed unavailable; retaining the last result")
         try:
             state.fuse()
             state.save()

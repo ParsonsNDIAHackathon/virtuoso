@@ -14,23 +14,45 @@ Use case **#5 Multi-INT Fusion Engine** (Applied AI category).
 | Stream | Source | Cadence | Role |
 |---|---|---|---|
 | OSINT events | [GDELT 2.0](https://www.gdeltproject.org/data.html) `export` + `GKG` | every 15 min | geocoded news events, CAMEO-coded, actors, persons, orgs, themes |
+| Social posts | Telegram public channel previews | every 5 min | post text, channel, named/explicit location, keywords |
 | Air tracks | [adsb.lol](https://api.adsb.lol/docs) `/v2/mil` + `/v2/point` | every 60 s | cooperative ADS-B, military flag, altitude, callsign |
+| Thermal observations | NASA FIRMS VIIRS | every 15 min | acquisition-time hotspots, scored against a two-day baseline |
 
 Pipeline (`fusion/`):
 
 1. **Ingest** — `ingest_gdelt.py` pulls the latest 15-minute window(s) and joins GKG entities to
    each event by source URL. `ingest_adsb.py` pulls all military-flagged aircraft worldwide plus
    250 nm circles around regions of interest.
-2. **Entity resolution** — `correlate.resolve_actor()` normalizes actor/person/org strings
-   (aliases, casing, punctuation) so the same actor links across articles and languages.
-   Locations resolve on a 0.1° grid.
-3. **Spatial/temporal correlation** — every event with severity ≥ 0.35 is matched against aircraft
-   within 75 km and 4 h. Score = proximity × event severity (CAMEO root, Goldstein, tone,
-   mentions) × aircraft weight (military, low altitude, emergency squawk).
-4. **Knowledge graph** — Neo4j stores persistent `event / actor / location / aircraft /
-   observation / source` nodes and `INVOLVES / LOCATED_AT / REPORTED_BY / NEAR / CO_LOCATED` edges.
-5. **Dashboard** — FastAPI (`app/server.py`) serving a Leaflet map, a D3 force graph, and a ranked
-   alert table with click-through to the source article.
+2. **Candidate retrieval** — `fusion_ai.generate_candidates()` uses a different permissive time and
+   distance window for each source pair. It suppresses routine FIRMS pixels and ordinary high-altitude
+   civil traffic, adds shared source entities/themes, uses a spatial index, and keeps a bounded top set.
+   These are explicitly cues, not findings. The older OSINT/ADS-B proximity score remains visible as a
+   dashed heuristic link for comparison and no longer receives a fake same-cell “corroboration” boost.
+3. **OpenAI evidence adjudication** — one structured Responses API prompt classifies each pair as
+   `SUPPORTED`, `PLAUSIBLE` (needs review), `INSUFFICIENT_EVIDENCE`, or `CONTRADICTED`. The prompt may
+   use only the two source records and asserted one-hop graph facts. When a GDELT record reaches
+   adjudication, the engine retrieves and caches its source article text and includes up to
+   `FUSION_SOURCE_DOC_MAX_CHARS`; outside knowledge and unstated
+   aircraft/operator attribution are prohibited. Verdict, relation, strength, rationale, limitation,
+   supporting facts, and explicit entity resolutions are cached in local SQLite and written to Neo4j.
+4. **Multi-source clustering** — positive assessment edges form connected evidence clusters ranked by
+   distinct modalities and evidence strength. OpenAI produces a cached analyst BLUF for the top cluster.
+5. **Knowledge graph and dashboard** — Neo4j stores source records, retrieval candidates, LLM
+   assessments, resolved entities, and clusters. The map supports selecting any two individual GDELT,
+   Telegram, ADS-B, or FIRMS markers and invoking the same adjudicator on demand. Rejected assessments
+   are persisted but hidden unless **Show rejected** is enabled.
+
+Two GDELT records can come from the same article while describing different incidents. Comparisons
+show **Same article · Confirmed** for matching URLs (tracking parameters removed, successful redirects
+resolved), separately from the model's **same / related / unrelated / uncertain** incident assessment.
+Shared article matches remain visible even when the incident link has insufficient evidence. They
+count as one reporting source; repeated event records do not increase the cluster's corroboration
+weight. Different URLs alone do not establish independent reporting.
+
+The comparison result shows article-text availability, character counts, and truncation. Use
+**Reanalyze with fresh source text** to fetch the source again and replace the cached verdict; this
+makes another model request. Failed article retrievals expire after five minutes. Prompt-versioned
+caches keep older assessments from being reused by the updated adjudicator.
 
 ## Run it
 
@@ -53,9 +75,9 @@ entry locally. For frontend development, run `uvicorn app.server:app --port 8000
 directory, then `npm ci && npm run dev` in `frontend/`; Vite proxies the same API routes to the local
 FastAPI process.
 
-**Fresh-box replay:** the first `REPLAY` request builds the day's GDELT cache into `./data/gdelt`
-(about 10-15 minutes) and looks for `./data/replay/2026-08-18_adsb.json`. Produce that file once with
-the archive steps under "Sources" (it is not in git) or the replay shows zero aircraft.
+**Fresh-box replay:** replay requests never download or build data. Run
+`scripts/build_replay_data.py` as described below before the demo. Missing layer files are reported in
+the replay configuration and simply render as empty rather than blocking the app.
 
 **Graph store selection** (`fusion/store.py`): at startup the engine probes Neo4j; if it answers, facts,
 observations and correlations are persisted there (`fusion/neo4j_store.py`, Cypher correlation,
@@ -64,13 +86,18 @@ observations and correlations are persisted there (`fusion/neo4j_store.py`, Cyph
 Force one with `FUSION_STORE=neo4j|memory|auto`. `tests/parity_stores.py` checks both produce the
 same alerts on one snapshot (last run: 568/568 identical).
 
-**Keys** (`.env`, git-ignored): `NEO4J_PASSWORD` (any local password), `FIRMS_MAP_KEY`
+**Keys** (`.env`, git-ignored): `NEO4J_PASSWORD` (any local password), `OPENAI_API_KEY`
+(leave blank to disable LLM calls while retaining candidate generation), `FIRMS_MAP_KEY`
 (free, NASA FIRMS), `AISSTREAM_API_KEY` (free, aisstream.io), `CDSE_S3_ACCESS_KEY` /
 `CDSE_S3_SECRET_KEY` (Copernicus Data Space S3 keys, for Sentinel-1). GDELT, adsb.lol, Telegram
 previews and NASA GIBS need no key.
 
 API: `/api/status`, `/api/alerts`, `/api/events?conflict_only=true`, `/api/aircraft`, `/api/firms`,
 `/api/graph`, `/api/entity/{id}`, `/api/regions` (GET/POST/PATCH/DELETE), `POST /api/refresh`,
+`/api/fusion/status|candidates|assessments|clusters`, `POST /api/fusion/adjudicate`,
+`/api/graph`, `/api/entity/{id}`, `/api/source/preview?url=…`,
+`/api/social?platform=reddit&limit=500`, `/api/social/platforms`,
+`/api/regions` (GET/POST/PATCH/DELETE), `POST /api/refresh`,
 `/api/replay/scenarios`, `/api/replay/{id}/config|timeline|at?t=`.
 
 ## Sources
@@ -79,7 +106,7 @@ API: `/api/status`, `/api/alerts`, `/api/events?conflict_only=true`, `/api/aircr
 |---|---|---|---|
 | OSINT events + GKG entities | GDELT 2.0, every 15 min | all 96 windows of the day, Hormuz bbox/keywords | `ingest_gdelt.py`, `replay_gdelt.py` |
 | Air tracks | adsb.lol military feed + one query per drawn circle, every 60 s | adsb.lol `globe_history` daily archive (ODbL), traces filtered to the Gulf | `ingest_adsb.py`, `replay_adsb.py`, `scripts/fetch_archive.py` |
-| Social posts | Telegram public channel previews, every 5 min | same channels paged back to the day | `ingest_telegram.py` |
+| Social posts | Telegram + Reddit + Bluesky + Mastodon (keyless public endpoints), every 5 min. Configure with `SOCIAL_PLATFORMS` / `SOCIAL_REDDIT_SUBS` / `SOCIAL_BLUESKY_QUERIES` / `SOCIAL_MASTODON_INSTANCES` | same sources paged back to the day (`python -m fusion.ingest_social --since 2026-08-18`) | `ingest_social.py` registry + `ingest_telegram.py`, `ingest_reddit.py`, `ingest_bluesky.py`, `ingest_mastodon.py` |
 | Thermal anomalies | NASA FIRMS VIIRS inside each circle, every 15 min, novelty vs 7 days earlier | FIRMS for the day, novelty vs Aug 11 | `ingest_firms.py` |
 | Radar ship detections | n/a (revisit is days) | Sentinel-1 GRD COG scenes from Copernicus S3, nearest scene within 3 days, age labeled | `sar_ships.py` |
 | Vessels (AIS) | aisstream.io (no coverage in the Gulf; works in the Med) | none free | `ingest_ais.py` |
@@ -87,13 +114,28 @@ API: `/api/status`, `/api/alerts`, `/api/events?conflict_only=true`, `/api/aircr
 
 ## Replay mode — Strait of Hormuz, 18 Aug 2026
 
-Both replay layers are **real data for that day**, no relocation or synthetic positions:
+Build all requested replay layers outside the API process with the standalone, restartable builder:
+
+```bash
+# Builds missing keyless layers; FIRMS needs FIRMS_MAP_KEY. ADS-B records an actionable error
+# unless an existing archive is supplied or the large download is explicitly requested.
+./build-replay-data.sh
+./build-replay-data.sh 2026-08-17 2026-08-18 --adsb-archive /path/to/archives
+# Or opt into downloading the multi-GB daily ADS-B archives:
+./build-replay-data.sh 2026-08-17 2026-08-18 --download-adsb /tmp/adsb-archives
+```
+
+It writes one JSON file per day/source plus a manifest with counts, hashes, and layer errors under
+`data/replay/`. Existing files are not rebuilt unless `--force` is supplied. The replay scrubber never
+calls OpenAI; it reads cached verdicts. Selecting two markers can still run an explicit on-demand call.
+
+All replay layers are **real data for that day**, with no relocation or synthetic positions:
 
 | Layer | Source | How to build |
 |---|---|---|
 | OSINT | GDELT 2.0, all 96 windows of 2026-08-18, filtered to the Hormuz bbox (23.5–28.5 N, 52–59 E) or Hormuz/tanker keywords | `python -m fusion.replay_gdelt 2026-08-18` |
 | Air tracks | adsb.lol `globe_history_2026` release `v2026.08.18-planes-readsb-prod-0` (two split tar parts, ~4 GB, ODbL) | `python scripts/fetch_archive.py 2026-08-18 <folder>` then `python -m fusion.replay_adsb extract <folder>` |
-| Social | Telegram public channels | `python -m fusion.ingest_telegram --since 2026-08-18 --until 2026-08-19` |
+| Social | Telegram + Reddit + Bluesky + Mastodon public posts | `python -m fusion.ingest_social --since 2026-08-18 --until 2026-08-19` (or per-platform `ingest_telegram` / `ingest_reddit` / `ingest_bluesky` / `ingest_mastodon`) |
 | Thermal | NASA FIRMS | `python -m fusion.ingest_firms 2026-08-18 --baseline 2026-08-11` |
 | Radar ships | Sentinel-1 GRD COG (Copernicus S3) | download VV tiff + annotation XML for a scene, then `python -m fusion.sar_ships <scene folder>` |
 
@@ -127,6 +169,6 @@ feed such as aisstream.io labeled as current.
 - Neo4j is the persistent fusion graph. Each ADS-B pull creates timestamped `AirObservation`
   nodes, then materializes `NEAR` and `CO_LOCATED` relationships for that batch. Live and replay
   API projections query Neo4j directly.
-- LLM summarization of each alert's corroborating articles (Claude API) into an analyst BLUF.
 - Track history: persist ADS-B snapshots to detect loitering / orbit patterns, not just presence.
-- Social stream (Telegram/X) ingest for true "social media spike" detection.
+- Extend entity extraction beyond the current source fields and LLM-resolved explicit mentions.
+- Social spike detection across all four platforms (per-platform bursts in `/api/social/platforms` + timeline).

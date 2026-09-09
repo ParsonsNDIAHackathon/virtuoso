@@ -7,17 +7,17 @@ type Series = { key: SeriesKey; label: string; color: string };
 // Replay: arrivals per 15-min bin across the scenario day.
 const REPLAY_SERIES: Series[] = [
   { key: "conflict", label: "conflict OSINT events", color: "#eab85a" },
-  { key: "social", label: "Telegram posts", color: "#d99add" },
+  { key: "social", label: "Social posts", color: "#d99add" },
   { key: "tracks", label: "aircraft", color: "#5cc7da" },
   { key: "military", label: "military aircraft", color: "#df5e55" },
   { key: "firms_new", label: "new thermal anomalies", color: "#ef4444" },
   { key: "alerts", label: "correlations", color: "#a78bfa" },
 ];
-// Live: 15-min bins inside the drawn circles; GDELT + Telegram backfilled from the sources,
+// Live: 15-min bins inside the drawn circles; GDELT + social backfilled from the sources,
 // aircraft as levels and correlations as flows from the server's own history.
 const LIVE_SERIES: Series[] = [
   { key: "conflict", label: "conflict OSINT events (in circles)", color: "#eab85a" },
-  { key: "social", label: "Telegram posts (in circles)", color: "#d99add" },
+  { key: "social", label: "Social posts (in circles)", color: "#d99add" },
   { key: "tracks", label: "aircraft in coverage", color: "#5cc7da" },
   { key: "military", label: "military aircraft", color: "#df5e55" },
   { key: "firms_new", label: "new thermal anomalies", color: "#ef4444" },

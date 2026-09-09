@@ -3,12 +3,19 @@ import { Button } from "./ui/button";
 
 const sources = [
   ["OSINT event", "GDELT Project", "Worldwide news events, actors, tone, and geocoded locations.", "Every 15 minutes"],
+  ["Social post", "Telegram · Reddit · Bluesky · Mastodon", "Keyless public posts that name a known location. Filter by platform in /api/social?platform=.", "Every 5 minutes"],
   ["Telegram post", "Telegram public channels", "Public-preview posts that name a known location.", "Every 5 minutes"],
+  ["Reddit post", "Reddit public JSON", "Public r/submission titles + selftext that name a known location.", "Every 5 minutes"],
+  ["Bluesky post", "Bluesky public API", "Public search results that name a known location.", "Every 5 minutes"],
+  ["Mastodon post", "Mastodon public timeline", "Public federated timeline posts that name a known location.", "Every 5 minutes"],
   ["Aircraft", "adsb.lol", "Cooperative ADS-B transponder positions; coverage varies by receiver density.", "Every 60 seconds"],
   ["Thermal anomaly", "NASA FIRMS / VIIRS", "Satellite heat detections. Bright/new signals are absent from the two-day baseline.", "Every 15 minutes"],
-  ["Radar ship detection", "ESA Sentinel-1 / Copernicus", "SAR-derived vessel detections; replay only and labelled with image age.", "Replay only"],
   ["Satellite imagery", "NASA GIBS", "VIIRS true-colour basemap. It is context only, not a detection source.", "Daily"],
-  ["Correlation", "Fusion engine", "Aircraft and event proximity score: an analyst cue, not a finding.", "Each fusion cycle"],
+  ["Radar ship detection", "ESA Sentinel-1 / Copernicus", "SAR-derived vessel detections; replay only and labelled with image age. Layer off by default.", "Replay only"],
+  ["RF sample", "Synthetic demo", "One sample near the Strait of Hormuz with a simulated 60-second chirp spectrogram; not a live measurement.", "Static sample"],
+  ["Candidate retrieval", "Fusion engine", "Pair-specific space/time and source-entity retrieval. A candidate is an analyst cue, not a finding.", "Each fusion cycle"],
+  ["Article identity", "Fusion engine", "Matching article URLs identify shared reporting. Multiple GDELT events from one article count as one reporting source.", "On comparison"],
+  ["Evidence assessment", "OpenAI", "Separate incident/evidence verdict using source fields, graph facts, and GDELT article text. Plausible links require review; purple dashed links can indicate shared articles with uncertain incident links.", "Cached + on demand"],
 ] as const;
 
 export function SourcesDialog({ open, onClose }: { open: boolean; onClose: () => void }) {

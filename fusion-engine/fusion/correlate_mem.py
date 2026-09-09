@@ -129,9 +129,22 @@ def graph_to_json(G: nx.MultiDiGraph, max_nodes: int = 1500) -> dict:
     keep = set()
     for u, v, _ in near_edges:
         keep.add(u); keep.add(v)
+    # AI findings are first-class evidence. Rejected assessments remain in the store but are
+    # intentionally hidden from the default projection.
+    ai_nodes = [n for n, data in G.nodes(data=True)
+                if data.get("kind") in {"assessment", "cluster"}
+                and (data.get("kind") == "cluster" or data.get("verdict") in {"SUPPORTED", "PLAUSIBLE"})]
+    keep.update(ai_nodes[:80])
+    for node_id in ai_nodes[:80]:
+        keep.update(G.successors(node_id))
+    visible_assessments = {node_id for node_id in ai_nodes[:80]
+                           if G.nodes[node_id].get("kind") == "assessment"}
+    for source, target, data in G.edges(data=True):
+        if data.get("kind") == "RESOLVES_TO" and data.get("assessment_id") in visible_assessments:
+            keep.update((source, target))
     # add locations/actors/sources hanging off kept events
     for n in list(keep):
-        if G.nodes[n].get("kind") == "event":
+        if G.nodes[n].get("kind") in {"event", "telegram", "reddit", "bluesky", "mastodon"}:
             keep.update(G.successors(n))
     # top actors overall
     actors = sorted((n for n, d in G.nodes(data=True) if d.get("kind") == "actor"),
@@ -145,4 +158,6 @@ def graph_to_json(G: nx.MultiDiGraph, max_nodes: int = 1500) -> dict:
     links = [{"source": u, "target": v, **d} for u, v, d in G.edges(data=True) if u in ks and v in ks]
     return {"nodes": nodes, "links": links,
             "stats": {"nodes_total": G.number_of_nodes(), "edges_total": G.number_of_edges(),
-                      "near_edges": len(near_edges)}}
+                      "near_edges": len(near_edges),
+                      "assessments": sum(data.get("kind") == "assessment" for _, data in G.nodes(data=True)),
+                      "clusters": sum(data.get("kind") == "cluster" for _, data in G.nodes(data=True))}}
