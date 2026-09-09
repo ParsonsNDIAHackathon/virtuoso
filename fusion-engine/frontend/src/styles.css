@@ -24,3 +24,9 @@ body::before { content: ""; position: fixed; inset: 0; pointer-events: none; opa
 }
 .panel-grip > span { width: 36px; height: 3px; border-radius: 2px; background: rgba(255,255,255,.28); }
 .panel-grip:hover > span { background: rgba(255,255,255,.6); }
+
+/* Grab the boundary between the map and the right column, or between the map and the timeline. */
+.splitter { position: absolute; z-index: 40; background: transparent; }
+.splitter:hover, .splitter:active { background: rgba(255,255,255,.18); }
+.splitter-x { top: 0; bottom: 0; left: -7px; width: 8px; cursor: col-resize; }
+.splitter-y { left: 0; right: 0; top: -7px; height: 8px; cursor: row-resize; }
