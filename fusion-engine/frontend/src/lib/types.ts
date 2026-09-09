@@ -50,7 +50,7 @@ export type Assessment = { id: string; candidate_id: string; left_id: string; le
 export type FusionCluster = { id: string; record_ids: string[]; assessment_ids: string[]; modalities: string[]; score: number; needs_review: boolean; brief?: string | null; caveats: string[] };
 export type AIStatus = { provider: "openai"; model: string; configured: boolean; prompt_version: string };
 export type ReplaySnapshot = { t: number; events: Event[]; tracks: Track[]; alerts: Alert[]; graph: Graph; tails?: Tail[]; firms?: Firms[]; sar?: Sar[]; sar_scene?: { n: number; label: string; ts: string }; sar_core?: Sar[]; sar_core_scene?: { n: number; label: string; ts: string }; candidates?: FusionCandidate[]; assessments?: Assessment[]; clusters?: FusionCluster[]; counts: Status["counts"]; t_iso: string;
-  navint?: NavintCell[]; navint_min_known?: number; departures?: Departure[]; departed_cells?: number[][]; incidents?: Incident[]; baseline?: { z_threshold: number; persistent_bins: number; reference: string; days: number } };
+  navint?: NavintCell[]; navint_min_known?: number; assessed_through?: string | null; departures?: Departure[]; departed_cells?: number[][]; incidents?: Incident[]; baseline?: { z_threshold: number; persistent_bins: number; reference: string; days: number } };
 export type NavintCell = { t: number; cell: [number, number]; cell_deg: number; known: number; degraded: number; frac: number | null; coverage: "adequate" | "insufficient" };
 export type Departure = { stream: string; cell: [number, number]; t: number; value: number; median: number; scale: number; z: number | null; state: "new_change" | "persistent" | "recovering" | "normal" | "insufficient"; reference_n: number; coverage: number | null; expected_cooccurrence: boolean };
 export type IncidentPrediction = { prediction: string; status: "supported" | "contradicted" | "untested"; evidence: string };
@@ -78,4 +78,4 @@ export type Timeline = {
   bins: TimelineBin[]; step_min: number; hours?: number; t_min?: number; sar_scenes?: Array<{ t: number; ts: string; n: number }>;
   backfill?: { status: string; hours: number; windows: number }; since?: number | null;
 };
-export type LiveIncidents = { status: string; built_at: string | null; t?: number; incidents: Incident[]; departures: Departure[]; departed_cells: number[][]; baseline?: { z_threshold: number; reference: string; days: number; note?: string } };
+export type LiveIncidents = { status: string; built_at: string | null; t?: number; assessed_through?: string | null; aircraft_history?: { from: string; to: string } | null; incidents: Incident[]; departures: Departure[]; departed_cells: number[][]; baseline?: { z_threshold: number; reference: string; days: number; note?: string } };

@@ -92,7 +92,9 @@ function IncidentCard({ inc, selected, onSelect, onFocus }: { inc: Incident; sel
 }
 
 /** Replay-mode incident queue: persistent objects formed from cells that departed their hour-of-day reference. */
-export function Incidents({ incidents, baseline, status, onFocus }: { incidents: Incident[]; baseline?: { z_threshold: number; reference: string; days: number; note?: string }; status?: string; onFocus: (cell: [number, number]) => void }) {
+export type IncidentsMeta = { status?: string; built_at?: string | null; assessed_through?: string | null; aircraft_history?: { from: string; to: string } | null; mode: "live" | "replay" };
+const hhmm = (iso?: string | null) => iso ? `${iso.slice(11, 16)}Z` : null;
+export function Incidents({ incidents, baseline, status, meta, onFocus }: { incidents: Incident[]; baseline?: { z_threshold: number; reference: string; days: number; note?: string }; status?: string; meta?: IncidentsMeta; onFocus: (cell: [number, number]) => void }) {
   const [selected, setSelected] = useState<string | null>(null);
   const ordered = [...incidents].sort((a, b) => {
     const rank = (x: Incident) => (x.state === "recovering" ? 2 : x.state === "persistent" ? 1 : 0);
@@ -105,6 +107,12 @@ export function Incidents({ incidents, baseline, status, onFocus }: { incidents:
       <h2 className="font-mono text-[10px] font-semibold uppercase tracking-[.14em] text-ink">{incidents.length} at this instant</h2>
       {baseline && <span className="ml-auto font-mono text-[9px] text-muted" title={baseline.reference}>z ≥ {baseline.z_threshold} · {baseline.days}-day reference</span>}
     </div>
+    {meta && <div className={`mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 border px-2 py-1 font-mono text-[9px] ${meta.status && meta.status !== "done" ? "border-[#eab85a]/50 text-[#eab85a]" : "border-line text-muted"}`}>
+      {meta.status && meta.status !== "done" ? <span className="animate-pulse">● {meta.status.startsWith("failed") ? meta.status : `building baseline · ${meta.status}`}</span> : <span className="text-[#94c973]">● baseline ready</span>}
+      {meta.assessed_through && <span>assessed through {hhmm(meta.assessed_through)}</span>}
+      {meta.built_at && <span>built {hhmm(meta.built_at)}{meta.mode === "live" ? ` · next refresh ${hhmm(new Date(new Date(meta.built_at).getTime() + 15 * 60_000).toISOString())}` : ""}</span>}
+      {meta.mode === "live" && <span title="Military and navigation-integrity streams have a reference only inside this span; earlier bins read insufficient">aircraft history {meta.aircraft_history ? `${hhmm(meta.aircraft_history.from)} → ${hhmm(meta.aircraft_history.to)}` : "none yet"}</span>}
+    </div>}
     {incidents.length === 0 ? <p className="font-mono text-[10px] text-muted">{status && status !== "done" ? `Building the 48-hour baseline: ${status}` : "No stream is departed from its hour-of-day reference in any cell."}</p>
       : <div className="space-y-1.5">{ordered.map((inc) => <IncidentCard key={inc.id} inc={inc} selected={selected === inc.id} onSelect={() => setSelected(selected === inc.id ? null : inc.id)} onFocus={onFocus} />)}</div>}
     <p className="mt-2 font-mono text-[9px] leading-snug text-muted">Formed from evidence available at the displayed instant only. Explanations are tested, not scored: each prediction is supported, contradicted, or untested. Reference is thin ({baseline?.days ?? 2} days) and every figure carries the count it rests on.</p>
