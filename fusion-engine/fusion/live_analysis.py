@@ -9,7 +9,9 @@ History available to a running engine:
                     have adequate reference only for recent bins and report "insufficient"
                     elsewhere. That is stated on every score rather than hidden.
 
-The build runs in a background thread on a 15-minute cadence and never blocks a fuse.
+The build runs in a background thread on a 15-minute cadence and never blocks a fuse. It is
+limited to the drawn areas of interest (the same rule the timeline backfill uses), so the cell count
+stays in the tens rather than the thousands GDELT geocodes worldwide.
 """
 from __future__ import annotations
 
@@ -18,7 +20,7 @@ import threading
 import time
 from datetime import datetime, timezone
 
-from .backfill import _stamps
+from .backfill import _in_circles, _stamps
 from .baseline import Baseline
 from .incidents import IncidentTracker
 from .ingest_gdelt import fetch_window
@@ -56,13 +58,13 @@ class LiveAnalysis:
     def due(self) -> bool:
         return self.built_at is None or time.time() - self.built_at >= self.cadence_s
 
-    def start(self, events, social, firms, track_history) -> bool:
+    def start(self, events, social, firms, track_history, circles=None) -> bool:
         """Kick off a build if one is due and none is running. Returns True if started."""
         if self._thread and self._thread.is_alive():
             return False
         if not self.due():
             return False
-        snapshot = (list(events), list(social), list(firms), list(track_history))
+        snapshot = (list(events), list(social), list(firms), list(track_history), list(circles or []))
         self._thread = threading.Thread(target=self._build, args=snapshot, name="live-analysis", daemon=True)
         self._thread.start()
         return True
@@ -90,19 +92,20 @@ class LiveAnalysis:
             log.info("live analysis: %d of %d GDELT windows unavailable", missing, len(stamps))
         return out
 
-    def _build(self, events, social, firms, track_history):
+    def _build(self, events, social, firms, track_history, circles):
         t0 = time.time()
         try:
+            inside = (lambda lat, lon: _in_circles(lat, lon, circles))
             now = datetime.now(timezone.utc).timestamp()
             t_max = int(now // 3600 * 3600) + 3600 - 1          # end of the current hour
             t_min = t_max + 1 - int(HOURS * 3600)
             history = self._history_events()
             seen = {e.id for e in history}
-            merged = history + [e for e in list(events) + list(social) if e.id not in seen]
+            merged = [e for e in history + [e for e in list(events) + list(social) if e.id not in seen] if inside(e.lat, e.lon)]
             b = Baseline(t_min, t_max)
             b.add_events(merged)
-            b.add_tracks(_tracks_to_archive(track_history))
-            b.add_firms(firms)
+            b.add_tracks(_tracks_to_archive([tr for tr in track_history if inside(tr.lat, tr.lon)]))
+            b.add_firms([h for h in firms if inside(h["lat"], h["lon"])])
             self.progress = "forming incidents"
             tracker = IncidentTracker(b, merged)
             with self.lock:

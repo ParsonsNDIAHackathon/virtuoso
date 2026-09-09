@@ -427,7 +427,7 @@ class FusionState:
         # baseline + incidents over the last 48 h, rebuilt in the background every 15 min
         try:
             with self.lock:
-                args = (list(self.events), list(self.social), list(self.firms), list(self.track_history))
+                args = (list(self.events), list(self.social), list(self.firms), list(self.track_history), list(self.regions))
             self.live_analysis.start(*args)
         except Exception as e:
             log.warning("live analysis not started: %s", e)

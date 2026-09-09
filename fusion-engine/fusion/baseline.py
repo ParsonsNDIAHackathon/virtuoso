@@ -87,6 +87,7 @@ class Baseline:
         return i if 0 <= i < self.n else None
 
     def add_events(self, events) -> None:
+        self.__dict__.pop("_series_cache", None)
         for e in events:
             i = self._bin(_ts(e.ts))
             if i is None:
@@ -101,6 +102,7 @@ class Baseline:
                     self._sets["conflict"][c][i].add(key)
 
     def add_tracks(self, tracks: dict[str, dict]) -> None:
+        self.__dict__.pop("_series_cache", None)
         for hexid, a in tracks.items():
             mil = bool(a.get("military"))
             for p in a["points"]:
@@ -119,6 +121,7 @@ class Baseline:
                             self._nav_deg[c][i].add(hexid)
 
     def add_firms(self, hotspots: list[dict]) -> None:
+        self.__dict__.pop("_series_cache", None)
         for h in hotspots:
             if h.get("novelty", 0) < 0.9:
                 continue
@@ -145,7 +148,11 @@ class Baseline:
         return (float(len(sets[i])) if sets else 0.0), None
 
     def series(self, stream: str, cell: tuple[int, int]) -> list[float | None]:
-        return [self.value(stream, cell, i)[0] for i in range(self.n)]
+        cache = self.__dict__.setdefault("_series_cache", {})
+        key = (stream, cell)
+        if key not in cache:
+            cache[key] = [self.value(stream, cell, i)[0] for i in range(self.n)]
+        return cache[key]
 
     def total_series(self, stream: str) -> list[float]:
         """All cells combined, per bin (for the scrubber strip)."""
