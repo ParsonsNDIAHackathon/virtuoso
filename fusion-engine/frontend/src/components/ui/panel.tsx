@@ -7,18 +7,18 @@ import { cn } from "../../lib/utils";
 const Group = createContext(false);
 export function PanelGroup({ children }: { children: React.ReactNode }) { return <Group.Provider value={true}>{children}</Group.Provider>; }
 
-type PanelProps = HTMLAttributes<HTMLElement> & { panelId?: string };
+type PanelProps = HTMLAttributes<HTMLElement> & { panelId?: string; openOn?: string | number };
 
-export function Panel({ className, children, panelId, ...props }: PanelProps) {
+export function Panel({ className, children, panelId, openOn, ...props }: PanelProps) {
   const structured = useContext(Group);
   if (!structured) return <section className={cn("panel border border-line bg-panel/95 shadow-panel", className)} {...props}>{children}</section>;
-  return <StructuredPanel className={className} panelId={panelId} {...props}>{children}</StructuredPanel>;
+  return <StructuredPanel className={className} panelId={panelId} openOn={openOn} {...props}>{children}</StructuredPanel>;
 }
 
 const MIN_H = 60;
 const store = { get: (k: string) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k: string, v: string | null) => { try { v === null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch { /* per-browser convenience only */ } } };
 
-function StructuredPanel({ className, children, panelId, ...props }: PanelProps) {
+function StructuredPanel({ className, children, panelId, openOn, ...props }: PanelProps) {
   const ref = useRef<HTMLElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const [title, setTitle] = useState("");
@@ -30,9 +30,14 @@ function StructuredPanel({ className, children, panelId, ...props }: PanelProps)
   const key = panelId ? `panel.${panelId}` : title ? `panel.${title}` : "";
   useEffect(() => {
     if (!key) return;
+    if (openOn !== undefined) {
+      setCollapsed(false);
+      store.set(`${key}.collapsed`, null);
+      return;
+    }
     setCollapsed(store.get(`${key}.collapsed`) === "1");
     const h = Number(store.get(`${key}.height`)); setHeight(h >= MIN_H ? h : null);
-  }, [key]);
+  }, [key, openOn]);
 
   const toggle = () => { setCollapsed((v) => { store.set(`${key}.collapsed`, v ? null : "1"); return !v; }); };
   const apply = (h: number | null) => { setHeight(h); store.set(`${key}.height`, h === null ? null : String(Math.round(h))); };

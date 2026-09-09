@@ -1,8 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, Crosshair, ExternalLink, Info, Link2, MapPin, Newspaper, Pause, Plane, Play, Radio, RefreshCw, ScanSearch, Trash2, Users, X } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Crosshair, ExternalLink, Info, Link2, MapPin, Newspaper, Pause, Plane, Play, Radio, RefreshCw, ScanSearch, Trash2, Users, X } from "lucide-react";
 import { api } from "./lib/api";
-import type { AIStatus, Alert, Assessment, Entity, FusionCandidate, FusionCluster, RecordRef, Region, ReplaySnapshot, Status, Viewport } from "./lib/types";
+import type { AIStatus, Alert, Assessment, Entity, EntityNode, FusionCandidate, FusionCluster, RecordRef, Region, ReplaySnapshot, Status, Viewport } from "./lib/types";
 import { distanceKm, formatTime, formatWindow } from "./lib/utils";
 import { ActivityTimeline } from "./components/ActivityTimeline";
 import { OperationalMap, type LayerState, type MapDetail } from "./components/OperationalMap";
@@ -20,7 +20,7 @@ import { Panel, PanelGroup } from "./components/ui/panel";
 const EMPTY_STATUS: Status = { counts: { events: 0, conflict_events: 0, tracks: 0, military_tracks: 0, alerts: 0 } };
 const EMPTY_REPLAY: ReplaySnapshot = { t: 0, events: [], tracks: [], alerts: [], graph: { nodes: [], links: [] }, counts: EMPTY_STATUS.counts, t_iso: "" };
 const WORLD: Viewport = { west: -180, south: -85, east: 180, north: 85, zoom: 2 };
-type Detail = MapDetail & { replayTime?: number };
+type Detail = MapDetail & { replayTime?: number; graphParent?: Detail };
 type AdjudicationRequest = { left: RecordRef; right: RecordRef; mode: string; time: number | null; force?: boolean };
 type SourceHealth = NonNullable<Status["sources"]>[string];
 
@@ -74,16 +74,56 @@ function CorrelationEvidence({ connections }: { connections: NonNullable<Detail[
   return <div className="mt-4 border-t border-line pt-3"><div className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[.14em] text-command"><Link2 size={12} /> Correlation evidence</div><p className="mt-1 text-[10px] text-muted">Every item directly linked by this proposed correlation.</p><div className="mt-2 space-y-1.5">{connections.map((connection, index) => <div key={`${connection.kind}-${connection.label}-${index}`} className={`flex gap-2 border p-2 ${connection.selected ? "border-command/60 bg-command/5" : "border-line bg-black/10"}`}><span className={`grid h-6 w-6 shrink-0 place-items-center rounded-full ${connection.kind === "event" ? "bg-[#eab85a] text-[#694713]" : "bg-[#5cc7da] text-[#102b33]"}`}>{connection.kind === "event" ? <Newspaper size={13} /> : <Plane size={13} />}</span><div className="min-w-0"><p className="truncate text-[11px] font-semibold text-ink">{connection.label}</p><p className="mt-0.5 text-[10px] leading-snug text-muted">{connection.detail}</p></div></div>)}</div></div>;
 }
 
-function GraphEvidence({ entity, loading }: { entity?: Entity; loading: boolean }) {
+function nodeField(node: EntityNode, key: string): unknown {
+  return (node as unknown as Record<string, unknown>)[key];
+}
+
+function displayNodeValue(value: unknown) {
+  if (Array.isArray(value)) return value.join(", ");
+  if (typeof value === "number") return Number.isInteger(value) ? String(value) : value.toFixed(2);
+  return String(value);
+}
+
+function entityNodeDetail(node: EntityNode): Detail {
+  const lines: string[] = [`Type: ${node.kind}`, `Graph ID: ${node.id}`];
+  const add = (label: string, key: string) => {
+    const value = nodeField(node, key);
+    if (value !== undefined && value !== null && value !== "") lines.push(`${label}: ${displayNodeValue(value)}`);
+  };
+  const lat = Number(nodeField(node, "lat")), lon = Number(nodeField(node, "lon"));
+  const point = Number.isFinite(lat) && Number.isFinite(lon) ? [lat, lon] as [number, number] : undefined;
+  if (["event", "telegram", "reddit", "bluesky", "mastodon"].includes(node.kind)) {
+    add("Root", "root"); add("Source", "source_domain"); add("Channel", "channel"); add("Observed", "ts");
+    add("Place", "place"); add("Goldstein", "goldstein"); add("Tone", "tone"); add("Mentions", "mentions"); add("Conflict-coded", "conflict");
+    const text = nodeField(node, "text");
+    if (typeof text === "string" && text.trim()) lines.push(`Text: ${text.replace(/\s+/g, " ").trim().slice(0, 280)}${text.length > 280 ? "…" : ""}`);
+  } else if (node.kind === "aircraft") {
+    add("Callsign", "callsign"); add("Type", "ac_type"); add("ICAO", "hex"); add("Registration", "registration");
+    add("Military", "military"); add("Altitude ft", "alt_ft"); add("Speed kt", "gs_kt"); add("Heading", "track_deg"); add("Observed", "ts");
+  } else if (node.kind === "actor" || node.kind === "entity") {
+    add("Entity type", "entity_type"); add("Mentions", "mentions"); add("Resolution", "resolution_method");
+  } else if (node.kind === "location") {
+    add("Place", "place");
+  } else {
+    add("Observed", "ts"); add("Source", "source_domain"); add("Status", "status");
+  }
+  if (point) lines.push(`Coordinates: ${lat.toFixed(4)}, ${lon.toFixed(4)}`);
+  const url = nodeField(node, "url");
+  const href = typeof url === "string" && /^https?:\/\//i.test(url) ? url : undefined;
+  return { title: node.label || node.id, lines, entityId: node.id, point, href, hrefLabel: "Open source" };
+}
+
+function GraphEvidence({ entity, loading, onSelect }: { entity?: Entity; loading: boolean; onSelect?: (node: EntityNode) => void }) {
   if (loading) return <p className="mt-4 font-mono text-[10px] text-muted">Loading connected graph evidence…</p>;
   if (!entity?.neighbors.length) return null;
   const icon = (kind: string) => kind === "event" ? <Newspaper size={13} /> : kind === "aircraft" ? <Plane size={13} /> : kind === "location" ? <MapPin size={13} /> : kind === "actor" ? <Users size={13} /> : <Radio size={13} />;
   const tone = (kind: string) => kind === "event" ? "bg-[#eab85a] text-[#694713]" : kind === "aircraft" ? "bg-[#5cc7da] text-[#102b33]" : kind === "location" ? "bg-[#a78bfa] text-[#25154d]" : kind === "actor" ? "bg-[#94c973] text-[#21371c]" : "bg-[#e879f9] text-[#4e174e]";
-  return <div className="mt-4 border-t border-line pt-3"><div className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[.14em] text-command"><Link2 size={12} /> Connected graph evidence</div><p className="mt-1 text-[10px] text-muted">All directly related records: sources, actors, locations, aircraft, and other linked facts.</p><div className="mt-2 space-y-1.5">{entity.neighbors.map((node) => { const relations = entity.links.filter((link) => link.source === node.id || link.target === node.id).map((link) => link.kind).filter(Boolean); return <div key={node.id} className="flex gap-2 border border-line bg-black/10 p-2"><span className={`grid h-6 w-6 shrink-0 place-items-center rounded-full ${tone(node.kind)}`}>{icon(node.kind)}</span><div className="min-w-0"><p className="truncate text-[11px] font-semibold text-ink">{node.label}</p><p className="mt-0.5 font-mono text-[9px] uppercase text-muted">{node.kind}{relations.length ? ` · ${relations.join(", ")}` : ""}</p></div></div>; })}</div></div>;
+  return <div className="mt-4 border-t border-line pt-3"><div className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[.14em] text-command"><Link2 size={12} /> Connected graph evidence</div><p className="mt-1 text-[10px] text-muted">Click a related item to inspect its fields and connected records.</p><div className="mt-2 space-y-1.5">{entity.neighbors.map((node) => { const relations = entity.links.filter((link) => link.source === node.id || link.target === node.id).map((link) => link.kind).filter(Boolean); return <button type="button" key={node.id} onClick={() => onSelect?.(node)} className="flex w-full gap-2 border border-line bg-black/10 p-2 text-left hover:border-command/60 hover:bg-command/5" title={`Inspect ${node.label}`}><span className={`grid h-6 w-6 shrink-0 place-items-center rounded-full ${tone(node.kind)}`}>{icon(node.kind)}</span><span className="min-w-0"><span className="block truncate text-[11px] font-semibold text-ink">{node.label}</span><span className="mt-0.5 block font-mono text-[9px] uppercase text-muted">{node.kind}{relations.length ? ` · ${relations.join(", ")}` : ""}</span></span></button>; })}</div></div>;
 }
 
-function Inspector({ detail, entity, entityLoading = false, expanded = false, onClose, onEmbed }: { detail: Detail | null; entity?: Entity; entityLoading?: boolean; expanded?: boolean; onClose?: () => void; onEmbed?: (d: Detail) => void }) {
-  return <Panel className={`${expanded ? "flex min-h-0 flex-1 flex-col overflow-hidden" : "min-h-[150px] overflow-auto scrollbar"} p-3`}><div className="mb-2 flex items-center gap-2"><h2 className="font-mono text-[10px] font-semibold uppercase tracking-[.14em] text-muted">{expanded ? "Selected source" : "Inspector"}</h2>{expanded && <button aria-label="Close selected source" onClick={onClose} className="ml-auto grid h-6 w-6 place-items-center border border-line text-muted hover:text-ink"><X size={13} /></button>}</div><div className={expanded ? "min-h-0 flex-1 overflow-auto scrollbar" : ""}>{detail ? <div className="space-y-1 text-xs leading-relaxed"><p className="font-semibold text-ink">{detail.title}</p>{detail.lines.map((line, index) => <p key={index} className="text-muted">{line}</p>)}{detail.connections && <CorrelationEvidence connections={detail.connections} />}{detail.entityId && <GraphEvidence entity={entity} loading={entityLoading} />}{detail.href && <SourcePreview href={detail.href} label={detail.hrefLabel ?? "Source"} onEmbed={onEmbed && canPreviewSource(detail.href) ? () => onEmbed(detail) : undefined} />}</div> : <p className="text-xs text-muted">Select an alert or map element to inspect its operational context.</p>}</div></Panel>;
+function Inspector({ detail, entity, entityLoading = false, expanded = false, onClose, onEmbed, onSelectEntity, onBackGraph }: { detail: Detail | null; entity?: Entity; entityLoading?: boolean; expanded?: boolean; onClose?: () => void; onEmbed?: (d: Detail) => void; onSelectEntity?: (node: EntityNode) => void; onBackGraph?: () => void }) {
+  const openOn = detail ? `${detail.entityId ?? detail.title}:${detail.replayTime ?? ""}` : undefined;
+  return <Panel openOn={openOn} className={`${expanded ? "flex min-h-0 flex-1 flex-col overflow-hidden" : "min-h-[150px] overflow-auto scrollbar"} p-3`}><div className="mb-2 flex items-center gap-2">{detail?.graphParent && <button type="button" aria-label="Back to graph evidence" title="Back to the previous graph item" onClick={onBackGraph} className="inline-flex h-6 items-center gap-1 border border-line px-1.5 font-mono text-[9px] uppercase tracking-wider text-muted hover:border-command/60 hover:text-ink"><ArrowLeft size={11} /> Graph</button>}<h2 className="font-mono text-[10px] font-semibold uppercase tracking-[.14em] text-muted">{expanded ? "Selected source" : "Inspector"}</h2>{expanded && <button aria-label="Close selected source" onClick={onClose} className="ml-auto grid h-6 w-6 place-items-center border border-line text-muted hover:text-ink"><X size={13} /></button>}</div><div className={expanded ? "min-h-0 flex-1 overflow-auto scrollbar" : ""}>{detail ? <div className="space-y-1 text-xs leading-relaxed"><p className="font-semibold text-ink">{detail.title}</p>{detail.lines.map((line, index) => <p key={index} className="text-muted">{line}</p>)}{detail.connections && <CorrelationEvidence connections={detail.connections} />}{detail.entityId && <GraphEvidence entity={entity} loading={entityLoading} onSelect={onSelectEntity} />}{detail.href && <SourcePreview href={detail.href} label={detail.hrefLabel ?? "Source"} onEmbed={onEmbed && canPreviewSource(detail.href) ? () => onEmbed(detail) : undefined} />}</div> : <p className="text-xs text-muted">Select an alert or map element to inspect its operational context.</p>}</div></Panel>;
 }
 
 
@@ -303,6 +343,17 @@ export function App() {
   const clearMapSelection = useCallback(() => {
     if (!selectingMapItem.current) { setDetail(null); setSourceViewer(null); }
   }, []);
+  const selectEntity = useCallback((node: EntityNode) => {
+    const next = { ...entityNodeDetail(node), graphParent: detail ?? undefined };
+    setDetail(next); setSourceViewer(null);
+    if (next.point) setFocus([next.point[0], next.point[1], 8]);
+  }, [detail]);
+  const backGraph = useCallback(() => {
+    const previous = detail?.graphParent;
+    if (!previous) return;
+    setDetail(previous); setSourceViewer(null);
+    if (previous.point) setFocus([previous.point[0], previous.point[1], 8]);
+  }, [detail]);
   const selectAlert = useCallback((alert: Alert) => {
     const event = records.events.find((item) => item.id === alert.event_id);
     const href = event && (event.id.startsWith("tg:") || !event.url?.includes("t.me/")) ? event.url : undefined;
@@ -331,7 +382,7 @@ export function App() {
       <aside className="sidebar-resizable relative flex min-h-0 flex-col gap-2 lg:row-span-2"><PanelGroup>
         {wide && <div className="splitter splitter-x" title="Drag to resize the right column" onMouseDown={dragSplit("x")} />}
         {/* The Inspector opens at the top of the column; every other panel stays where it is. */}
-        {detail && <Inspector detail={detail} entity={entity.data} entityLoading={entity.isLoading} onClose={() => { setDetail(null); setSourceViewer(null); }} onEmbed={(d) => setSourceViewer(d)} />}
+        {detail && <Inspector detail={detail} entity={entity.data} entityLoading={entity.isLoading} onClose={() => { setDetail(null); setSourceViewer(null); }} onEmbed={(d) => setSourceViewer(d)} onSelectEntity={selectEntity} onBackGraph={backGraph} />}
         {sourceList && <SourceRecords source={sourceList} engineCount={sourceList === "social" ? (currentStatus.sources?.social ?? currentStatus.sources?.telegram)?.count : currentStatus.sources?.[sourceList]?.count} events={records.events} tracks={records.tracks} firms={records.firms} resetKey={sourceListKey} onClose={() => setSourceList(null)} onResetMap={() => { setFocus([35, 10, 2]); setDetail(null); }}
           onOpen={(d) => { setSourceViewer(null); setDetail(d); if (d.point) setFocus([d.point[0], d.point[1], 8]); }} />}
         <>
@@ -342,7 +393,7 @@ export function App() {
           <AssessmentQueue assessments={assessed} clusters={clusters} showRejected={showRejected} onToggleRejected={() => setShowRejected((value) => !value)} />
           <details className="group"><summary className="cursor-pointer select-none px-1 font-mono text-[9px] uppercase tracking-[.16em] text-muted hover:text-ink">Legacy proximity cues ({queue.length}) · severity-weighted distance, kept for before/after comparison</summary>
           <AlertQueue alerts={queue} onSelect={selectAlert} /></details>
-          {!detail && <Inspector detail={null} onEmbed={(d) => setSourceViewer(d)} />}
+          {!detail && <Inspector detail={null} onEmbed={(d) => setSourceViewer(d)} onSelectEntity={selectEntity} onBackGraph={backGraph} />}
           {!live && mode && <CuratedEvidence scenarioId={mode} tMin={config.data?.t_min} tMax={config.data?.t_max} onSeek={(t) => { setPlaying(false); setReplayTime(t); }} />}
         </>
         {sourceViewer && <SourceViewer detail={sourceViewer} onClose={() => setSourceViewer(null)} />}

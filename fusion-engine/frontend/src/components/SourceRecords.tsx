@@ -56,7 +56,7 @@ export function SourceRecords({ source, engineCount, events, tracks, firms, onOp
   const shown = needle ? rows.filter((r) => `${r.tag} ${r.title} ${r.sub}`.toLowerCase().includes(needle)) : rows;
   const byTag = useMemo(() => { const m: Record<string, number> = {}; for (const r of rows) m[r.tag] = (m[r.tag] ?? 0) + 1; return m; }, [rows]);
   const other = source === "candidates" || source === "openai";
-  return <Panel panelId={`source-${source}`} className="max-h-[50vh] overflow-auto p-3 scrollbar">
+  return <Panel panelId={`source-${source}`} openOn={resetKey} className="max-h-[50vh] overflow-auto p-3 scrollbar">
     <div className="flex items-center gap-2">
       <h2 className="font-mono text-[10px] font-semibold uppercase tracking-[.14em] text-muted">{TITLE[source]}</h2>
       <div className="ml-auto flex items-center gap-1">
