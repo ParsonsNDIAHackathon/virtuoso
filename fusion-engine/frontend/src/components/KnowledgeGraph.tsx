@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import * as d3 from "d3";
 import type { Graph, GraphLink, GraphNode } from "../lib/types";
 
-const colors: Record<string, string> = { event: "#eab85a", aircraft: "#5cc7da", actor: "#b294d4", location: "#94c973", source: "#7b887a" };
+const colors: Record<string, string> = { event: "#eab85a", telegram: "#e879f9", aircraft: "#5cc7da", firms: "#f87171", actor: "#b294d4", entity: "#d8b4fe", location: "#94c973", source: "#7b887a", assessment: "#94c973", cluster: "#a78bfa", candidate: "#eab85a" };
 type SimulationLink = Omit<GraphLink, "source" | "target"> & { source: string | GraphNode; target: string | GraphNode };
 
 function coordinate(endpoint: string | GraphNode, axis: "x" | "y") {
@@ -22,9 +22,9 @@ export function KnowledgeGraph({ graph, onSelect }: { graph: Graph; onSelect: (n
     const root = svg.append("g");
     svg.call(d3.zoom<SVGSVGElement, unknown>().scaleExtent([.2, 6]).on("zoom", (event) => root.attr("transform", event.transform)));
     const simulation = d3.forceSimulation<GraphNode>(nodes)
-      .force("link", d3.forceLink<GraphNode, SimulationLink>(links).id((node) => node.id).distance((link) => link.kind === "NEAR" ? 40 : 25).strength(.5))
+      .force("link", d3.forceLink<GraphNode, SimulationLink>(links).id((node) => node.id).distance((link) => link.kind === "NEAR" || link.kind === "ASSESSES" ? 40 : 25).strength(.5))
       .force("charge", d3.forceManyBody().strength(-60)).force("center", d3.forceCenter(width / 2, height / 2)).force("collide", d3.forceCollide(7));
-    const edge = root.append("g").selectAll<SVGLineElement, SimulationLink>("line").data(links).join("line").attr("stroke", (link) => link.kind === "NEAR" ? "#df5e55" : "#435142").attr("stroke-width", (link) => link.kind === "NEAR" ? 1 + 3 * (link.score ?? 0) : .6).attr("stroke-opacity", .7);
+    const edge = root.append("g").selectAll<SVGLineElement, SimulationLink>("line").data(links).join("line").attr("stroke", (link) => link.kind === "NEAR" ? "#eab85a" : link.kind === "ASSESSES" ? "#94c973" : link.kind === "RESOLVES_TO" ? "#d8b4fe" : "#435142").attr("stroke-width", (link) => link.kind === "NEAR" || link.kind === "ASSESSES" ? 1 + 3 * (link.score ?? 0) : .6).attr("stroke-opacity", .7);
     const node = root.append("g").selectAll<SVGCircleElement, GraphNode>("circle").data(nodes).join("circle")
       .attr("r", (item) => item.kind === "actor" ? 4 + Math.min(item.mentions ?? 0, 20) / 3 : item.kind === "event" ? 4 + 6 * (item.severity ?? 0) : 4)
       .attr("fill", (item) => item.kind === "aircraft" && item.military ? "#df5e55" : colors[item.kind] || "#a7aa9c").attr("stroke", "#101710").attr("stroke-width", .8)

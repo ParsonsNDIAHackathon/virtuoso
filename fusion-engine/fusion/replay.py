@@ -17,7 +17,8 @@ from .ingest_gdelt import OsintEvent
 from .store import make_store
 from .ingest_telegram import SocialPost, social_to_event
 from .replay_adsb import load_tracks, snapshot_at, track_polylines
-from .replay_gdelt import HORMUZ_BBOX, HORMUZ_KW, load_day
+from .replay_gdelt import HORMUZ_BBOX, HORMUZ_KW
+from .fusion_ai import FusionAI, asserted_graph_context, candidate_for_pair, generate_candidates, records_from_sources
 
 log = logging.getLogger(__name__)
 try:
@@ -77,6 +78,7 @@ class ReplayState:
         self.days = list(self.sc.get("days") or [self.day])
         self.loaded_layers: dict[str, list[str]] = {"gdelt": [], "adsb": [], "telegram": [], "firms": []}
         self.events: list[OsintEvent] = []
+        self.social_posts: dict[str, SocialPost] = {}
         self.tracks: dict[str, dict] = {}
         self.firms: list[dict] = []
         self.sar: list[dict] = []
@@ -84,6 +86,7 @@ class ReplayState:
         self.lock = threading.Lock()
         self._cache: dict[int, dict] = {}
         self.store = store or make_store()
+        self.fusion_ai = FusionAI(DATA)
         d0 = datetime.strptime(self.days[0], "%Y-%m-%d").replace(tzinfo=timezone.utc)
         d1 = datetime.strptime(self.days[-1], "%Y-%m-%d").replace(tzinfo=timezone.utc)
         self.t_min = d0.timestamp()
@@ -93,25 +96,19 @@ class ReplayState:
         with self.lock:
             if self.loaded:
                 return
-            self.events, self.firms, self.tracks = [], [], {}
+            self.events, self.firms, self.tracks, self.social_posts = [], [], {}, {}
             for day in self.days:
                 gpath = DATA / "replay" / f"{day}_gdelt.json"
                 if gpath.exists():
                     self.events += [OsintEvent(**e) for e in json.loads(gpath.read_text(encoding="utf-8"))]
                     self.loaded_layers["gdelt"].append(day)
-                elif day == self.day:
-                    log.info("building GDELT replay for %s (first time, may take minutes)", day)
-                    ev = load_day(day, DATA / "gdelt", self.sc["bbox"], self.sc["keywords"])
-                    gpath.parent.mkdir(parents=True, exist_ok=True)
-                    gpath.write_text(json.dumps([e.to_dict() for e in ev]), encoding="utf-8")
-                    self.events += ev
-                    self.loaded_layers["gdelt"].append(day)
                 else:
-                    log.warning("replay: no GDELT file for %s (run: python -m fusion.replay_gdelt %s)", day, day)
+                    log.warning("replay: no GDELT file for %s (run the standalone replay builder)", day)
                 tpath = DATA / "replay" / f"{day}_telegram.json"
                 if tpath.exists():
                     posts = [SocialPost(**d) for d in json.loads(tpath.read_text(encoding="utf-8"))]
                     social = [social_to_event(p) for p in posts if p.lat is not None]
+                    self.social_posts.update({post.id: post for post in posts if post.lat is not None})
                     self.events += social
                     self.loaded_layers["telegram"].append(day)
                     log.info("replay %s: +%d geolocated Telegram posts (%d total posts)", day, len(social), len(posts))
@@ -189,23 +186,39 @@ class ReplayState:
         ev = [e for e in self.events
               if t - lookback_min * 60 <= datetime.fromisoformat(e.ts).timestamp() <= t]
         tr = snapshot_at(self.tracks, t) if self.tracks else []
+        current_firms = [h for h in self.firms if t - 12 * 3600 <= datetime.fromisoformat(h["ts"]).timestamp() <= t]
         batch_id = f"replay:{self.sc['id']}:{key}"
         event_ids = [event.id for event in ev]
-        self.store.ingest(ev, tr, batch_id)
+        self.store.ingest(ev, tr, batch_id, hotspots=current_firms, social_posts=self.social_posts)
         alerts = self.store.correlate(event_ids, batch_id, radius_km, lookback_min, min_severity=0.3)
+        candidates = generate_candidates(records_from_sources(ev, tr, current_firms, self.social_posts), limit=250)
+        assessments = [assessment for candidate in candidates
+                       if (assessment := self.fusion_ai.cached_assessment(candidate)) is not None]
+        clusters = self.fusion_ai.clusters(assessments)
+        self.store.record_fusion(candidates, assessments, clusters, batch_id)
         stored_events = self.store.events(event_ids, limit=20000)
         stored_tracks = self.store.aircraft(batch_id)
         out = {
             "t": t, "t_iso": t_iso.isoformat(),
             "counts": {"events": len(stored_events), "conflict_events": sum(e["is_conflict"] for e in stored_events),
-                       "tracks": len(stored_tracks), "military_tracks": sum(x["military"] for x in stored_tracks), "alerts": len(alerts)},
+                       "tracks": len(stored_tracks), "military_tracks": sum(x["military"] for x in stored_tracks),
+                       "alerts": len(alerts), "candidates": len(candidates),
+                       "assessments": len(assessments),
+                       "supported": sum(value.verdict == "SUPPORTED" for value in assessments),
+                       "plausible": sum(value.verdict == "PLAUSIBLE" for value in assessments),
+                       "clusters": len(clusters)},
             "events": stored_events,
             "tracks": stored_tracks,
             "alerts": [a.to_dict() for a in alerts[:300]],
+            "candidates": [candidate.to_dict(False) for candidate in candidates],
+            # Rejections remain available for the explicit UI toggle, while the graph projection
+            # and default list continue to hide them.
+            "assessments": [assessment.to_dict() for assessment in assessments],
+            "clusters": [cluster.to_dict() for cluster in clusters],
             "graph": self.store.graph(event_ids, batch_id, max_nodes=220, max_links=400),
             "tails": track_polylines(self.tracks, t - tail_min * 60, t) if self.tracks else [],
             # thermal anomalies seen in the last 12 h (satellite passes are ~2x/day)
-            "firms": [h for h in self.firms if t - 12 * 3600 <= datetime.fromisoformat(h["ts"]).timestamp() <= t],
+            "firms": current_firms,
             # radar ship detections from the most recent scene at or before t (within 12 h)
             "sar": (sar := _nearest_scene(self.sar, t))[0],
             "sar_scene": sar[1],
@@ -217,6 +230,64 @@ class ReplayState:
             self._cache.clear()
         self._cache[key] = out
         return out
+
+    def evidence_record(self, t: float, kind: str, record_id: str, lookback_min: float = 120.0):
+        self.load()
+        t = min(max(t, self.t_min), self.t_max)
+        ev = [event for event in self.events
+              if t - lookback_min * 60 <= datetime.fromisoformat(event.ts).timestamp() <= t]
+        tracks = snapshot_at(self.tracks, t) if self.tracks else []
+        firms = [hotspot for hotspot in self.firms
+                 if t - 12 * 3600 <= datetime.fromisoformat(hotspot["ts"]).timestamp() <= t]
+        records = records_from_sources(ev, tracks, firms, self.social_posts)
+        record = next((value for value in records if value.kind == kind and value.id == record_id), None)
+        if not record:
+            return None
+        # The replay graph is populated by at(); only asserted source relationships may be passed
+        # to the model. Candidate and model-produced links are intentionally excluded.
+        try:
+            entity = self.store.entity(record_id)
+        except Exception:
+            entity = None
+        record.graph_context = asserted_graph_context(entity, record_id)
+        return record
+
+    def adjudicate_pair(self, t: float, left_kind: str, left_id: str, right_kind: str, right_id: str) -> dict:
+        # Ensure the instant's source graph exists before collecting one-hop evidence context.
+        self.at(t)
+        left = self.evidence_record(t, left_kind, left_id)
+        right = self.evidence_record(t, right_kind, right_id)
+        if not left or not right:
+            raise KeyError("one or both evidence records are not in this replay instant")
+        candidate = candidate_for_pair(left, right)
+        assessment = self.fusion_ai.adjudicate(candidate)
+        key = int(min(max(t, self.t_min), self.t_max) // 60)
+        snapshot = self.at(t)
+        values = {value["id"]: value for value in snapshot.get("assessments", [])}
+        values[assessment.id] = assessment.to_dict()
+        snapshot["assessments"] = list(values.values())
+        candidate_values = {value["id"]: value for value in snapshot.get("candidates", [])}
+        candidate_values[candidate.id] = candidate.to_dict(False)
+        snapshot["candidates"] = list(candidate_values.values())
+        from .fusion_ai import Assessment
+        objects = [Assessment(**{field: value[field] for field in Assessment.__dataclass_fields__ if field in value})
+                   for value in snapshot["assessments"]]
+        clusters = self.fusion_ai.clusters(objects)
+        if clusters and len(clusters[0].modalities) >= 3:
+            try:
+                clusters[0] = self.fusion_ai.brief(clusters[0], objects)
+            except Exception as error:
+                # The pair verdict is the requested operation; a secondary BLUF failure must not
+                # discard it or turn the analyst's click into an error.
+                log.warning("replay cluster brief failed: %s", error)
+        snapshot["clusters"] = [cluster.to_dict() for cluster in clusters]
+        batch_id = f"replay:{self.sc['id']}:{key}"
+        self.store.record_fusion([candidate], objects, clusters, batch_id)
+        snapshot["graph"] = self.store.graph(
+            [value["id"] for value in snapshot.get("events", [])], batch_id,
+            max_nodes=220, max_links=400,
+        )
+        return assessment.to_dict()
 
     def evidence(self) -> dict | None:
         """Curated manual evidence attached to this scenario (None if the scenario has none).
