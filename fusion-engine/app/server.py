@@ -6,6 +6,9 @@
 from __future__ import annotations
 
 import logging
+import os
+from datetime import datetime, timezone
+from pathlib import Path
 import threading
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
@@ -74,9 +77,31 @@ def _startup():
     _worker.start()
 
 
+def _build_id() -> str:
+    """Commit the running engine was built from: FUSION_BUILD (set by the container build), else git."""
+    build = os.getenv("FUSION_BUILD", "").strip()
+    if build and build != "dev":
+        return build
+    try:
+        import subprocess
+        root = Path(__file__).resolve().parents[2]
+        return subprocess.run(["git", "-C", str(root), "rev-parse", "--short", "HEAD"], capture_output=True, text=True, timeout=5).stdout.strip() or build or "unknown"
+    except Exception:
+        return build or "unknown"
+
+
+BUILD_ID = _build_id()
+STARTED_AT = datetime.now(timezone.utc).isoformat()
+
+
+@app.get("/api/version")
+def version():
+    return {"build": BUILD_ID, "started_at": STARTED_AT}
+
+
 @app.get("/api/status")
 def status():
-    return state.api_status()
+    return {**state.api_status(), "build": BUILD_ID, "started_at": STARTED_AT}
 
 
 @app.get("/api/alerts")

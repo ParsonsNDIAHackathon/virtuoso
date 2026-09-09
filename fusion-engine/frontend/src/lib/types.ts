@@ -27,6 +27,7 @@ export type GraphLink = { source: string; target: string; kind?: string; score?:
 export type Graph = { nodes: GraphNode[]; links: GraphLink[] };
 
 export type Status = {
+  build?: string; started_at?: string;
   counts: { events: number; conflict_events: number; tracks: number; military_tracks: number; alerts: number; social?: number; firms?: number; firms_novel?: number; candidates?: number; assessments?: number; supported?: number; plausible?: number; clusters?: number };
   updated?: string; gdelt_window?: string; store?: string;
   sources?: Record<string, { state: "starting" | "ready" | "partial" | "error"; label?: string; updated?: string; count?: number; detail?: string }>;
