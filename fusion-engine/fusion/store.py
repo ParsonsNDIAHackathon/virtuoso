@@ -6,6 +6,7 @@ Both stores expose the same interface used by FusionState and ReplayState:
     alerts(event_ids, batch_id, min_score=0, limit=None) -> list[Alert]
     events(event_ids, conflict_only=False, limit=3000) -> list[dict]
     aircraft(batch_id, military_only=False) -> list[dict]
+    tails(batch_id, minutes=30) -> list[dict]
     graph(event_ids, batch_id, max_nodes=220, max_links=400) -> dict
     entity(node_id) -> dict | None
     prune(max_age_h) ; close() ; name
@@ -80,6 +81,34 @@ class InMemoryStore:
         if not b:
             return []
         return [t.to_dict() for t in b["tracks"] if (t.military or not military_only)]
+
+    def tails(self, batch_id, minutes: float = 30.0) -> list[dict]:
+        """Short position histories for aircraft present in the requested batch."""
+        current = self.batches.get(batch_id)
+        if not current:
+            return []
+        from datetime import datetime
+        current_ids = {track.id for track in current["tracks"]}
+        if not current_ids:
+            return []
+        newest = max(datetime.fromisoformat(track.ts).timestamp() for track in current["tracks"])
+        cutoff = newest - minutes * 60
+        points: dict[str, list[AirTrack]] = {track_id: [] for track_id in current_ids}
+        for batch in self.batches.values():
+            for track in batch["tracks"]:
+                if track.id in points and datetime.fromisoformat(track.ts).timestamp() >= cutoff:
+                    points[track.id].append(track)
+        out = []
+        for track_id, history in points.items():
+            # A single ingest can obtain the same aircraft from both the military and AOI feeds.
+            # One point per timestamp avoids drawing zero-length segments.
+            unique = {track.ts: track for track in history}
+            ordered = [unique[ts] for ts in sorted(unique)]
+            if len(ordered) >= 2:
+                last = ordered[-1]
+                out.append({"id": track_id, "hex": last.hex, "callsign": last.callsign,
+                            "military": last.military, "coords": [[track.lat, track.lon] for track in ordered]})
+        return out
 
     def graph(self, event_ids, batch_id, max_nodes=220, max_links=400) -> dict:
         b = self.batches.get(batch_id)

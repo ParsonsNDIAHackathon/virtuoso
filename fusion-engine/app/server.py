@@ -48,6 +48,22 @@ def _in_view(records: list[dict], bbox: str | None, limit: int) -> list[dict]:
     return [record for record in records if contains(record)][:limit]
 
 
+def _tails_in_view(tails: list[dict], bbox: str | None, limit: int) -> list[dict]:
+    """Keep paths whose current (last) position is in the requested map view."""
+    bounds = _parse_bbox(bbox)
+    if bounds is None:
+        return tails[:limit]
+    west, south, east, north = bounds
+
+    def contains(tail: dict) -> bool:
+        if not tail.get("coords"):
+            return False
+        lat, lon = tail["coords"][-1]
+        return south <= lat <= north and (west <= lon <= east if west <= east else lon >= west or lon <= east)
+
+    return [tail for tail in tails if contains(tail)][:limit]
+
+
 @app.on_event("startup")
 def _startup():
     global _worker
@@ -76,6 +92,11 @@ def events(conflict_only: bool = False, limit: int = Query(3000, ge=1, le=20000)
 @app.get("/api/aircraft")
 def aircraft(military_only: bool = False, limit: int = Query(3000, ge=1, le=20000), bbox: str | None = None):
     return _in_view(state.api_aircraft(military_only), bbox, limit)
+
+
+@app.get("/api/aircraft/tails")
+def aircraft_tails(minutes: int = Query(30, ge=2, le=120), limit: int = Query(3000, ge=1, le=20000), bbox: str | None = None):
+    return _tails_in_view(state.api_tails(minutes), bbox, limit)
 
 
 @app.get("/api/preview")

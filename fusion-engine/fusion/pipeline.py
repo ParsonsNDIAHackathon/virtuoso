@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .store import make_store
+from .store import InMemoryStore, make_store
 from .ingest_adsb import AirTrack, fetch_military, fetch_regions
 from .ingest_gdelt import OsintEvent, fetch_window
 from .ingest_telegram import DEFAULT_CHANNELS, fetch_latest, social_to_event
@@ -64,6 +64,7 @@ class FusionState:
     gdelt_stamp: str | None = None
     events: list[OsintEvent] = field(default_factory=list)
     tracks: list[AirTrack] = field(default_factory=list)
+    track_history: list[AirTrack] = field(default_factory=list, repr=False)
     event_ids: list[str] = field(default_factory=list)
     batch_id: str | None = None
     updated: str | None = None
@@ -88,6 +89,7 @@ class FusionState:
     backfill: Backfill = field(default_factory=lambda: Backfill(DATA / "gdelt", hours=float(os.getenv("FUSION_BACKFILL_H", "48"))), repr=False)
     _seen: dict = field(default_factory=lambda: {"events": {}, "social": {}, "alerts": {}, "firms": {}, "tracks": {}}, repr=False)
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    _prune_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def set_source_status(self, source: str, state: str, *, count: int | None = None, detail: str | None = None):
         """Publish source readiness without exposing secrets or raw provider errors."""
@@ -244,9 +246,55 @@ class FusionState:
         with self.lock:
             ev, tr = list(self.events) + list(self.social), list(self.tracks)
             event_ids = [event.id for event in ev]
+            cutoff = datetime.now(timezone.utc).timestamp() - 120 * 60
+            self.track_history = [track for track in self.track_history if datetime.fromisoformat(track.ts).timestamp() >= cutoff]
+            self.track_history.extend(tr)
         batch_id = f"live:{uuid.uuid4().hex}"
-        self.store.ingest(ev, tr, batch_id)
-        alerts = self.store.correlate(event_ids, batch_id, radius_km, window_min, min_severity=0.35)
+        store = self.store
+        degraded_detail = None
+
+        def persist_and_correlate():
+            self.set_source_status("fusion", "starting", detail="Writing observations to the graph")
+            store.ingest(ev, tr, batch_id)
+            self.set_source_status("fusion", "starting", detail="Computing spatial and temporal correlations")
+            return store.correlate(event_ids, batch_id, radius_km, window_min, min_severity=0.35)
+
+        # A graph operation must not be able to freeze the only live-refresh
+        # worker indefinitely.  This has happened while Neo4j is available for
+        # the initial health probe but is still unavailable for a write.  Keep
+        # the graph path as the normal source of truth, but continue the live
+        # dashboard with its equivalent in-memory engine if that happens.
+        if getattr(store, "name", None) == "neo4j":
+            completed = threading.Event()
+            result: list[list] = []
+            failure: list[BaseException] = []
+
+            def graph_work():
+                try:
+                    result.append(persist_and_correlate())
+                except BaseException as exc:
+                    failure.append(exc)
+                finally:
+                    completed.set()
+
+            threading.Thread(target=graph_work, name="fusion-neo4j-pass", daemon=True).start()
+            timeout_s = float(os.getenv("FUSION_NEO4J_PASS_TIMEOUT_S", "20"))
+            if not completed.wait(timeout_s):
+                failure.append(TimeoutError(f"Neo4j graph pass exceeded {timeout_s:g} seconds"))
+            if failure:
+                error = failure[0]
+                log.exception("Neo4j fusion pass failed; using the in-memory engine", exc_info=error)
+                fallback = InMemoryStore()
+                fallback.ingest(ev, tr, batch_id)
+                alerts = fallback.correlate(event_ids, batch_id, radius_km, window_min, min_severity=0.35)
+                with self.lock:
+                    if self.store is store:
+                        self.store = fallback
+                degraded_detail = "Neo4j was unresponsive; correlations are running in memory"
+            else:
+                alerts = result[0]
+        else:
+            alerts = persist_and_correlate()
         with self.lock:
             self.event_ids = event_ids
             self.conflict_event_count = sum(event.is_conflict for event in ev)
@@ -287,11 +335,32 @@ class FusionState:
         log.info("FUSE: persisted %d events / %d tracks, %d alerts (top=%s)",
                  len(ev), len(tr), len(alerts),
                  alerts[0].score if alerts else None)
-        self.set_source_status("fusion", "ready", count=len(alerts), detail="Spatial and temporal correlations")
+        self.set_source_status("fusion", "partial" if degraded_detail else "ready", count=len(alerts),
+                               detail=degraded_detail or "Spatial and temporal correlations")
         return alerts
 
     def close(self):
         self.store.close()
+
+    def prune_async(self, max_age_h: float = 24.0):
+        """Run graph retention outside the sole live-refresh worker.
+
+        Neo4j pruning can wait on a large delete transaction.  It is routine
+        housekeeping, never a prerequisite for the current fusion picture.
+        """
+        if not self._prune_lock.acquire(blocking=False):
+            return
+        store = self.store
+
+        def work():
+            try:
+                store.prune(max_age_h=max_age_h)
+            except Exception as e:
+                log.warning("store prune failed: %s", e)
+            finally:
+                self._prune_lock.release()
+
+        threading.Thread(target=work, name="fusion-store-prune", daemon=True).start()
 
     def api_events(self, conflict_only: bool = False, limit: int = 3000) -> list[dict]:
         with self.lock:
@@ -308,6 +377,28 @@ class FusionState:
         with self.lock:
             tracks = [track.to_dict() for track in self.tracks]
         return [track for track in tracks if not military_only or track["military"]]
+
+    def api_tails(self, minutes: float = 30.0) -> list[dict]:
+        """Recent paths for aircraft in the current snapshot, from rolling ADS-B pulls."""
+        with self.lock:
+            current_ids = {track.id for track in self.tracks}
+            cutoff = datetime.now(timezone.utc).timestamp() - minutes * 60
+            history = [track for track in self.track_history
+                       if track.id in current_ids and datetime.fromisoformat(track.ts).timestamp() >= cutoff]
+        points: dict[str, list[AirTrack]] = {track_id: [] for track_id in current_ids}
+        for track in history:
+            points[track.id].append(track)
+        out = []
+        for track_id, records in points.items():
+            # The military and AOI feeds can both report one aircraft in a cycle.
+            # Keep one point per timestamp so paths have no zero-length segments.
+            unique = {track.ts: track for track in records}
+            ordered = [unique[ts] for ts in sorted(unique)]
+            if len(ordered) >= 2:
+                last = ordered[-1]
+                out.append({"id": track_id, "hex": last.hex, "callsign": last.callsign,
+                            "military": last.military, "coords": [[track.lat, track.lon] for track in ordered]})
+        return out
 
     def api_alerts(self, min_score: float = 0.0, limit: int = 100) -> list[dict]:
         with self.lock:
@@ -468,10 +559,7 @@ def run_loop(state: FusionState, gdelt_every=900, adsb_every=60, windows=2, prim
             except Exception as e:
                 log.warning("FIRMS refresh failed: %s", e)
                 state.set_source_status("firms", "error", detail="Thermal provider unavailable; the map may show cached data")
-            try:
-                state.store.prune(max_age_h=24.0)
-            except Exception as e:
-                log.warning("store prune failed: %s", e)
+            state.prune_async(max_age_h=24.0)
             try:
                 with state.lock:
                     circles = list(state.regions)

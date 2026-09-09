@@ -75,6 +75,12 @@ class Neo4jStore:
         self.driver = GraphDatabase.driver(
             uri or os.getenv("NEO4J_URI", "bolt://localhost:7687"),
             auth=(user or os.getenv("NEO4J_USER", "neo4j"), password or os.getenv("NEO4J_PASSWORD", "neo4jpassword")),
+            # Fail a stalled Bolt acquisition instead of allowing the live
+            # refresh worker to wait forever.  FusionState additionally has a
+            # whole-pass deadline and will use the memory store on failure.
+            connection_timeout=float(os.getenv("NEO4J_CONNECT_TIMEOUT_S", "10")),
+            connection_acquisition_timeout=float(os.getenv("NEO4J_ACQUIRE_TIMEOUT_S", "10")),
+            max_transaction_retry_time=0,
         )
         self._schema_ready = False
 
@@ -261,6 +267,26 @@ class Neo4jStore:
             track["id"] = record["aircraft_id"]
             out.append(track)
         return out
+
+    def tails(self, batch_id: str | None, minutes: float = 30.0) -> list[dict]:
+        """Return recent paths for aircraft that appear in the current live batch."""
+        if not batch_id:
+            return []
+        records = self._query(
+            """
+            MATCH (current:AirObservation {batch_id: $batch_id})
+            WITH collect(DISTINCT current.aircraft_id) AS aircraft_ids,
+                 max(current.observed_at) AS newest
+            MATCH (a:Aircraft)-[:OBSERVED_AS]->(o:AirObservation)
+            WHERE a.id IN aircraft_ids
+              AND o.observed_at >= newest - duration({minutes: $minutes})
+              AND o.observed_at <= newest
+            WITH a, o ORDER BY a.id, o.observed_at
+            RETURN a.id AS id, a.hex AS hex, a.callsign AS callsign, a.military AS military,
+                   collect([o.lat, o.lon]) AS coords
+            """, batch_id=batch_id, minutes=minutes,
+        )
+        return [dict(record) for record in records if len(record["coords"]) >= 2]
 
     def graph(self, event_ids: list[str], batch_id: str | None, max_nodes: int = 220,
               max_links: int = 400) -> dict:

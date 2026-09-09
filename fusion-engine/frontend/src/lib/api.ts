@@ -1,4 +1,4 @@
-import type { Alert, Entity, Event, Evidence, Firms, Graph, LinkPreview, Region, ReplayConfig, ReplayScenario, ReplaySnapshot, Status, Timeline, Track, Viewport } from "./types";
+import type { Alert, Entity, Event, Evidence, Firms, Graph, LinkPreview, Region, ReplayConfig, ReplayScenario, ReplaySnapshot, Status, Tail, Timeline, Track, Viewport } from "./types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, init);
@@ -12,6 +12,7 @@ export const api = {
   status: () => request<Status>("/api/status"),
   events: (viewport: Viewport, limit: number) => request<Event[]>(`/api/events?${new URLSearchParams({ conflict_only: "true", ...Object.fromEntries(mapQuery(viewport, limit)) })}`),
   tracks: (viewport: Viewport, limit: number) => request<Track[]>(`/api/aircraft?${mapQuery(viewport, limit)}`),
+  tails: (viewport: Viewport, limit: number) => request<Tail[]>(`/api/aircraft/tails?${mapQuery(viewport, limit)}`),
   alerts: () => request<Alert[]>("/api/alerts?limit=300"),
   firms: (viewport: Viewport, limit: number) => request<Firms[]>(`/api/firms?${mapQuery(viewport, limit)}`),
   graph: () => request<Graph>("/api/graph?max_nodes=150&max_links=250"),
