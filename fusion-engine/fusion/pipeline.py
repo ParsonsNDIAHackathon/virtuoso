@@ -401,6 +401,15 @@ class FusionState:
                 key: assessment for key, assessment in self.fusion_assessments.items()
                 if assessment.candidate_id in current_candidate_ids
             }
+            have = {a.candidate_id for a in self.fusion_assessments.values()}
+            for candidate in self.fusion_candidates:
+                if candidate.id not in have:
+                    try:
+                        cached = self.fusion_ai.cached_assessment(candidate)
+                    except Exception:
+                        cached = None
+                    if cached is not None:
+                        self.fusion_assessments[cached.id] = cached
             self.fusion_clusters = self.fusion_ai.clusters(self.fusion_assessments.values())
             now_ts = datetime.now(timezone.utc).timestamp()
             # levels (what is present now) and flows (first seen since the previous fuse) — the live
@@ -490,10 +499,11 @@ class FusionState:
                 for candidate in candidates:
                     completed.append(self.fusion_ai.adjudicate(candidate))
                 with self.lock:
-                    if self.batch_id != batch_id:
-                        return
+                    # the batch may have moved on during a slow pass; keep verdicts for pairs that still exist
+                    current = {c.id for c in self.fusion_candidates}
                     for assessment in completed:
-                        self.fusion_assessments[assessment.id] = assessment
+                        if assessment.candidate_id in current:
+                            self.fusion_assessments[assessment.id] = assessment
                     clusters = self.fusion_ai.clusters(self.fusion_assessments.values())
                     all_assessments = list(self.fusion_assessments.values())
                 if clusters:
@@ -502,8 +512,6 @@ class FusionState:
                     except Exception as error:
                         log.warning("cluster brief failed; retaining pair assessments: %s", error)
                 with self.lock:
-                    if self.batch_id != batch_id:
-                        return
                     self.fusion_clusters = clusters
                 self._persist_fusion_artifacts(
                     store, self.fusion_candidates, all_assessments, clusters,
