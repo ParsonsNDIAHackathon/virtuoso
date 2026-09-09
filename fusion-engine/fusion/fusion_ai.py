@@ -295,7 +295,8 @@ PAIR_RULES: tuple[tuple[str, str, float, float], ...] = tuple(
     [("gdelt", social, 100.0, 12 * 60) for social in SOCIAL_PLATFORMS]
     + [(social, "adsb", 75.0, 4 * 60) for social in SOCIAL_PLATFORMS]
     + [(social, "firms", 50.0, 12 * 60) for social in SOCIAL_PLATFORMS]
-    + [("gdelt", "adsb", 75.0, 4 * 60), ("gdelt", "firms", 50.0, 12 * 60), ("adsb", "firms", 30.0, 3 * 60)]
+    + [("gdelt", "adsb", 75.0, 4 * 60), ("gdelt", "firms", 50.0, 12 * 60), ("adsb", "firms", 30.0, 3 * 60),
+       ("gdelt", "gdelt", 50.0, 6 * 60)]      # independent outlets on one incident: the pairs most often SUPPORTED
 )
 NEWS_KINDS = {"gdelt", *SOCIAL_PLATFORMS}
 RETRIEVAL_KINDS = {kind for pair in PAIR_RULES for kind in pair[:2]}
@@ -354,6 +355,8 @@ def generate_candidates(records: Iterable[EvidenceRecord], limit: int = 250) -> 
                 nearby = (record for d_lat in range(-1, 2) for d_lon in range(-lon_span, lon_span + 1)
                           for record in spatial_index.get((lat_cell + d_lat, lon_cell + d_lon), ()))
             for right in nearby:
+                if left_kind == right_kind and left.id >= right.id:
+                    continue          # same-kind pairs once, never with itself
                 dt = abs(timestamps[id(left)] - timestamps[id(right)]) / 60
                 if dt > minutes:
                     continue

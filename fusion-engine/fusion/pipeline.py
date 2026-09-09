@@ -483,12 +483,22 @@ class FusionState:
                                    detail="Set OPENAI_API_KEY to enable evidence adjudication")
             return
         now = time.time()
-        cadence = float(os.getenv("FUSION_LLM_EVERY_S", "900"))
+        cadence = float(os.getenv("FUSION_LLM_EVERY_S", "600"))
         if now - self._last_ai_at < cadence or not self._ai_lock.acquire(blocking=False):
             return
         self._last_ai_at = now
         with self.lock:
-            candidates = list(self.fusion_candidates[:int(os.getenv("FUSION_LLM_MAX_CANDIDATES", "12"))])
+            # priority: pairs inside current incident cells, then pairs with shared entities, then
+            # news-to-news pairs (the ones most often supported), then retrieval score
+            try:
+                hot = {tuple(c) for inc in self.live_analysis.snapshot().get("incidents", []) for c in inc["cells"]}
+            except Exception:
+                hot = set()
+            from .baseline import cell_of
+            def _prio(c):
+                inside = cell_of(c.left.lat, c.left.lon) in hot or cell_of(c.right.lat, c.right.lon) in hot
+                return (not inside, -len(c.entity_overlap), not (c.left.kind == "gdelt" and c.right.kind == "gdelt"), -c.candidate_score)
+            candidates = sorted(self.fusion_candidates, key=_prio)[:int(os.getenv("FUSION_LLM_MAX_CANDIDATES", "24"))]
             store = self.store
         if not candidates:
             self._ai_lock.release()
