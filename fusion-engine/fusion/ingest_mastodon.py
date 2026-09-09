@@ -89,8 +89,34 @@ def _page(instance: str, max_id: str | None = None, limit: int = 40) -> list[dic
     return payload if isinstance(payload, list) else []
 
 
+DEFAULT_QUERIES = ["Strait of Hormuz", "tanker", "Hormuz", "IRGC"]
+
+
+def _search(instance: str, query: str, limit: int = 40) -> list[dict]:
+    """Statuses matching a term (api/v2/search, needs the read scope). The public timeline is untargeted and
+    yields almost nothing geolocatable, so with a token the collector also searches the configured terms."""
+    r = requests.get(f"https://{instance}/api/v2/search", params={"q": query, "type": "statuses", "limit": min(limit, 40)},
+                     headers=_headers(), timeout=30)
+    r.raise_for_status()
+    payload = r.json()
+    return payload.get("statuses", []) if isinstance(payload, dict) else []
+
+
 def fetch_latest(instance: str, limit: int = 40) -> list[SocialPost]:
-    return sorted(parse_statuses(instance, _page(instance, limit=limit)), key=lambda p: p.ts)
+    items = list(_page(instance, limit=limit))
+    if os.getenv("MASTODON_ACCESS_TOKEN", "").strip():
+        seen = {str(s.get("id")) for s in items}
+        queries = [q.strip() for q in os.getenv("MASTODON_QUERIES", ",".join(DEFAULT_QUERIES)).split(",") if q.strip()]
+        for q in queries:
+            try:
+                for s in _search(instance, q, limit):
+                    if str(s.get("id")) not in seen:
+                        seen.add(str(s.get("id")))
+                        items.append(s)
+            except Exception as e:                       # search scope missing: timeline still counts
+                log.warning("mastodon %s search %r failed: %s", instance, q, e)
+                break
+    return sorted(parse_statuses(instance, items), key=lambda p: p.ts)
 
 
 def fetch_latest_all(instances: list[str] | None = None, delay_s: float = 0.5) -> list[SocialPost]:
