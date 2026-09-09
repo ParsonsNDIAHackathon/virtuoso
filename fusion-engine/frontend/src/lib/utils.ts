@@ -15,4 +15,4 @@ export const formatWindow = (window?: string | null) => window
 
 export const formatTime = (value?: string | null) => value
   ? new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
-  : "WARMING UP";
+  : "STARTING";
