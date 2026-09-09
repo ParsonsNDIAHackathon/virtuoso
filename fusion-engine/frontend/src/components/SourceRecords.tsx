@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { Event, Firms, Track } from "../lib/types";
 import type { MapDetail } from "./OperationalMap";
 import { Panel } from "./ui/panel";
@@ -39,8 +39,9 @@ function firmsRow(f: Firms): Row {
 /** The records behind a source chip in the strip: what the console has loaded for that source, newest first,
  *  each one opening in the Inspector and centring the map. Engine totals can exceed this list (the console
  *  loads a capped, recent window). */
-export function SourceRecords({ source, engineCount, events, tracks, firms, onOpen, onClose }: { source: SourceKey; engineCount?: number; events: Event[]; tracks: Track[]; firms: Firms[]; onOpen: (d: MapDetail) => void; onClose: () => void }) {
+export function SourceRecords({ source, engineCount, events, tracks, firms, onOpen, onClose, onResetMap }: { source: SourceKey; engineCount?: number; events: Event[]; tracks: Track[]; firms: Firms[]; onOpen: (d: MapDetail) => void; onClose: () => void; onResetMap?: () => void }) {
   const [q, setQ] = useState("");
+  useEffect(() => { const k = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); }; window.addEventListener("keydown", k); return () => window.removeEventListener("keydown", k); }, [onClose]);
   const rows = useMemo<Row[]>(() => {
     const list = source === "gdelt" ? events.filter((e) => !isSocial(e)).map(eventRow)
       : source === "social" ? events.filter(isSocial).map(eventRow)
@@ -55,7 +56,10 @@ export function SourceRecords({ source, engineCount, events, tracks, firms, onOp
   return <Panel panelId={`source-${source}`} className="max-h-[50vh] overflow-auto p-3 scrollbar">
     <div className="flex items-center gap-2">
       <h2 className="font-mono text-[10px] font-semibold uppercase tracking-[.14em] text-muted">{TITLE[source]}</h2>
-      <button onClick={onClose} className="ml-auto border border-line px-1.5 font-mono text-[10px] text-muted hover:text-ink" aria-label="Close records">✕</button>
+      <div className="ml-auto flex items-center gap-1">
+        {onResetMap && <button onClick={onResetMap} className="h-7 border border-line px-2 font-mono text-[10px] uppercase tracking-wider text-muted hover:border-command/60 hover:text-ink" title="Return the map to the world view">Reset map</button>}
+        <button onClick={onClose} className="h-7 border border-command/60 px-2 font-mono text-[10px] uppercase tracking-wider text-command hover:bg-command/10" aria-label="Close records" title="Close this list (Esc, or click the source chip again)">✕ Close</button>
+      </div>
     </div>
     {other ? <p className="mt-1 text-[10px] text-muted">{source === "candidates" ? "Candidate pairs are listed in the Fusion candidates panel below." : "Assessed pairs are listed in the AI assessments panel below; toggle Show rejected to see every verdict."}</p> : <>
       <p className="mt-0.5 font-mono text-[10px] text-muted">{rows.length.toLocaleString()} loaded in the console{engineCount != null && engineCount !== rows.length ? ` · engine holds ${engineCount.toLocaleString()}` : ""}
