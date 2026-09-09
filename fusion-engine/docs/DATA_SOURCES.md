@@ -137,7 +137,7 @@ correlation rules, and the same alert ranking, but the data comes from different
 
 1. The Hormuz circle in LIVE mode shows the strait **today**, not Aug 18. The Aug 18 picture only
    exists in REPLAY.
-2. Nothing in either mode is simulated or relocated. Every marker is a real report from the
+2. Apart from the RF spectrum sample, which is an illustrative synthetic display and labeled as such, nothing in either mode is simulated or relocated. Every marker is a real report from the
    provider named in §1. Where a source has no coverage (AIS in the Gulf, live radar) the layer
    is absent rather than faked.
 3. LIVE is a thin, wide slice (30 min of news, one aircraft snapshot per minute, the whole
