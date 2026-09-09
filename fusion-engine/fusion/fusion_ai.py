@@ -357,6 +357,10 @@ def generate_candidates(records: Iterable[EvidenceRecord], limit: int = 250) -> 
             for right in nearby:
                 if left_kind == right_kind and left.id >= right.id:
                     continue          # same-kind pairs once, never with itself
+                if left_kind == "gdelt" and right_kind == "gdelt":
+                    lu, ru = article_url_key(str(left.data.get("url") or "")), article_url_key(str(right.data.get("url") or ""))
+                    if lu and ru and lu == ru:
+                        continue      # several records from ONE article are not two sources; never a candidate
                 dt = abs(timestamps[id(left)] - timestamps[id(right)]) / 60
                 if dt > minutes:
                     continue
