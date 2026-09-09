@@ -361,8 +361,6 @@ def generate_candidates(records: Iterable[EvidenceRecord], limit: int = 250) -> 
                     lu, ru = article_url_key(str(left.data.get("url") or "")), article_url_key(str(right.data.get("url") or ""))
                     if lu and ru and lu == ru:
                         continue      # several records from ONE article are not two sources; never a candidate
-                    if left.source and right.source and left.source == right.source:
-                        continue      # same outlet twice is not independent corroboration either
                 dt = abs(timestamps[id(left)] - timestamps[id(right)]) / 60
                 if dt > minutes:
                     continue
