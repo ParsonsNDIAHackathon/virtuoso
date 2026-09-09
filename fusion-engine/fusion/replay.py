@@ -18,6 +18,8 @@ from .store import make_store
 from .ingest_social import SocialPost, is_social_event, social_to_event
 from .replay_adsb import load_tracks, snapshot_at, track_polylines
 from .navint import MIN_KNOWN, timeline_counts as navint_timeline, window_from_tracks as navint_window
+from .baseline import Baseline, cell_of
+from .mission import CONFIG as MISSION, is_dateline
 from .replay_gdelt import HORMUZ_BBOX, HORMUZ_KW
 from .fusion_ai import FusionAI, asserted_graph_context, candidate_for_pair, generate_candidates, records_from_sources
 
@@ -83,6 +85,7 @@ class ReplayState:
         self.tracks: dict[str, dict] = {}
         self.firms: list[dict] = []
         self.sar: list[dict] = []
+        self.baseline: Baseline | None = None
         self.loaded = False
         self.lock = threading.Lock()
         self._cache: dict[int, dict] = {}
@@ -167,6 +170,10 @@ class ReplayState:
                     continue
                 if self.t_min - 3 * 86400 <= sday <= self.t_max + 3 * 86400:
                     self.sar += json.loads(spath.read_text(encoding="utf-8"))
+            self.baseline = Baseline(self.t_min, self.t_max)
+            self.baseline.add_events(self.events)
+            self.baseline.add_tracks(self.tracks)
+            self.baseline.add_firms(self.firms)
             self.loaded = True
             log.info("replay %s: %d events, %d aircraft; layers loaded %s", "..".join(self.days), len(self.events), len(self.tracks), self.loaded_layers)
 
@@ -222,7 +229,16 @@ class ReplayState:
         event_ids = [event.id for event in ev]
         self.store.ingest(ev, tr, batch_id, hotspots=current_firms, social_posts=self.social_posts)
         alerts = self.store.correlate(event_ids, batch_id, radius_km, lookback_min, min_severity=0.3)
-        candidates = generate_candidates(records_from_sources(ev, tr, current_firms, self.social_posts), limit=250)
+        baseline = getattr(self, "baseline", None)
+        departures = baseline.departures_at(t) if baseline else []
+        departed = baseline.departed_cells(t) if baseline else set()
+        hot = {(c[0] + dy, c[1] + dx) for c in departed for dy in (-1, 0, 1) for dx in (-1, 0, 1)}
+        all_records = records_from_sources(ev, tr, current_firms, self.social_posts)
+        gated = [r for r in all_records
+                 if cell_of(r.lat, r.lon) in hot
+                 and not (r.kind == "gdelt" and is_dateline(r.label.split(": ", 1)[-1]))]
+        candidates = generate_candidates(gated, limit=250)
+        ungated_n = len(generate_candidates(all_records, limit=250))
         assessments = [assessment for candidate in candidates
                        if (assessment := self.fusion_ai.cached_assessment(candidate)) is not None]
         clusters = self.fusion_ai.clusters(assessments)
@@ -233,7 +249,8 @@ class ReplayState:
             "t": t, "t_iso": t_iso.isoformat(),
             "counts": {"events": len(stored_events), "conflict_events": sum(e["is_conflict"] for e in stored_events),
                        "tracks": len(stored_tracks), "military_tracks": sum(x["military"] for x in stored_tracks),
-                       "alerts": len(alerts), "candidates": len(candidates),
+                       "alerts": len(alerts), "candidates": len(candidates), "candidates_ungated": ungated_n,
+                       "departures": len(departures), "departed_cells": len(departed),
                        "assessments": len(assessments),
                        "supported": sum(value.verdict == "SUPPORTED" for value in assessments),
                        "plausible": sum(value.verdict == "PLAUSIBLE" for value in assessments),
@@ -242,6 +259,11 @@ class ReplayState:
             "tracks": stored_tracks,
             "alerts": [a.to_dict() for a in alerts[:300]],
             "candidates": [candidate.to_dict(False) for candidate in candidates],
+            # what is unusual for each cell at this hour, with the reference it rests on
+            "departures": [d.to_dict() for d in departures],
+            "departed_cells": sorted([list(c) for c in departed]),
+            "baseline": {"z_threshold": MISSION["z_threshold"], "persistent_bins": MISSION["persistent_bins"],
+                         "reference": "same hour +/-2 h on other days, 2-3 h away same day", "days": len(self.days)},
             # Rejections remain available for the explicit UI toggle, while the graph projection
             # and default list continue to hide them.
             "assessments": [assessment.to_dict() for assessment in assessments],
@@ -377,6 +399,12 @@ class ReplayState:
             i = idx(datetime.fromisoformat(h["ts"]).timestamp())
             if i is not None and h.get("novelty", 0) >= 0.9:
                 bins[i]["firms_new"] += 1
+        baseline = getattr(self, "baseline", None)
+        if baseline:
+            zs = baseline.timeline()
+            for i in range(n):
+                h = int((bins[i]["t"] - self.t_min) // 3600)
+                bins[i]["z"] = {s: (zs[s][h] if h < len(zs[s]) else None) for s in zs}
         scenes = sorted({d["ts"] for d in self.sar})
         return {"step_min": step_min, "t_min": self.t_min, "bins": bins,
                 "sar_scenes": [{"ts": ts, "t": datetime.fromisoformat(ts).timestamp(),
