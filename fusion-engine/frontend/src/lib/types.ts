@@ -50,7 +50,7 @@ export type LivePicture = { status: Status; events: Event[]; tracks: Track[]; al
 export type Viewport = { west: number; south: number; east: number; north: number; zoom: number };
 // Live bins: flows (events, social, alerts, firms_new) are sums per 15-min bin; tracks/military are
 // levels averaged from this server's own fuse history and null where nothing was recorded yet.
-export type TimelineBin = { t: number; events: number; conflict: number; social: number; tracks: number | null; military: number | null; alerts?: number; firms_new: number; backfilled?: boolean };
+export type TimelineBin = { ais?: number | null; t: number; events: number; conflict: number; social: number; tracks: number | null; military: number | null; alerts?: number; firms_new: number; backfilled?: boolean };
 export type Timeline = {
   bins: TimelineBin[]; step_min: number; hours?: number; t_min?: number;
   backfill?: { status: string; hours: number; windows: number }; since?: number | null;

@@ -150,3 +150,10 @@ Only latest positions are kept in memory. Reports older than 15 minutes are labe
 in vessel details and removed after 60 minutes. A reporting gap can reflect receiver coverage
 or connectivity; it is not evidence of intentional AIS shutdown. AIS has no replay support.
 Provider protocol: https://aisstream.io/documentation .
+
+The live Activity Timeline records AOI-scoped AIS vessel counts once per fusion cycle
+(approximately 60 seconds) and averages available samples into 15-minute bins. Samples
+persist in `data/history.jsonl`. Missing credentials, disconnected feeds, and no AOIs produce
+gaps, not zero counts. Older history has no AIS values; no historical AIS is backfilled.
+Counts reflect the AOIs active at recording time and use the same latest-position expiry
+as the map. The timeline continues recording when the AIS map layer is hidden.

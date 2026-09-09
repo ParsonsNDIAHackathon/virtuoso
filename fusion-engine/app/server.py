@@ -76,10 +76,11 @@ def _startup():
     global _worker
     # Serve immediately; the first fuse runs in the background (primed=False -> fetch now).
     # The UI shows "warming up" until /api/status reports an `updated` timestamp.
-    _worker = threading.Thread(target=run_loop, args=(state,), kwargs={"windows": 2, "primed": False}, daemon=True)
-    _worker.start()
     _sync_ais()
     ais.start()
+    state.ais_count = ais.timeline_count
+    _worker = threading.Thread(target=run_loop, args=(state,), kwargs={"windows": 2, "primed": False}, daemon=True)
+    _worker.start()
 
 
 @app.get("/api/status")

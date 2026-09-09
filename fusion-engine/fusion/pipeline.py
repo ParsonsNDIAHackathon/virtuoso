@@ -15,6 +15,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
 
 from .store import InMemoryStore, make_store
 from .ingest_adsb import AirTrack, fetch_military, fetch_regions
@@ -85,6 +86,7 @@ class FusionState:
         "telegram": {"state": "starting", "label": "Telegram previews"},
         "fusion": {"state": "starting", "label": "Fusion correlations"},
     })
+    ais_count: Callable[[], int | None] | None = field(default=None, repr=False)
     history: list[dict] = field(default_factory=lambda: _load_history())   # per-fuse counts, persisted across restarts
     backfill: Backfill = field(default_factory=lambda: Backfill(DATA / "gdelt", hours=float(os.getenv("FUSION_BACKFILL_H", "48"))), repr=False)
     _seen: dict = field(default_factory=lambda: {"events": {}, "social": {}, "alerts": {}, "firms": {}, "tracks": {}}, repr=False)
@@ -323,7 +325,7 @@ class FusionState:
                      "social": len(self.social), "tracks": len(tr), "military": sum(t.military for t in tr),
                      "alerts": len(alerts), "firms_new": sum(1 for h in self.firms if h.get("novelty", 0) >= 0.9),
                      "d_conflict": ev_new, "d_social": so_new, "d_alerts": al_new, "d_firms_new": fi_new, "d_tracks": tr_new,
-                     "primed": primed}
+                     "primed": primed, "ais": self.ais_count() if self.ais_count else None}
             self.history.append(point)
             self.history = [h for h in self.history if now_ts - h["t"] <= HISTORY_KEEP_H * 3600]
         try:

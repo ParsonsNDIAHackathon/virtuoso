@@ -189,6 +189,13 @@ class AisFeed:
     def _prune(self, now):
         self.vessels = {k: v for k, v in self.vessels.items() if (now - datetime.fromisoformat(v["ts"])).total_seconds() <= 3600}
 
+    def timeline_count(self):
+        """Unknown without an active subscription; zero is a valid connected observation."""
+        with self.lock:
+            if self.state != "ready" or not self.regions:
+                return None
+            return len(self.snapshot()["vessels"])
+
     def snapshot(self):
         with self.lock:
             now = datetime.now(timezone.utc)
