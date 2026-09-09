@@ -18,22 +18,33 @@ body::before { content: ""; position: fixed; inset: 0; pointer-events: none; opa
 .sidebar-resizable { overflow-y: auto; overflow-x: hidden; scrollbar-gutter: stable; padding-right: 2px; }
 .sidebar-resizable > .panel, .sidebar-resizable > details { flex: none; }
 
-/* Right-column panels: collapse arrow (top-right) and a drag handle across the bottom edge. */
+/* Right-column panels: one structure — 32 px collapse button, a body that scrolls on its own, an opaque
+   resize footer outside the scrolling content. Nothing overlays content and nothing shows through. */
 .panel { position: relative; }
-.panel-toggle, .panel-grip { display: none; }
-.sidebar-resizable > .panel, .sidebar-resizable > details > .panel { overflow: auto; padding-bottom: 18px; }
-.sidebar-resizable > .panel > .panel-toggle, .sidebar-resizable > details > .panel > .panel-toggle {
-  display: grid; place-items: center; position: absolute; top: 4px; right: 4px; width: 20px; height: 20px; z-index: 6;
-  border: 1px solid rgba(255,255,255,.18); background: rgba(0,0,0,.35); color: rgba(255,255,255,.7); font-size: 11px; line-height: 1; cursor: pointer;
+.panel-toggle, .panel-grip, .panel-bar { display: none; }
+.sidebar-resizable .panel-structured { display: flex; flex-direction: column; min-height: 0; overflow: hidden !important; }
+.sidebar-resizable .panel-structured.p-3 { padding: 0 !important; }
+.sidebar-resizable .panel-structured.p-3 > .panel-body { padding: 12px; }
+.sidebar-resizable .panel-structured > .panel-body { flex: 1 1 auto; min-height: 0; overflow: auto; scrollbar-gutter: stable; }
+.sidebar-resizable .panel-structured > .panel-body > :first-child { padding-right: 40px; }   /* room for the collapse button */
+.sidebar-resizable .panel-structured > .panel-toggle {
+  display: grid; place-items: center; position: absolute; top: 3px; right: 3px; width: 32px; height: 28px; z-index: 30;
+  border: 1px solid rgba(255,255,255,.22); background: hsl(var(--panel)); color: rgba(255,255,255,.75); font-size: 15px; line-height: 1; cursor: pointer;
 }
-.panel-toggle:hover { color: #fff; border-color: rgba(255,255,255,.45); }
-.sidebar-resizable > .panel-collapsed, .sidebar-resizable > details > .panel-collapsed { height: 38px !important; max-height: 38px !important; min-height: 38px; overflow: hidden; padding-bottom: 0; flex: none; }
-.sidebar-resizable > .panel > .panel-grip, .sidebar-resizable > details > .panel > .panel-grip {
-  display: flex; position: sticky; bottom: 0; left: 0; right: 0; height: 18px; margin: 0 -12px -18px; align-items: center; justify-content: center;
-  cursor: ns-resize; background: linear-gradient(180deg, rgba(0,0,0,.0), rgba(0,0,0,.6)); border-top: 1px dashed rgba(255,255,255,.22); user-select: none; z-index: 5;
-  font: 600 9px ui-monospace, monospace; letter-spacing: .12em; text-transform: uppercase; color: rgba(255,255,255,.55);
+.panel-toggle:hover, .panel-toggle:focus-visible { color: #fff; border-color: rgba(255,255,255,.55); outline: none; }
+.sidebar-resizable .panel-collapsed { height: auto !important; max-height: none !important; min-height: 0 !important; flex: none !important; }
+.sidebar-resizable .panel-structured > .panel-bar {
+  display: flex; align-items: center; height: 34px; padding: 0 44px 0 12px; cursor: pointer; user-select: none;
+  font: 600 10px ui-monospace, monospace; letter-spacing: .14em; text-transform: uppercase; color: rgba(255,255,255,.6);
 }
-.panel-grip:hover { color: #fff; border-top-color: rgba(255,255,255,.6); background: linear-gradient(180deg, rgba(255,255,255,.04), rgba(0,0,0,.7)); }
+.panel-bar:hover { color: #fff; }
+.sidebar-resizable .panel-structured > .panel-grip {
+  display: flex; flex: none; align-items: center; justify-content: center; height: 14px; cursor: ns-resize; user-select: none; touch-action: none;
+  background: hsl(var(--panel)); border-top: 1px solid rgba(255,255,255,.14);
+  font: 600 9px ui-monospace, monospace; letter-spacing: .12em; text-transform: uppercase; color: rgba(255,255,255,.5);
+}
+.panel-grip:hover, .panel-grip.dragging, .panel-grip:focus-visible { color: #fff; border-top-color: rgba(255,255,255,.7); background: rgba(255,255,255,.06); outline: none; }
+.panel-grip.dragging { box-shadow: inset 0 2px 0 rgba(255,255,255,.35); }
 /* Grab the boundary between the map and the right column, or between the map and the timeline. */
 .splitter { position: absolute; z-index: 40; background: transparent; }
 .splitter:hover, .splitter:active { background: rgba(255,255,255,.18); }

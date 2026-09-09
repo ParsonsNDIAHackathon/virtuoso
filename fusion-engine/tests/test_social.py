@@ -209,7 +209,7 @@ def test_pipeline_refresh_social_multi_platform():
                         "fusion": {"state": "starting"}}
     st.lock = threading.Lock()
     try:
-        st.refresh_social(targets={"telegram": ["c"], "reddit": ["worldnews"],
+        st.refresh_social(platforms=["telegram", "reddit", "bluesky"], targets={"telegram": ["c"], "reddit": ["worldnews"],
                                    "bluesky": ["hormuz"], "mastodon": ["mastodon.social"]})
     finally:
         for k, v in saved.items():

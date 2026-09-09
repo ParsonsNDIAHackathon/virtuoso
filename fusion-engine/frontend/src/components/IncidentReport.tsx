@@ -64,10 +64,10 @@ export function IncidentReport({ inc, onClose, onFocus, onEvidence }: { inc: Inc
       : <p className="font-mono text-[10px] text-muted">{a.established}</p>}
 
     {/* 2. the records behind the counts */}
-    <H>Evidence · {evidence.length ? `${evidence.length} record${evidence.length === 1 ? "" : "s"} in the cells this hour` : "no article or post records in the cells this hour"}</H>
+    <H>Evidence · {evidence.length ? `${(inc.evidence_total ?? evidence.length) > evidence.length ? `sample of ${evidence.length} from ` : ""}${inc.evidence_total ?? evidence.length} article${(inc.evidence_total ?? evidence.length) === 1 ? "" : "s"}/posts this hour · ${inc.evidence_scope || "incident cells"}` : "no article or post records in the cells this hour"}</H>
     {evidence.length > 0 && <ul className="space-y-0.5">{evidence.map((r) => <li key={r.id} className="flex items-baseline gap-1 font-mono text-[10px]">
       <span className="shrink-0 text-[9px] uppercase tracking-wider text-muted">{r.stream === "social" ? r.kind : r.stream}</span>
-      <button className="min-w-0 flex-1 truncate text-left text-ink hover:text-command" title={r.text || r.title} onClick={() => onEvidence?.(r)}>{r.title}{r.place ? ` · ${r.place}` : ""}</button>
+      <button className="min-w-0 flex-1 truncate text-left text-ink hover:text-command" title={`${r.text || r.title}${r.neighbour ? " · neighbouring cell" : ""}`} onClick={() => onEvidence?.(r)}>{r.title}{r.place ? ` · ${r.place}` : ""}{(r.mentions ?? 1) > 1 ? ` · ${r.mentions} coded events` : ""}{r.neighbour ? " · nbr" : ""}</button>
       <span className="shrink-0 text-[9px] text-muted">{hhmm(Date.parse(r.ts) / 1000)}</span>
       {r.url && <a className="shrink-0 text-[9px] uppercase tracking-wider text-muted hover:text-command" href={r.url} target="_blank" rel="noreferrer">open</a>}
     </li>)}</ul>}
@@ -85,7 +85,7 @@ export function IncidentReport({ inc, onClose, onFocus, onEvidence }: { inc: Inc
 
     {/* 5. the next action */}
     {act ? <div className="mt-3 border border-command/40 bg-command/5 p-1.5">
-      <p className="font-mono text-[9px] uppercase tracking-[.16em] text-command">Next action · {act.mode === "automatic" ? "automatic" : "analyst task"}</p>
+      <p className="font-mono text-[9px] uppercase tracking-[.16em] text-command">Next action · {act.mode === "analyst" ? "analyst task" : "scheduled recheck"}</p>
       <p className="font-mono text-[10px] text-ink">{act.question}</p>
       <dl className="mt-1 grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 font-mono text-[9px]">
         <dt className="uppercase tracking-wider text-muted">Source</dt><dd className="text-ink">{act.source}</dd>
@@ -107,7 +107,7 @@ export function IncidentReport({ inc, onClose, onFocus, onEvidence }: { inc: Inc
         <tbody>{rows.map(({ k, s }) => { const b = s.best ?? s.detail ?? null; const isFrac = k === "navint"; const insufficient = !s.adequate;
           return <tr key={k} className={s.departed ? "text-ink" : "text-muted"}>
             <td className="py-0.5">{STREAM[k] ?? k}</td>
-            <td className="text-right">{b ? (isFrac ? `${Math.round((b.value ?? 0) * 100)}%` : b.value) : "–"}</td>
+            <td className="text-right">{!b ? "–" : isFrac ? ((b.coverage ?? 0) >= 15 && !insufficient ? `${Math.round((b.value ?? 0) * 100)}%` : "unavailable") : b.value}</td>
             <td className="text-right">{b && !insufficient ? (isFrac ? `${Math.round((b.median ?? 0) * 100)}%` : b.median) : "–"}</td>
             <td className="text-right">{b?.z ?? "–"}</td>
             <td className="text-right">{b ? `${b.reference_n} ref${b.coverage != null ? ` · ${b.coverage} ac` : ""}` : "–"}</td>

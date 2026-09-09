@@ -99,12 +99,14 @@ class Incident:
     next_check: dict | None
     revisions: list[dict] = field(default_factory=list)
     assessment: dict = field(default_factory=dict)
-    evidence: list[dict] = field(default_factory=list)    # articles / posts geocoded to the cells this bin
+    evidence: list[dict] = field(default_factory=list)    # articles / posts geocoded to the cells this bin (sample)
+    evidence_total: int = 0                                # distinct records before the per-stream cap
+    evidence_scope: str = ""                              # which cells the records come from
 
     def to_dict(self) -> dict:
         return {"id": self.id, "cells": self.cells, "first_t": self.first_t, "last_t": self.last_t, "state": self.state,
                 "streams": self.streams, "explanations": [e.to_dict() for e in self.explanations],
-                "next_check": self.next_check, "revisions": self.revisions, "assessment": self.assessment, "evidence": self.evidence}
+                "next_check": self.next_check, "revisions": self.revisions, "assessment": self.assessment, "evidence": self.evidence, "evidence_total": self.evidence_total, "evidence_scope": self.evidence_scope}
 
 
 def _components(cells: set[tuple[int, int]]) -> list[set[tuple[int, int]]]:
@@ -178,42 +180,66 @@ class IncidentTracker:
             return f"departed: z {d.z:.2f} against {d.reference_n} comparison hours"
         return f"within reference ({d.reference_n} comparison hours)"
 
-    def _evidence(self, cells: set[tuple[int, int]], i: int, per_stream: int = 8) -> list[dict]:
-        """The articles and posts geocoded to the incident cells during bin i: the click-through behind the counts."""
+    def _evidence(self, cells: set[tuple[int, int]], i: int, streams: dict | None = None, per_stream: int = 8) -> dict:
+        """The articles and posts behind the counts: records geocoded to the incident cells, plus the neighbouring
+        cell(s) where a reporting stream's departure actually scored (scores look at the 3x3 neighbourhood).
+        GDELT emits one record per coded event, so records sharing an article URL collapse to one row."""
         t0 = self.b.t_min + i * self.b.step
         t1 = t0 + self.b.step
-        out: list[dict] = []
+        scope = set(cells)
+        for st in REPORTING:
+            b = ((streams or {}).get(st) or {}).get("best")
+            if b and b.get("cell"):
+                scope.add(tuple(b["cell"]))
+        extra = scope - set(cells)
+        rows: dict[str, dict] = {}
         for e in self.events:
             try:
                 ts = datetime_ts(e.ts)
             except Exception:
                 continue
-            if not (t0 <= ts < t1) or cell_of(e.lat, e.lon) not in cells:
+            if not (t0 <= ts < t1) or cell_of(e.lat, e.lon) not in scope:
                 continue
             pid = str(getattr(e, "id", "") or "")
             platform = getattr(e, "platform", None)
             if not platform and is_social_event(e):
                 platform = {"tg": "telegram", "reddit": "reddit", "bsky": "bluesky", "mastodon": "mastodon", "md": "mastodon"}.get(pid.split(":")[0], "social")
+            url = (getattr(e, "url", None) or "").split("?")[0].split("#")[0]
             if platform:
                 stream, kind = "social", platform
                 title = f"{platform.title()} · {getattr(e, 'channel', None) or getattr(e, 'source_domain', None) or 'post'}"
                 text = (getattr(e, "text", None) or getattr(e, "root_label", None) or "")[:160]
+                dedupe = pid
             else:
                 stream = "conflict" if getattr(e, "is_conflict", False) else "news"
                 kind = "gdelt"
                 title = getattr(e, "root_label", None) or "Event"
                 text = getattr(e, "source_domain", None) or ""
-            out.append({"kind": kind, "stream": stream, "id": pid, "ts": e.ts, "title": title, "text": text,
-                        "url": getattr(e, "url", None) or "", "place": getattr(e, "place", None),
-                        "lat": e.lat, "lon": e.lon})
-        out.sort(key=lambda r: r["ts"], reverse=True)
+                dedupe = url or pid
+            row = rows.get(dedupe)
+            if row:
+                row["mentions"] += 1
+                if stream == "conflict":
+                    row["stream"] = "conflict"          # any conflict-coded event marks the article
+                if title not in row["codes"]:
+                    row["codes"].append(title)
+                continue
+            rows[dedupe] = {"kind": kind, "stream": stream, "id": pid, "ts": e.ts, "title": title, "codes": [title], "text": text,
+                            "url": getattr(e, "url", None) or "", "place": getattr(e, "place", None), "lat": e.lat, "lon": e.lon,
+                            "mentions": 1, "neighbour": cell_of(e.lat, e.lon) not in cells}
+        out = sorted(rows.values(), key=lambda r: r["ts"], reverse=True)
+        for r in out:
+            if len(r["codes"]) > 1:
+                r["title"] = "; ".join(r["codes"][:3]) + (" …" if len(r["codes"]) > 3 else "")
         counts: dict[str, int] = defaultdict(int)
         kept = []
         for r in out:
             counts[r["stream"]] += 1
             if counts[r["stream"]] <= per_stream:
                 kept.append(r)
-        return kept
+        scope_text = ("incident cells" if not extra else
+                      f"incident cells plus {len(extra)} neighbouring cell{'s' if len(extra) > 1 else ''} where the reporting departure scored")
+        return {"evidence": kept, "evidence_total": len(out), "evidence_scope": scope_text}
 
     def _keywords_present(self, cells: set[tuple[int, int]], i: int, words: list[str]) -> tuple[bool, int]:
         t0 = self.b.t_min + i * self.b.step
@@ -355,7 +381,7 @@ class IncidentTracker:
                 if match:
                     inc = Incident(id=match.id, cells=sorted(map(list, comp)), first_t=match.first_t, last_t=t, state=state,
                                    streams=streams, explanations=explanations, next_check=self._next_check(explanations),
-                                   revisions=list(match.revisions), evidence=self._evidence(comp, i))
+                                   revisions=list(match.revisions), **self._evidence(comp, i, streams))
                     added = [s for s in STREAMS if streams[s]["departed"] and not match.streams.get(s, {}).get("departed")]
                     gone = [s for s in STREAMS if match.streams.get(s, {}).get("departed") and not streams[s]["departed"]]
                     if added or gone or set(map(tuple, comp)) != set(map(tuple, match.cells)):
@@ -367,7 +393,7 @@ class IncidentTracker:
                                    streams=streams, explanations=explanations, next_check=self._next_check(explanations),
                                    revisions=[{"t": t, "added": [s for s in STREAMS if streams[s]["departed"]], "gone": [],
                                                "cells": len(comp), "leading": explanations[0].title if explanations else None}],
-                                   evidence=self._evidence(comp, i))
+                                   **self._evidence(comp, i, streams))
                 inc.assessment = self._assess(inc)
                 current.append(inc)
             # incidents that ended this bin are kept one more bin as "recovering"
@@ -375,6 +401,7 @@ class IncidentTracker:
                 if not any(set(map(tuple, p.cells)) & self._neigh(set(map(tuple, c.cells))) for c in current) and p.state != "recovering":
                     r = Incident(id=p.id, cells=p.cells, first_t=p.first_t, last_t=t, state="recovering", streams=p.streams,
                                  explanations=p.explanations, next_check=p.next_check, evidence=p.evidence,
+                                 evidence_total=p.evidence_total, evidence_scope=p.evidence_scope,
                                  revisions=p.revisions + [{"t": t, "added": [], "gone": [s for s in STREAMS if p.streams[s]["departed"]],
                                                            "cells": len(p.cells), "leading": None}])
                     r.assessment = self._assess(r)
@@ -448,9 +475,10 @@ class IncidentTracker:
         if nc:
             analyst = nc["prediction"].startswith("keywords")
             return {"question": self._question(nc["prediction"]), "source": nc["source"], "area": area,
-                    "window": [start, start + self.b.step], "mode": "analyst" if analyst else "automatic",
+                    "window": [start, start + self.b.step], "mode": "analyst" if analyst else "recheck",
                     "how": ("fetch the article text of the evidence records (adjudicate a pair) and read for the terms"
-                            if analyst else "the engine re-scores this check when the next hour completes; no analyst action unless it stays untested"),
+                            if analyst else "scheduled recheck: the engine re-scores this prediction when the next hour completes. "
+                                            "A recheck cannot recover missing history; if the stream stays insufficient, collection must be tasked."),
                     "why": nc["why"]}
         return {"question": "Does the cited reporting describe one event, and does it match the measured change?",
                 "source": "analyst review of the evidence records", "area": area,
@@ -519,4 +547,4 @@ class IncidentTracker:
 def asdict_shallow(inc: Incident) -> dict:
     return {"id": inc.id, "cells": inc.cells, "first_t": inc.first_t, "last_t": inc.last_t, "state": inc.state,
             "streams": inc.streams, "explanations": inc.explanations, "next_check": inc.next_check,
-            "revisions": inc.revisions, "assessment": inc.assessment, "evidence": inc.evidence}
+            "revisions": inc.revisions, "assessment": inc.assessment, "evidence": inc.evidence, "evidence_total": inc.evidence_total, "evidence_scope": inc.evidence_scope}

@@ -1,45 +1,65 @@
-import { useEffect, useRef, useState, type HTMLAttributes, type MouseEvent as ReactMouseEvent } from "react";
+import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type HTMLAttributes, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { cn } from "../../lib/utils";
 
-/** A panel. Inside the right column (`.sidebar-resizable`) it gains two controls:
- *  - a collapse arrow (top-right) that folds the panel to its title line;
- *  - a drag handle across the bottom edge that sets the panel's height (double-click resets).
- *  Both are remembered per browser, keyed by the panel's first heading text. */
-export function Panel({ className, children, ...props }: HTMLAttributes<HTMLElement>) {
+/** Inside a <PanelGroup> (the right column) every Panel has one structure: a 32 px collapse button,
+ *  a body that scrolls on its own and is really hidden when collapsed, and an opaque resize footer
+ *  outside the scrolling content. Outside a group a Panel is a plain bordered section (the map). */
+const Group = createContext(false);
+export function PanelGroup({ children }: { children: React.ReactNode }) { return <Group.Provider value={true}>{children}</Group.Provider>; }
+
+type PanelProps = HTMLAttributes<HTMLElement> & { panelId?: string };
+
+export function Panel({ className, children, panelId, ...props }: PanelProps) {
+  const structured = useContext(Group);
+  if (!structured) return <section className={cn("panel border border-line bg-panel/95 shadow-panel", className)} {...props}>{children}</section>;
+  return <StructuredPanel className={className} panelId={panelId} {...props}>{children}</StructuredPanel>;
+}
+
+const MIN_H = 60;
+const store = { get: (k: string) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k: string, v: string | null) => { try { v === null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch { /* per-browser convenience only */ } } };
+
+function StructuredPanel({ className, children, panelId, ...props }: PanelProps) {
   const ref = useRef<HTMLElement>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const [title, setTitle] = useState("");
   const [collapsed, setCollapsed] = useState(false);
-  const keyRef = useRef<string>("");
-
+  const [height, setHeight] = useState<number | null>(null);
+  const [dragging, setDragging] = useState(false);
+  // Stable identity: an explicit panelId, else the first heading text (read once, on mount).
+  useLayoutEffect(() => { const el = bodyRef.current; if (!el) return; setTitle((el.querySelector("h1, h2, h3, p")?.textContent ?? "").trim().slice(0, 48)); }, []);
+  const key = panelId ? `panel.${panelId}` : title ? `panel.${title}` : "";
   useEffect(() => {
+    if (!key) return;
+    setCollapsed(store.get(`${key}.collapsed`) === "1");
+    const h = Number(store.get(`${key}.height`)); setHeight(h >= MIN_H ? h : null);
+  }, [key]);
+
+  const toggle = () => { setCollapsed((v) => { store.set(`${key}.collapsed`, v ? null : "1"); return !v; }); };
+  const apply = (h: number | null) => { setHeight(h); store.set(`${key}.height`, h === null ? null : String(Math.round(h))); };
+  const clamp = (h: number) => Math.max(MIN_H, Math.min(window.innerHeight * 0.9, h));
+
+  const onGripDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     const el = ref.current; if (!el) return;
-    const title = (el.querySelector("h2, h3, p")?.textContent ?? "").trim().slice(0, 40);
-    keyRef.current = title ? `panel.${title}` : "";
-    try {
-      if (keyRef.current) {
-        if (localStorage.getItem(`${keyRef.current}.collapsed`) === "1") setCollapsed(true);
-        const h = Number(localStorage.getItem(`${keyRef.current}.height`));
-        if (h > 0) { el.style.height = `${h}px`; el.style.maxHeight = `${h}px`; el.style.flex = "none"; }
-      }
-    } catch { /* per-browser convenience only */ }
-  }, []);
-
-  const remember = (k: string, v: string | null) => { try { if (keyRef.current) { v === null ? localStorage.removeItem(`${keyRef.current}.${k}`) : localStorage.setItem(`${keyRef.current}.${k}`, v); } } catch { /* ignore */ } };
-
-  const onGrip = (event: ReactMouseEvent<HTMLDivElement>) => {
-    const el = ref.current; if (!el || collapsed) return;
-    event.preventDefault();
-    const startY = event.clientY; const startH = el.getBoundingClientRect().height;
-    const move = (e: MouseEvent) => { const h = Math.max(72, Math.min(window.innerHeight * 0.9, startH + (e.clientY - startY))); el.style.height = `${h}px`; el.style.maxHeight = `${h}px`; el.style.flex = "none"; remember("height", String(Math.round(h))); };
-    const up = () => { window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up); document.body.style.cursor = ""; };
-    document.body.style.cursor = "ns-resize";
-    window.addEventListener("mousemove", move); window.addEventListener("mouseup", up);
+    e.preventDefault(); e.currentTarget.setPointerCapture(e.pointerId);
+    const startY = e.clientY; const startH = el.getBoundingClientRect().height; setDragging(true);
+    const move = (ev: PointerEvent) => apply(clamp(startH + (ev.clientY - startY)));
+    const up = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); window.removeEventListener("pointercancel", up); setDragging(false); };
+    window.addEventListener("pointermove", move); window.addEventListener("pointerup", up); window.addEventListener("pointercancel", up);
   };
-  const reset = () => { const el = ref.current; if (el) { el.style.height = ""; el.style.maxHeight = ""; el.style.flex = ""; } remember("height", null); };
-  const toggle = () => { setCollapsed((v) => { remember("collapsed", v ? null : "1"); return !v; }); };
+  const onGripKey = (e: ReactKeyboardEvent<HTMLDivElement>) => {
+    const el = ref.current; if (!el) return;
+    const cur = el.getBoundingClientRect().height;
+    if (e.key === "ArrowUp") { e.preventDefault(); apply(clamp(cur - 24)); }
+    else if (e.key === "ArrowDown") { e.preventDefault(); apply(clamp(cur + 24)); }
+    else if (e.key === "Home" || e.key === "Escape") { e.preventDefault(); apply(null); }
+  };
 
-  return <section ref={ref} className={cn("panel border border-line bg-panel/95 shadow-panel", collapsed && "panel-collapsed", className)} {...props}>
-    <button type="button" className="panel-toggle" title={collapsed ? "Expand panel" : "Collapse panel to its title"} aria-expanded={!collapsed} onClick={toggle}>{collapsed ? "▸" : "▾"}</button>
-    {children}
-    {!collapsed && <div className="panel-grip" role="separator" aria-orientation="horizontal" title="Drag to resize this panel · double-click to reset" onMouseDown={onGrip} onDoubleClick={reset}><span>⋯ drag</span></div>}
+  const style = !collapsed && height ? { height: `${height}px`, maxHeight: `${height}px`, flex: "none" } : undefined;
+  return <section ref={ref} style={style} className={cn("panel panel-structured border border-line bg-panel/95 shadow-panel", collapsed && "panel-collapsed", className)} {...props}>
+    <button type="button" className="panel-toggle" title={collapsed ? "Expand panel" : "Collapse panel to its title"} aria-expanded={!collapsed} aria-label={collapsed ? `Expand ${title || "panel"}` : `Collapse ${title || "panel"}`} onClick={toggle}>{collapsed ? "▸" : "▾"}</button>
+    {collapsed && <div className="panel-bar" onClick={toggle} role="button" tabIndex={0} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } }}>{title || "Panel"}</div>}
+    <div ref={bodyRef} className="panel-body" hidden={collapsed}>{children}</div>
+    {!collapsed && <div className={cn("panel-grip", dragging && "dragging")} role="separator" aria-orientation="horizontal" aria-label={`Resize ${title || "panel"}`} tabIndex={0}
+      title="Drag to resize · double-click or Home resets · arrow keys adjust" onPointerDown={onGripDown} onDoubleClick={() => apply(null)} onKeyDown={onGripKey}><span>⋯ drag</span></div>}
   </section>;
 }

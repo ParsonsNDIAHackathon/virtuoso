@@ -14,7 +14,7 @@ import { IncidentReport } from "./components/IncidentReport";
 import { SourcePreview } from "./components/SourcePreview";
 import { Badge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
-import { Panel } from "./components/ui/panel";
+import { Panel, PanelGroup } from "./components/ui/panel";
 
 const EMPTY_STATUS: Status = { counts: { events: 0, conflict_events: 0, tracks: 0, military_tracks: 0, alerts: 0 } };
 const EMPTY_REPLAY: ReplaySnapshot = { t: 0, events: [], tracks: [], alerts: [], graph: { nodes: [], links: [] }, counts: EMPTY_STATUS.counts, t_iso: "" };
@@ -321,7 +321,7 @@ export function App() {
     {/* Desktop grid: map (col 1, row 1) with the timeline full-width beneath it (col 1, row 2); the side panels take the whole right column so the alert queue keeps its height. */}
     <div className="grid min-h-0 gap-2 p-2" style={wide ? { gridTemplateColumns: `minmax(0,1fr) ${sidebarW}px`, gridTemplateRows: `minmax(0,1fr) ${timelineH}px` } : undefined}>
       <Panel className="relative min-h-[440px] overflow-hidden lg:min-h-0"><OperationalMap {...records} assessments={assessed} incidents={live ? (liveIncidents.data?.incidents ?? []) : (replay.incidents ?? [])} selectedIncident={incidentSel} onIncidentSelect={(id) => { setIncidentSel(id); setDetail(null); }} regions={regions.data ?? []} layers={layers} viewport={viewport} filterAoi={filterAoi} drawing={drawing} focus={focus} satelliteDay={live ? undefined : (replayTime ? new Date(replayTime * 1000).toISOString().slice(0, 10) : config.data?.scenario.day)} replayBounds={live ? undefined : config.data?.scenario.bbox} compareSelection={compareSelection} compareVerdict={compareResult?.verdict} compareArticleMatch={compareResult?.has_article_match} onViewport={setViewport} onLayerToggle={(layer) => setLayers((value) => ({ ...value, [layer]: !value[layer] }))} onDraft={(value) => { setDraft(value); setDrawing(false); }} onSelect={selectMap} onAoiZoom={zoomToRegion} onBackgroundClick={clearMapSelection} /><AICompareOverlay status={aiStatus.data} active={compareActive} selections={compareSelection} result={compareResult} pending={adjudicate.isPending} error={adjudicate.error as Error | null} onToggle={() => { setCompareActive((value) => !value); setCompareSelection([]); setCompareResult(null); }} onAnalyze={() => { const [left, right] = compareSelection; if (!left?.recordRef || !right?.recordRef) return; setPlaying(false); adjudicate.mutate({ left: left.recordRef, right: right.recordRef, mode, time: live ? null : left.replayTime ?? replay.t, force: Boolean(compareResult) }); }} onClear={() => { setCompareSelection([]); setCompareResult(null); }} /><div className="pointer-events-none absolute bottom-3 left-3 border border-line bg-panel/95 px-2 py-1 font-mono text-[10px] uppercase tracking-wide text-muted">Canvas map · clusters expand on click</div></Panel>
-      <aside className="sidebar-resizable relative flex min-h-0 flex-col gap-2 lg:row-span-2">
+      <aside className="sidebar-resizable relative flex min-h-0 flex-col gap-2 lg:row-span-2"><PanelGroup>
         {wide && <div className="splitter splitter-x" title="Drag to resize the right column" onMouseDown={dragSplit("x")} />}
         {/* The Inspector opens at the top of the column; every other panel stays where it is. */}
         {detail && <Inspector detail={detail} entity={entity.data} entityLoading={entity.isLoading} onClose={() => { setDetail(null); setSourceViewer(null); }} onEmbed={(d) => setSourceViewer(d)} />}
@@ -337,7 +337,7 @@ export function App() {
           {!live && mode && <CuratedEvidence scenarioId={mode} tMin={config.data?.t_min} tMax={config.data?.t_max} onSeek={(t) => { setPlaying(false); setReplayTime(t); }} />}
         </>
         {sourceViewer && <SourceViewer detail={sourceViewer} onClose={() => setSourceViewer(null)} />}
-      </aside>
+      </PanelGroup></aside>
       <Panel className="relative min-h-[240px] overflow-hidden lg:min-h-0">{wide && <div className="splitter splitter-y" title="Drag to resize the timeline" onMouseDown={dragSplit("y")} />}<ActivityTimeline timeline={live ? liveTimeline.data : replayTimeline.data} activeTime={live ? undefined : replayTime} mode={live ? "live" : "replay"} onSeek={live ? undefined : (time) => { setPlaying(false); setReplayTime(time); }} /></Panel>
     </div>
   </div></main>;
