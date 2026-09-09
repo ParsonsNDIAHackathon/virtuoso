@@ -6,7 +6,6 @@ const sources = [
   ["Telegram post", "Telegram public channels", "Public-preview posts that name a known location.", "Every 5 minutes"],
   ["Aircraft", "adsb.lol", "Cooperative ADS-B transponder positions; coverage varies by receiver density.", "Every 60 seconds"],
   ["Thermal anomaly", "NASA FIRMS / VIIRS", "Satellite heat detections. Bright/new signals are absent from the two-day baseline.", "Every 15 minutes"],
-  ["Radar ship detection", "ESA Sentinel-1 / Copernicus", "SAR-derived vessel detections; replay only and labelled with image age.", "Replay only"],
   ["Satellite imagery", "NASA GIBS", "VIIRS true-colour basemap. It is context only, not a detection source.", "Daily"],
   ["RF sample", "Synthetic demo", "One sample near the Strait of Hormuz with a simulated 60-second chirp spectrogram; not a live measurement.", "Static sample"],
   ["Correlation", "Fusion engine", "Aircraft and event proximity score: an analyst cue, not a finding.", "Each fusion cycle"],

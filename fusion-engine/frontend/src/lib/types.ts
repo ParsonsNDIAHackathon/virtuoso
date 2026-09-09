@@ -18,7 +18,6 @@ export type Alert = {
 };
 
 export type Firms = { lat: number; lon: number; novelty?: number; ts: string; frp?: number; satellite?: string; daynight?: string };
-export type Sar = { lat: number; lon: number; length_m?: number; contrast?: number; ts: string };
 export type Tail = { coords: [number, number][]; military?: boolean; callsign?: string; r?: string; hex?: string; t?: string };
 
 export type GraphNode = { id: string; kind: string; label: string; lat?: number; lon?: number; military?: boolean; mentions?: number; severity?: number; x?: number; y?: number; vx?: number; vy?: number; fx?: number | null; fy?: number | null };
@@ -32,7 +31,7 @@ export type Status = {
 };
 
 export type ReplayScenario = { id: string; title: string; notes?: string; center: [number, number]; zoom: number; day: string; days?: string[]; bbox: [number, number, number, number]; sources?: [string, string][] };
-export type ReplayConfig = { scenario: ReplayScenario; t_min: number; t_max: number; days?: string[]; layers_loaded?: Record<string, string[]>; n_events: number; n_aircraft: number; n_military: number; n_firms?: number; n_sar?: number; adsb_available?: boolean; sar_scenes?: string[]; sar_summary?: Array<{ ts: string; n: number; core: number; scene: string }> };
+export type ReplayConfig = { scenario: ReplayScenario; t_min: number; t_max: number; days?: string[]; layers_loaded?: Record<string, string[]>; n_events: number; n_aircraft: number; n_military: number; n_firms?: number; adsb_available?: boolean; };
 
 // Curated (manual) evidence: analyst-reviewed records served by /api/replay/{id}/evidence. Claims are
 // claims, not observations: no coordinates, no scores, timing kept at the record's own precision.
@@ -41,7 +40,7 @@ export type CuratedSource = { id: string; publisher: string; url: string; source
 export type CuratedClaim = { id: string; vessel_id: string; source_ids: string[]; event_date?: string | null; event_time_utc?: string | null; time_precision: "date_only" | "ambiguous_overnight" | "minute_as_reported"; location_text?: string | null; coordinates: null | [number, number]; claim: string; evidence_class: string; attacker?: string | null };
 export type CuratedLead = { url: string; platform: string; publisher: string; publication_time_utc?: string | null; original_language: string; summary_en: string; summary_kind?: string; status?: string };
 export type Evidence = { kind: string; prepared_date?: string; retrieved_date?: string; vessels: CuratedVessel[]; sources: CuratedSource[]; claims: CuratedClaim[]; leads: CuratedLead[]; excluded: Array<{ reason?: string }>; notes: string[]; window?: { t_min: number; t_max: number; label?: string } };
-export type ReplaySnapshot = { events: Event[]; tracks: Track[]; alerts: Alert[]; graph: Graph; tails?: Tail[]; firms?: Firms[]; sar?: Sar[]; sar_scene?: { n: number; label: string; ts: string }; sar_core?: Sar[]; sar_core_scene?: { n: number; label: string; ts: string }; counts: Status["counts"]; t_iso: string };
+export type ReplaySnapshot = { events: Event[]; tracks: Track[]; alerts: Alert[]; graph: Graph; tails?: Tail[]; firms?: Firms[]; counts: Status["counts"]; t_iso: string };
 export type EntityNode = { id: string; kind: "event" | "actor" | "location" | "source" | "aircraft" | string; label: string; military?: boolean };
 export type Entity = { node: EntityNode; neighbors: EntityNode[]; links: Array<{ source: string; target: string; kind?: string }> };
 export type LinkPreview = { url: string; host: string; title?: string | null; description?: string | null; image?: string | null; site_name?: string | null; published?: string | null; embeddable?: boolean; error?: string | null; status?: number };
@@ -53,6 +52,6 @@ export type Viewport = { west: number; south: number; east: number; north: numbe
 // levels averaged from this server's own fuse history and null where nothing was recorded yet.
 export type TimelineBin = { t: number; events: number; conflict: number; social: number; tracks: number | null; military: number | null; alerts?: number; firms_new: number; backfilled?: boolean };
 export type Timeline = {
-  bins: TimelineBin[]; step_min: number; hours?: number; t_min?: number; sar_scenes?: Array<{ t: number; ts: string; n: number }>;
+  bins: TimelineBin[]; step_min: number; hours?: number; t_min?: number;
   backfill?: { status: string; hours: number; windows: number }; since?: number | null;
 };
