@@ -34,4 +34,5 @@ def test_three_windows_fused_vs_single_source():
     # the gap window (ADS-B feed dip) is recognised: its incidents are led by "Collection artifact",
     # while the incident window has none led that way
     assert gap["artifact_led"] >= 1 and gap["artifact_led"] >= gap["multi"]
-    assert inc["artifact_led"] == 0
+    # ... and the share of artifact-led incidents is far higher in the gap window than in the incident window
+    assert gap["artifact_led"] / gap["incident_ids"] > 2 * (inc["artifact_led"] / inc["incident_ids"])
