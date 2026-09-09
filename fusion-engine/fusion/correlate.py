@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import re
-from collections import defaultdict
 from dataclasses import asdict, dataclass
 
 from .ingest_adsb import AirTrack
@@ -78,19 +77,10 @@ class Alert:
 
 
 def dedupe_alerts(alerts: list[Alert]) -> list[Alert]:
-    """Collapse corroborating reports at one rounded location for each aircraft."""
+    """Collapse duplicate proximity candidates without treating record count as corroboration."""
     best: dict[tuple, Alert] = {}
-    count: dict[tuple, int] = defaultdict(int)
     for alert in alerts:
         key = (alert.aircraft_id, round(alert.lat, 1), round(alert.lon, 1))
-        count[key] += 1
         if key not in best or alert.score > best[key].score:
             best[key] = alert
-    output = []
-    for key, alert in best.items():
-        reports = count[key]
-        if reports > 1:
-            alert.score = round(min(1.0, alert.score + 0.05 * min(reports - 1, 3)), 3)
-            alert.reason += f"; {reports} corroborating OSINT reports at this location"
-        output.append(alert)
-    return output
+    return list(best.values())

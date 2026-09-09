@@ -5,13 +5,16 @@
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
 import threading
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
 
 from fusion.pipeline import FusionState, run_loop, run_once
 from fusion.ingest_ais import AisFeed
+from fusion.fusion_ai import AIProviderError, AIUnavailable
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("app")
@@ -79,6 +82,7 @@ def _startup():
     _sync_ais()
     ais.start()
     state.ais_count = ais.timeline_count
+    state.ais_snapshot = ais.snapshot
     _worker = threading.Thread(target=run_loop, args=(state,), kwargs={"windows": 2, "primed": False}, daemon=True)
     _worker.start()
 
@@ -141,6 +145,30 @@ def graph(max_nodes: int = Query(220, ge=25, le=500), max_links: int = Query(400
     return state.api_graph(max_nodes=max_nodes, max_links=max_links)
 
 
+@app.get("/api/fusion/status")
+def fusion_ai_status():
+    return {
+        "provider": "openai", "model": state.fusion_ai.client.model,
+        "configured": state.fusion_ai.available,
+        "prompt_version": __import__("fusion.fusion_ai", fromlist=["PROMPT_VERSION"]).PROMPT_VERSION,
+    }
+
+
+@app.get("/api/fusion/candidates")
+def fusion_candidates(limit: int = Query(300, ge=1, le=2000)):
+    return state.api_fusion_candidates(limit)
+
+
+@app.get("/api/fusion/assessments")
+def fusion_assessments(include_rejected: bool = False, limit: int = Query(300, ge=1, le=2000)):
+    return state.api_fusion_assessments(include_rejected, limit)
+
+
+@app.get("/api/fusion/clusters")
+def fusion_clusters(limit: int = Query(100, ge=1, le=500)):
+    return state.api_fusion_clusters(limit)
+
+
 @app.post("/api/refresh")
 def refresh():
     """Force an immediate ADS-B pull + re-fuse (GDELT stays on its 15-min cadence)."""
@@ -179,6 +207,57 @@ class RegionIn(BaseModel):
     lon: float = Field(ge=-180, le=180, allow_inf_nan=False)
     radius_nm: float = Field(default=100.0, gt=0, allow_inf_nan=False)
     name: str | None = None
+
+
+class EvidenceRef(BaseModel):
+    kind: str
+    id: str
+
+
+class AdjudicationIn(BaseModel):
+    left: EvidenceRef
+    right: EvidenceRef
+    mode: str = "live"
+    t: float | None = None
+    force: bool = False
+
+
+@app.post("/api/fusion/adjudicate")
+async def adjudicate(body: AdjudicationIn):
+    timeout = float(os.getenv("FUSION_ADJUDICATION_TIMEOUT_S", "90"))
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(_adjudicate, body), timeout=timeout)
+    except asyncio.TimeoutError:
+        raise HTTPException(504, f"Evidence analysis exceeded {timeout:g} seconds. Check source/provider status and retry shortly.") from None
+
+
+def _adjudicate(body: AdjudicationIn):
+    if body.left.id == body.right.id and body.left.kind == body.right.kind:
+        raise HTTPException(422, "select two different records")
+    try:
+        if body.mode == "live":
+            return state.adjudicate_pair(body.left.kind, body.left.id, body.right.kind, body.right.id, force=body.force)
+        if body.t is None:
+            raise HTTPException(422, "replay adjudication requires t")
+        return _replay(body.mode).adjudicate_pair(
+            body.t, body.left.kind, body.left.id, body.right.kind, body.right.id,
+            force=body.force,
+        )
+    except AIUnavailable as error:
+        raise HTTPException(503, str(error)) from None
+    except AIProviderError as error:
+        # A provider quota/rate limit is actionable for the caller. Other upstream failures remain
+        # service errors rather than masquerading as failures of this API route.
+        status = 429 if error.status_code == 429 else 503 if error.status_code >= 500 else 502
+        code = f" ({error.code})" if error.code else ""
+        raise HTTPException(status, f"OpenAI API error{code}: {error}") from None
+    except KeyError as error:
+        raise HTTPException(404, str(error)) from None
+    except HTTPException:
+        raise
+    except Exception as error:
+        log.exception("adjudication failed")
+        raise HTTPException(502, f"OpenAI adjudication failed: {str(error)[:180]}") from None
 
 
 @app.get("/api/regions")
