@@ -60,7 +60,7 @@ def _bbox_regex(bbox):
 def extract_bbox(archive_dir: Path, bbox=HORMUZ_BBOX, out: Path | None = None,
                  margin_deg: float = 0.5, max_members: int | None = None) -> dict:
     """Stream the split tar, keep aircraft with any position inside bbox (+margin). Returns
-    {hex: {meta..., points: [[t_epoch, lat, lon, alt_ft|None|'ground', gs, track, flight, source], ...]}}."""
+    {hex: {meta..., points: [[t_epoch, lat, lon, alt_ft|None|'ground', gs, track, flight, source, nic, nac_p], ...]}}."""
     parts = sorted(p for p in Path(archive_dir).iterdir() if re.search(r"\.tar\.[a-z]{2}$", p.name))
     if not parts:
         raise FileNotFoundError(f"no .tar.* parts in {archive_dir}")
@@ -98,6 +98,7 @@ def extract_bbox(archive_dir: Path, bbox=HORMUZ_BBOX, out: Path | None = None,
             base_ts = float(j.get("timestamp", 0))
             pts = []
             flight = None
+            nic = nacp = None
             for p in j.get("trace", []):
                 lat, lon = p[1], p[2]
                 if lat is None or lon is None:
@@ -107,8 +108,13 @@ def extract_bbox(archive_dir: Path, bbox=HORMUZ_BBOX, out: Path | None = None,
                 ac = p[8] if len(p) > 8 and isinstance(p[8], dict) else None
                 if ac and ac.get("flight"):
                     flight = ac["flight"].strip()
+                if ac:
+                    if "nic" in ac:
+                        nic = ac["nic"]
+                    if "nac_p" in ac:
+                        nacp = ac["nac_p"]
                 src = p[9] if len(p) > 9 else None
-                pts.append([round(base_ts + p[0], 1), lat, lon, p[3], p[4], p[5], flight, src])
+                pts.append([round(base_ts + p[0], 1), lat, lon, p[3], p[4], p[5], flight, src, nic, nacp])
             if not pts:
                 continue
             hexid = j.get("icao") or base[len("trace_full_"):-5]
@@ -162,6 +168,7 @@ def snapshot_at(tracks: dict[str, dict], t_epoch: float, max_age_s: float = 300.
             alt_ft=None if on_ground or alt is None else int(alt), on_ground=on_ground,
             gs_kt=p[4], track_deg=p[5], squawk=None, emergency=None, category=None,
             military=a.get("military", False), source=p[7] or "archive", rssi=None, messages=None,
+            nic=p[8] if len(p) > 8 else None, nac_p=p[9] if len(p) > 9 else None,
         ))
     return out
 

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Timeline, TimelineBin } from "../lib/types";
 
-type SeriesKey = "conflict" | "social" | "tracks" | "military" | "firms_new" | "alerts";
+type SeriesKey = "conflict" | "social" | "tracks" | "military" | "firms_new" | "alerts" | "navint_degraded";
 type Series = { key: SeriesKey; label: string; color: string };
 
 // Replay: arrivals per 15-min bin across the scenario day.
@@ -11,6 +11,7 @@ const REPLAY_SERIES: Series[] = [
   { key: "tracks", label: "aircraft", color: "#5cc7da" },
   { key: "military", label: "military aircraft", color: "#df5e55" },
   { key: "firms_new", label: "new thermal anomalies", color: "#ef4444" },
+  { key: "navint_degraded", label: "aircraft reporting degraded nav integrity", color: "#f97316" },
   { key: "alerts", label: "correlations", color: "#a78bfa" },
 ];
 // Live: 15-min bins inside the drawn circles; GDELT + social backfilled from the sources,

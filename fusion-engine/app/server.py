@@ -95,6 +95,14 @@ def aircraft(military_only: bool = False, limit: int = Query(3000, ge=1, le=2000
     return _in_view(state.api_aircraft(military_only), bbox, limit)
 
 
+@app.get("/api/navint")
+def navint():
+    """Navigation-integrity degradation per 1-degree cell from the live ADS-B snapshot.
+    Each cell reports the number of aircraft that transmit integrity fields; cells below the
+    minimum are labeled insufficient rather than omitted."""
+    return state.api_navint()
+
+
 @app.get("/api/aircraft/tails")
 def aircraft_tails(minutes: int = Query(30, ge=2, le=120), limit: int = Query(3000, ge=1, le=20000), bbox: str | None = None):
     return _tails_in_view(state.api_tails(minutes), bbox, limit)
