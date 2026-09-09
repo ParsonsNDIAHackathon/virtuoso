@@ -272,7 +272,9 @@ def _entities(record: EvidenceRecord) -> set[str]:
 
 
 def _pair_id(left: EvidenceRecord, right: EvidenceRecord) -> str:
-    parts = sorted((f"{left.kind}:{left.id}:{left.fingerprint()}", f"{right.kind}:{right.id}:{right.fingerprint()}"))
+    # Identity of the PAIR, not of one snapshot of it: an aircraft record changes position every
+    # minute, and keying on the snapshot made every verdict expire on the next fuse in live mode.
+    parts = sorted((f"{left.kind}:{left.id}", f"{right.kind}:{right.id}"))
     return "candidate:" + hashlib.sha256("|".join(parts).encode()).hexdigest()[:24]
 
 
