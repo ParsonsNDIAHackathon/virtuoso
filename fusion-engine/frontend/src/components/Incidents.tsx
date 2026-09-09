@@ -62,33 +62,6 @@ function IncidentCard({ inc, selected, onSelect, onFocus }: { inc: Incident; sel
       {insufficient.length > 0 && <span className="font-mono text-[9px] uppercase tracking-wider text-muted">insufficient: {insufficient.join(", ")}</span>}
     </div>
     <p className="mt-1 text-[11px] leading-snug text-ink">{inc.assessment.headline ?? inc.assessment.established}</p>
-    {false && selected && <div className="mt-2 space-y-2">
-      <dl className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 font-mono text-[10px]">
-        <dt className="uppercase tracking-wider text-muted">Established</dt><dd className="text-ink">{inc.assessment.established}</dd>
-        <dt className="uppercase tracking-wider text-muted">Disputed</dt><dd className="text-ink">{inc.assessment.disputed}</dd>
-        <dt className="uppercase tracking-wider text-muted">Unresolved</dt><dd className="text-ink">{inc.assessment.unresolved}</dd>
-        <dt className="uppercase tracking-wider text-muted">Relevance</dt><dd className="text-ink">{inc.assessment.relevance}</dd>
-      </dl>
-      <div>
-        <p className="mb-1 font-mono text-[9px] uppercase tracking-[.16em] text-muted">Explanations · predictions tested against the streams</p>
-        <div className="space-y-1">{inc.explanations.map((e, i) => <ExplanationRow key={e.id} e={e} lead={i === 0} />)}</div>
-      </div>
-      {inc.next_check ? <div className="border border-command/40 bg-command/5 p-1.5">
-        <p className="font-mono text-[9px] uppercase tracking-[.16em] text-command">Next check</p>
-        <p className="font-mono text-[10px] text-ink">{predictionLabel(inc.next_check.prediction)}</p>
-        <p className="font-mono text-[9px] text-muted">{inc.next_check.source} · {inc.next_check.why}</p>
-      </div> : <p className="font-mono text-[9px] text-muted">No discriminating check remains; every prediction is resolved.</p>}
-      <div>
-        <p className="mb-1 font-mono text-[9px] uppercase tracking-[.16em] text-muted">Revisions · what changed and when</p>
-        <ul className="space-y-0.5 font-mono text-[10px]">
-          {inc.revisions.slice(-6).reverse().map((r, i) => <li key={i} className="text-muted"><span className="text-ink">{stamp(r.t)}</span>
-            {r.added.length > 0 && <span className="text-[#94c973]"> +{r.added.map((s) => STREAM_LABEL[s] ?? s).join(", ")}</span>}
-            {r.gone.length > 0 && <span className="text-[#f0a09a]"> −{r.gone.map((s) => STREAM_LABEL[s] ?? s).join(", ")}</span>}
-            {r.added.length === 0 && r.gone.length === 0 && <span> cells {r.cells}</span>}
-            {r.leading && <span> · {r.leading}</span>}</li>)}
-        </ul>
-      </div>
-    </div>}
   </div>;
 }
 
