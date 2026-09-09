@@ -361,6 +361,8 @@ def generate_candidates(records: Iterable[EvidenceRecord], limit: int = 250) -> 
                     lu, ru = article_url_key(str(left.data.get("url") or "")), article_url_key(str(right.data.get("url") or ""))
                     if lu and ru and lu == ru:
                         continue      # several records from ONE article are not two sources; never a candidate
+                    if left.source and right.source and left.source == right.source:
+                        continue      # same outlet twice is not independent corroboration either
                 dt = abs(timestamps[id(left)] - timestamps[id(right)]) / 60
                 if dt > minutes:
                     continue
@@ -518,6 +520,7 @@ class FusionAI:
             "INSUFFICIENT_EVIDENCE when proximity "
             "is the only bridge. State the strongest limitation before deciding confidence. Resolve only entities "
             "explicitly present in the records; canonical names must not add facts."
+            "\nDifferent URLs do NOT establish independent sources: syndicated wire copy, reprints and reports that only repeat one original claim are ONE report. If titles or passages are near-identical, or one article cites the other as its source, treat them as the same report (article match) and do not count them as corroboration. "
             "\nArticle identity and incident relationship are separate questions. article_identity is computed "
             "by the application. SAME_ARTICLE confirms shared reporting provenance, not the same incident or "
             "independent corroboration. One GDELT article may yield many records for different actions, actors "

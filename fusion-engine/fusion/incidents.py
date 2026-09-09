@@ -323,7 +323,8 @@ class IncidentTracker:
         # claim), has at least one supported prediction and no contradicted one. Otherwise say so.
         def _eligible(e):
             return not any(p.status == "untested" and not p.prediction.startswith("quiet:") for p in e.predictions)
-        adequate = bool(lead and _eligible(lead) and lead.supported >= 1 and lead.contradicted == 0)
+        fully_tested = bool(lead and all(p.status != "untested" for p in lead.predictions))
+        adequate = bool(lead and fully_tested and lead.supported >= 1 and lead.contradicted == 0)
         established = (f"{', '.join(departed)} departed from their hour-of-day reference in {len(inc.cells)} cell(s)"
                        if departed else "no stream currently departed")
         if physical and reporting:
@@ -335,7 +336,9 @@ class IncidentTracker:
             established += ("; physical change unverified (coverage insufficient for " + ", ".join(phys_insufficient) + ")"
                             if phys_insufficient else "; reporting without a measured physical change")
         if not adequate:
-            disputed = ("no explanation adequately supported: " + (f"best candidate '{lead.title}' has {lead.contradicted} contradicted and {len(lead.predictions) - lead.supported - lead.contradicted} untested prediction(s)" if lead else "no explanations configured"))
+            untested = [p.prediction for p in lead.predictions if p.status == "untested"] if lead else []
+            disputed = ("no explanation adequately supported: " + (f"best candidate '{lead.title}' has {lead.contradicted} contradicted and {len(untested)} untested prediction(s)"
+                        + (" (untested absence claims do not establish that nothing happened: " + ", ".join(u.replace("quiet:", "no ") for u in untested[:3]) + ")" if untested else "") if lead else "no explanations configured"))
         else:
             disputed = "no contradicted predictions under the leading explanation"
         unresolved = (f"coverage insufficient for {', '.join(insufficient)}" if insufficient else "all streams had adequate coverage")
