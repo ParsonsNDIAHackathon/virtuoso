@@ -1,4 +1,4 @@
-import type { AisPicture, AIStatus, Alert, AoiSummary, Assessment, Entity, Event, Evidence, Firms, FusionCandidate, FusionCluster, Graph, LinkPreview, RecordRef, Region, ReplayConfig, ReplayScenario, ReplaySnapshot, Status, Tail, Timeline, Track, Viewport } from "./types";
+import type { AisPicture, AIStatus, Alert, AoiSummary, Assessment, Entity, Event, Evidence, Firms, FusionCandidate, FusionCluster, Graph, LinkPreview, LiveIncidents, SocialPlatforms, SourcePreview, RecordRef, Region, ReplayConfig, ReplayScenario, ReplaySnapshot, Status, Tail, Timeline, Track, Viewport } from "./types";
 import { aiDisplayText } from "./display";
 
 async function request<T>(path: string, init?: RequestInit, timeoutMs?: number): Promise<T> {
@@ -29,7 +29,10 @@ const mapQuery = (viewport: Viewport, limit: number) => new URLSearchParams({ bb
 
 export const api = {
   ais: () => request<AisPicture>("/api/ais"),
+  incidents: () => request<LiveIncidents>("/api/incidents"),
   status: () => request<Status>("/api/status"),
+  social: (platform?: string, limit = 500) => request<Event[]>(`/api/social?${new URLSearchParams({ ...(platform ? { platform } : {}), limit: String(limit) })}`),
+  socialPlatforms: () => request<SocialPlatforms>("/api/social/platforms"),
   events: (viewport: Viewport, limit: number) => request<Event[]>(`/api/events?${new URLSearchParams({ conflict_only: "true", ...Object.fromEntries(mapQuery(viewport, limit)) })}`),
   tracks: (viewport: Viewport, limit: number) => request<Track[]>(`/api/aircraft?${mapQuery(viewport, limit)}`),
   tails: (viewport: Viewport, limit: number) => request<Tail[]>(`/api/aircraft/tails?${mapQuery(viewport, limit)}`),
@@ -42,6 +45,7 @@ export const api = {
   clusters: () => request<FusionCluster[]>("/api/fusion/clusters?limit=100"),
   adjudicate: (left: RecordRef, right: RecordRef, mode: string, time?: number | null, force = false) => request<Assessment>("/api/fusion/adjudicate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ left, right, mode, t: time ?? null, force }) }, 100_000),
   entity: (id: string) => request<Entity>(`/api/entity/${encodeURIComponent(id)}`),
+  sourcePreview: (url: string) => request<SourcePreview>(`/api/source/preview?${new URLSearchParams({ url })}`),
   regions: () => request<Region[]>("/api/regions"),
   analyzeAoi: (id: string, mode: string, time?: number | null) => request<AoiSummary>(`/api/regions/${encodeURIComponent(id)}/analyze`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode, t: time ?? null }) }, 190_000),
   addRegion: (region: Pick<Region, "lat" | "lon" | "radius_nm"> & { name?: string }) => request<Region>("/api/regions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(region) }),

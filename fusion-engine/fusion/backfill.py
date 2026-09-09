@@ -3,7 +3,7 @@
 as the replay one from the moment the server starts.
 
   GDELT      every 15-min window of the last N hours (cached zips, export only, no GKG)  -> conflict events
-  Telegram   channel previews paged back N hours                                            -> geolocated posts
+  Social     every enabled platform (Telegram/Reddit/Bluesky/Mastodon) paged back N hours -> geolocated posts
   FIRMS      already held by FusionState.firms (last 24 h per circle, with novelty)         -> new anomalies
   aircraft / military / correlations                                                        -> our own per-fuse history
 
@@ -18,7 +18,7 @@ from datetime import datetime, timedelta, timezone
 
 from .geo import haversine_km
 from .ingest_gdelt import fetch_window
-from .ingest_telegram import DEFAULT_CHANNELS, fetch_channel
+from .ingest_social import default_targets, enabled_platforms
 
 log = logging.getLogger(__name__)
 STEP = 15 * 60
@@ -44,7 +44,7 @@ class Backfill:
         self.lock = threading.Lock()
         self.gdelt: dict[int, int] = {}        # bin_start_epoch -> conflict events inside circles
         self.gdelt_all: dict[int, int] = {}    # bin -> all geocoded events inside circles
-        self.social: dict[int, int] = {}       # bin -> geolocated Telegram posts inside circles
+        self.social: dict[int, int] = {}       # bin -> geolocated social posts inside circles (all platforms)
         self.done_stamps: set[str] = set()
         self.built_at: float | None = None
         self.progress = "not started"
@@ -72,18 +72,29 @@ class Backfill:
             self.done_stamps.add(stamp)
 
     def _ingest_social(self, circles: list[dict]):
+        import importlib
+        from .ingest_social import _ADAPTERS
+
         since = (datetime.now(timezone.utc) - timedelta(hours=self.hours)).strftime("%Y-%m-%d")
         counts: dict[int, int] = {}
-        for ch in DEFAULT_CHANNELS:
+        for plat in enabled_platforms():
             try:
-                for p in fetch_channel(ch, since):
+                mod = importlib.import_module(_ADAPTERS[plat])
+            except Exception as e:
+                log.warning("backfill social %s unavailable: %s", plat, e)
+                continue
+            for target in default_targets(plat):
+                try:
+                    posts = mod.fetch_channel(target, since)
+                except Exception as e:
+                    log.warning("backfill %s %s: %s", plat, target, e)
+                    continue
+                for p in posts:
                     if p.lat is None or not _in_circles(p.lat, p.lon, circles):
                         continue
                     t = datetime.fromisoformat(p.ts).timestamp()
                     b = int(t // STEP * STEP)
                     counts[b] = counts.get(b, 0) + 1
-            except Exception as e:
-                log.warning("backfill telegram %s: %s", ch, e)
         with self.lock:
             self.social = counts
 
@@ -95,7 +106,7 @@ class Backfill:
             self._ingest_stamp(s, circles)
             if i % 8 == 0:
                 self.progress = f"GDELT {i}/{len(stamps)}"
-        self.progress = "Telegram"
+        self.progress = "Social"
         self._ingest_social(circles)
         self.built_at = time.time()
         self.progress = "done"

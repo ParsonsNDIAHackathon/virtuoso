@@ -20,11 +20,13 @@ from typing import Callable
 from .store import InMemoryStore, make_store
 from .ingest_adsb import AirTrack, fetch_military, fetch_regions
 from .ingest_gdelt import OsintEvent, fetch_window
-from .ingest_telegram import DEFAULT_CHANNELS, SocialPost, fetch_latest, social_to_event
+from .ingest_social import PLATFORM_LABELS, SocialPost, enabled_platforms, platform_of, social_to_event
 from .ingest_firms import fetch as fetch_firms, novelty as firms_novelty
 from .backfill import Backfill
 from .retrieval import coverage_key, refresh_signature, select_batch
 from .fusion_ai import AIProviderError, Assessment, Candidate, EvidenceRecord, FusionAI, FusionCluster, asserted_graph_context, candidate_for_pair, generate_candidates, records_from_sources
+from .live_analysis import LiveAnalysis
+from .aircraft_log import AircraftLog
 
 log = logging.getLogger(__name__)
 try:
@@ -80,7 +82,9 @@ class FusionState:
     social_posts: dict[str, SocialPost] = field(default_factory=dict)
     firms: list[dict] = field(default_factory=list)
     fusion_ai: FusionAI = field(default_factory=lambda: FusionAI(DATA), repr=False)
+    live_analysis: LiveAnalysis = field(default_factory=lambda: LiveAnalysis(DATA / "gdelt", aircraft_log=AircraftLog(DATA / "aircraft_log.jsonl"), state_path=DATA / "incidents_state.json"), repr=False)
     fusion_candidates: list[Candidate] = field(default_factory=list, repr=False)
+    fusion_candidates_ungated_n: int = 0
     fusion_assessments: dict[str, Assessment] = field(default_factory=dict, repr=False)
     fusion_clusters: list[FusionCluster] = field(default_factory=list, repr=False)
     # This is deliberately separate from record counts.  An empty result can be
@@ -90,6 +94,7 @@ class FusionState:
         "gdelt": {"state": "starting", "label": "GDELT OSINT"},
         "adsb": {"state": "starting", "label": "ADS-B aircraft"},
         "firms": {"state": "starting", "label": "NASA FIRMS thermal"},
+        "social": {"state": "starting", "label": "Social (all platforms)"},
         "telegram": {"state": "starting", "label": "Telegram previews"},
         "fusion": {"state": "starting", "label": "Fusion candidate retrieval"},
         "openai": {"state": "starting", "label": "OpenAI adjudication"},
@@ -172,16 +177,45 @@ class FusionState:
                  len(all_ev), sum(e.is_conflict for e in all_ev), windows)
         self.set_source_status("gdelt", "ready", count=len(all_ev), detail=f"{windows} × 15-minute window")
 
-    def refresh_social(self, channels=None):
-        """Poll public Telegram channel previews; keep the last 6 h of geolocated posts."""
-        posts = []
-        failures = 0
-        for ch in channels or DEFAULT_CHANNELS:
+    def refresh_social(self, channels=None, platforms=None, targets=None):
+        """Poll every enabled social platform; keep the last 6 h of geolocated posts.
+
+        `channels` is the legacy Telegram-only override (list of channel names).
+        `platforms` / `targets` select a subset, e.g. platforms=["reddit"],
+        targets={"reddit": ["worldnews"]}. Failures are isolated per platform so
+        one down website never blocks the others.
+        """
+        import importlib
+        from .ingest_social import _ADAPTERS, default_targets
+
+        plats = enabled_platforms(platforms)
+        if channels:  # legacy Telegram-only call path
+            targets = {**(targets or {}), "telegram": list(channels)}
+            plats = ["telegram"] if platforms is None else plats
+        eff_targets = {p: (targets or {}).get(p) or default_targets(p) for p in plats}
+        # Fan out per platform/target with explicit failure accounting: a
+        # platform returning zero posts is healthy (nothing geolocated this
+        # tick); only exceptions count as failures.
+        posts, failures = [], 0
+        per_platform: dict[str, int] = {}
+        for plat in plats:
             try:
-                posts += fetch_latest(ch)
+                mod = importlib.import_module(_ADAPTERS[plat])
             except Exception as e:
-                log.warning("telegram %s failed: %s", ch, e)
+                log.warning("social %s unavailable: %s", plat, e)
                 failures += 1
+                continue
+            for t in eff_targets.get(plat) or []:
+                try:
+                    chunk = mod.fetch_latest(t)
+                except Exception as e:
+                    log.warning("social %s %s failed: %s", plat, t, e)
+                    failures += 1
+                    continue
+                for p in chunk:
+                    per_platform[p.platform] = per_platform.get(p.platform, 0) + 1
+                posts += chunk
+        posts.sort(key=lambda p: p.ts or "")
         cutoff = datetime.now(timezone.utc).timestamp() - 6 * 3600
         fresh = [social_to_event(p) for p in posts
                  if p.lat is not None and datetime.fromisoformat(p.ts).timestamp() >= cutoff]
@@ -190,7 +224,7 @@ class FusionState:
             self.social = [e for e in self.social
                            if datetime.fromisoformat(e.ts).timestamp() >= cutoff] + [e for e in fresh if e.id not in have]
             self.social_posts = {
-                **{post_id: post for post_id, post in self.social_posts.items()
+                **{post_id: post for post_id, post in getattr(self, "social_posts", {}).items()
                    if datetime.fromisoformat(post.ts).timestamp() >= cutoff},
                 **{post.id: post for post in posts if post.lat is not None
                    and datetime.fromisoformat(post.ts).timestamp() >= cutoff},
@@ -198,10 +232,33 @@ class FusionState:
             all_events = self.events + self.social
             self.event_ids = [event.id for event in all_events]
             self.conflict_event_count = sum(event.is_conflict for event in all_events)
-        log.info("Telegram: %d posts polled, %d geolocated in last 6 h", len(posts), len(self.social))
-        state = "error" if failures and not posts else "partial" if failures else "ready"
-        detail = "Some channel previews were unavailable" if failures else "Public channel previews only"
-        self.set_source_status("telegram", state, count=len(self.social), detail=detail)
+        # Per-platform geolocated counts (what actually enters the correlator).
+        by_plat: dict[str, int] = {}
+        for e in self.social:
+            plat = platform_of(e) or "unknown"
+            by_plat[plat] = by_plat.get(plat, 0) + 1
+        log.info("Social: %d posts polled (%s), %d geolocated in last 6 h",
+                 len(posts), ", ".join(f"{k}={v}" for k, v in sorted(per_platform.items())) or "none",
+                 len(self.social))
+        # Aggregate status (new) + legacy "telegram" key + per-platform keys.
+        if failures and not posts:
+            state, detail = "error", "All social sources unavailable; retaining the last result"
+        elif failures:
+            state, detail = "partial", "Some social sources were unavailable"
+        else:
+            state, detail = "ready", "Keyless public posts; geolocated only"
+        self.set_source_status("social", state, count=len(self.social), detail=detail)
+        tg_n = by_plat.get("telegram", 0)
+        self.set_source_status("telegram",  # backwards-compat alias for old dashboards
+                               state if "telegram" in plats else self.source_status.get("telegram", {}).get("state", "starting"),
+                               count=tg_n if "telegram" in plats else self.source_status.get("telegram", {}).get("count"),
+                               detail="Public channel previews only" if "telegram" in plats else None)
+        for plat in plats:
+            label = PLATFORM_LABELS.get(plat, plat)
+            n = by_plat.get(plat, 0)
+            # A platform that returned nothing this tick keeps its previous count
+            # unless it errored on every target; fetch_latest_all already logged.
+            self.set_source_status(f"social:{plat}", state, count=n, detail=label)
 
     def refresh_firms(self):
         """Latest 24 h of VIIRS thermal anomalies inside every area-of-interest circle, scored for
@@ -274,6 +331,10 @@ class FusionState:
             cutoff = datetime.now(timezone.utc).timestamp() - 120 * 60
             self.track_history = [track for track in self.track_history if datetime.fromisoformat(track.ts).timestamp() >= cutoff]
             self.track_history.extend(tr)
+        try:
+            self.live_analysis.aircraft_log.record(tr)
+        except Exception as e:
+            log.warning("aircraft log write failed: %s", e)
         batch_id = f"live:{uuid.uuid4().hex}"
         store = self.store
         degraded_detail = None
@@ -329,15 +390,40 @@ class FusionState:
             # The deterministic pass deliberately creates candidates only. OpenAI adjudication
             # runs outside this one-minute ingest path and promotes supported evidence separately.
             records = records_from_sources(ev, tr, hotspots, social_posts, vessels=vessels)
-            self.fusion_candidates = generate_candidates(records, limit=int(os.getenv("FUSION_CANDIDATE_LIMIT", "250")))
-            current_records = {(record.kind, record.id) for record in records}
+            limit = int(os.getenv("FUSION_CANDIDATE_LIMIT", "250"))
+            baseline = getattr(self.live_analysis, "baseline", None)
+            if baseline is not None:
+                from .baseline import cell_of
+                from .mission import is_dateline
+                departed = baseline.departed_cells(now_ts_gate := datetime.now(timezone.utc).timestamp())
+                hot = {(c[0] + dy, c[1] + dx) for c in departed for dy in (-1, 0, 1) for dx in (-1, 0, 1)}
+                gated = [r for r in records if cell_of(r.lat, r.lon) in hot
+                         and not (r.kind == "gdelt" and is_dateline(r.label.split(": ", 1)[-1]))]
+                self.fusion_candidates = generate_candidates(gated, limit=limit)
+                self.fusion_candidates_ungated_n = len(generate_candidates(records, limit=limit))
+            else:
+                self.fusion_candidates = generate_candidates(records, limit=limit)
+                self.fusion_candidates_ungated_n = len(self.fusion_candidates)
+            current_records = {(record.kind, record.id): record for record in records}
             cutoff = time.time() - float(os.getenv("FUSION_ASSESSMENT_TTL_S", "3600"))
             self.fusion_assessments = {
                 key: assessment for key, assessment in self.fusion_assessments.items()
                 if (assessment.left_kind, assessment.left_id) in current_records
                 and (assessment.right_kind, assessment.right_id) in current_records
                 and datetime.fromisoformat(assessment.created_at).timestamp() >= cutoff
+                and all(assessment.claim_fingerprints.get(f"{kind}:{rid}") in (None, current_records[(kind, rid)].claim_fingerprint())
+                        for kind, rid in ((assessment.left_kind, assessment.left_id), (assessment.right_kind, assessment.right_id)))
             }
+            # Re-read the cache for every current pair. The cache key includes the records' claim
+            # content, so a pair whose article was edited or withdrawn misses and its old verdict is
+            # dropped immediately (outdated), rather than lingering until the next model pass.
+            for candidate in self.fusion_candidates:
+                try:
+                    cached = self.fusion_ai.cached_assessment(candidate)
+                except Exception:
+                    cached = None
+                if cached is not None and datetime.fromisoformat(cached.created_at).timestamp() >= cutoff:
+                    self._remember_assessment(cached)
             self.fusion_clusters = self.fusion_ai.clusters(self.fusion_assessments.values())
             now_ts = datetime.now(timezone.utc).timestamp()
             # levels (what is present now) and flows (first seen since the previous fuse) — the live
@@ -380,6 +466,13 @@ class FusionState:
             self.fusion_clusters, batch_id, "candidate",
         )
         self._start_ai_fusion(batch_id)
+        # baseline + incidents over the last 48 h, rebuilt in the background every 15 min
+        try:
+            with self.lock:
+                args = (list(self.events), list(self.social), list(self.firms), list(self.track_history), list(self.regions))
+            self.live_analysis.start(*args)
+        except Exception as e:
+            log.warning("live analysis not started: %s", e)
         return alerts
 
     def _queue_fusion_artifacts(self, store, candidates, assessments, clusters, batch_id, source):
@@ -451,8 +544,14 @@ class FusionState:
             eligible = [value for value in self.fusion_candidates if value.id not in assessed_ids
                         and (coverage_key(value) not in self._ai_recent
                              or self._ai_recent[coverage_key(value)][1] != refresh_signature(value))]
+            try:
+                hot = {tuple(cell) for incident in self.live_analysis.snapshot().get("incidents", []) for cell in incident["cells"]}
+            except Exception:
+                hot = set()
+            from .baseline import cell_of
             candidates = select_batch(eligible, limit=int(os.getenv("FUSION_LLM_MAX_CANDIDATES", "12")),
-                                      proximity_limit=int(os.getenv("FUSION_LLM_PROXIMITY_LIMIT", "2")))
+                                      proximity_limit=int(os.getenv("FUSION_LLM_PROXIMITY_LIMIT", "2")),
+                                      priority=lambda c: cell_of(c.left.lat, c.left.lon) in hot or cell_of(c.right.lat, c.right.lon) in hot)
         if not candidates:
             self._ai_lock.release()
             self.set_source_status("openai", "ready", count=len(self.fusion_assessments),
@@ -552,6 +651,16 @@ class FusionState:
         with self.lock:
             tracks = [track.to_dict() for track in self.tracks]
         return [track for track in tracks if not military_only or track["military"]]
+
+    def api_incidents(self) -> dict:
+        return self.live_analysis.snapshot()
+
+    def api_navint(self) -> list[dict]:
+        """Per-cell navigation-integrity picture from the current snapshot, with the count it rests on."""
+        from .navint import cells_from_snapshot
+        with self.lock:
+            tracks = list(self.tracks)
+        return cells_from_snapshot(tracks)
 
     def api_tails(self, minutes: float = 30.0) -> list[dict]:
         """Recent paths for aircraft in the current snapshot, from rolling ADS-B pulls."""
@@ -672,7 +781,7 @@ class FusionState:
         return assessment.to_dict()
 
     def api_timeline(self, hours: float = 24.0) -> dict:
-        """15-min bins for the last `hours`: GDELT/Telegram backfilled inside the drawn circles,
+        """15-min bins for the last `hours`: GDELT/social backfilled inside the drawn circles,
         FIRMS novel anomalies, plus our own aircraft levels and correlation flows."""
         hours = hours if hours > 0 else 24 * 7
         with self.lock:
@@ -781,6 +890,7 @@ def run_loop(state: FusionState, gdelt_every=900, adsb_every=60, windows=2, prim
                 last_s = now
             except Exception as e:
                 log.warning("social refresh failed: %s", e)
+                state.set_source_status("social", "error", detail="Social sources unavailable; retaining the last result")
                 state.set_source_status("telegram", "error", detail="Telegram previews unavailable; retaining the last result")
         if now - last_g >= gdelt_every:
             try:

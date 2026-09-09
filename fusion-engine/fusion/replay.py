@@ -15,8 +15,12 @@ from pathlib import Path
 
 from .ingest_gdelt import OsintEvent
 from .store import make_store
-from .ingest_telegram import SocialPost, social_to_event
+from .ingest_social import SocialPost, is_social_event, social_to_event
 from .replay_adsb import load_tracks, snapshot_at, track_polylines
+from .navint import MIN_KNOWN, timeline_counts as navint_timeline, window_from_tracks as navint_window
+from .baseline import Baseline, cell_of
+from .incidents import IncidentTracker
+from .mission import CONFIG as MISSION, is_dateline
 from .replay_gdelt import HORMUZ_BBOX, HORMUZ_KW
 from .fusion_ai import FusionAI, asserted_graph_context, candidate_for_pair, generate_candidates, records_from_sources
 
@@ -55,6 +59,22 @@ SCENARIOS = {
 }
 
 
+def _nearest_scene(dets: list[dict], t: float, max_age_h: float = 72.0) -> tuple[list[dict], dict | None]:
+    """Radar revisit over the strait is days, not hours: return the scene closest in time to t
+    (before or after) within max_age_h, plus a descriptor with its age so the UI can say so."""
+    times = sorted({datetime.fromisoformat(d["ts"]).timestamp() for d in dets})
+    if not times:
+        return [], None
+    best = min(times, key=lambda x: abs(x - t))
+    if abs(best - t) > max_age_h * 3600:
+        return [], None
+    scene = [d for d in dets if datetime.fromisoformat(d["ts"]).timestamp() == best]
+    age_h = (t - best) / 3600
+    return scene, {"ts": datetime.fromtimestamp(best, tz=timezone.utc).isoformat(), "age_h": round(age_h, 1),
+                   "label": f"radar picture {abs(age_h):.0f} h {'before' if age_h > 0 else 'after'} this moment",
+                   "n": len(scene), "scene": scene[0]["scene"] if scene else None}
+
+
 class ReplayState:
     def __init__(self, scenario_id: str, store=None):
         self.sc = dict(SCENARIOS[scenario_id], id=scenario_id)
@@ -65,6 +85,9 @@ class ReplayState:
         self.social_posts: dict[str, SocialPost] = {}
         self.tracks: dict[str, dict] = {}
         self.firms: list[dict] = []
+        self.sar: list[dict] = []
+        self.baseline: Baseline | None = None
+        self.incidents: IncidentTracker | None = None
         self.loaded = False
         self.lock = threading.Lock()
         self._cache: dict[int, dict] = {}
@@ -86,20 +109,51 @@ class ReplayState:
                     self.events += [OsintEvent(**e) for e in json.loads(gpath.read_text(encoding="utf-8"))]
                     self.loaded_layers["gdelt"].append(day)
                 else:
-                    log.warning("replay: no GDELT file for %s (run the standalone replay builder)", day)
-                tpath = DATA / "replay" / f"{day}_telegram.json"
-                if tpath.exists():
-                    posts = [SocialPost(**d) for d in json.loads(tpath.read_text(encoding="utf-8"))]
-                    social = [social_to_event(p) for p in posts if p.lat is not None]
-                    self.social_posts.update({post.id: post for post in posts if post.lat is not None})
+                    log.warning("replay: no GDELT file for %s (run: python -m fusion.replay_gdelt %s)", day, day)
+                # Social: legacy per-day Telegram file plus the multi-platform
+                # aggregate (<day>_social.json) and per-platform files
+                # (<day>_reddit.json, <day>_bluesky.json, ...). All share the same
+                # SocialPost contract; ids dedupe across files.
+                if "social" not in self.loaded_layers:
+                    self.loaded_layers["social"] = []
+                seen_social: set[str] = set()
+                n_geo = n_tot = 0
+                for name in (f"{day}_telegram.json", f"{day}_social.json",
+                             f"{day}_reddit.json", f"{day}_bluesky.json",
+                             f"{day}_mastodon.json"):
+                    tpath = DATA / "replay" / name
+                    if not tpath.exists():
+                        continue
+                    try:
+                        raw = json.loads(tpath.read_text(encoding="utf-8"))
+                    except Exception as e:
+                        log.warning("replay social %s unreadable: %s", name, e)
+                        continue
+                    posts = [SocialPost.from_dict(d) for d in raw]
+                    fresh = []
+                    for p in posts:
+                        if p.id not in seen_social:
+                            seen_social.add(p.id)
+                            fresh.append(p)
+                    social = [social_to_event(p) for p in fresh if p.lat is not None]
+                    self.social_posts.update({p.id: p for p in fresh if p.lat is not None})
                     self.events += social
-                    self.loaded_layers["telegram"].append(day)
-                    log.info("replay %s: +%d geolocated Telegram posts (%d total posts)", day, len(social), len(posts))
+                    n_geo += len(social)
+                    n_tot += len(fresh)
+                    if name == f"{day}_telegram.json":
+                        self.loaded_layers["telegram"].append(day)
+                    if day not in self.loaded_layers["social"]:
+                        self.loaded_layers["social"].append(day)
+                if n_tot:
+                    log.info("replay %s: +%d geolocated social posts (%d total posts, all platforms)",
+                             day, n_geo, n_tot)
                 fpath = DATA / "replay" / f"{day}_firms.json"
                 if fpath.exists():
                     self.firms += json.loads(fpath.read_text(encoding="utf-8"))
                     self.loaded_layers["firms"].append(day)
                 apath = DATA / "replay" / f"{day}_adsb.json"
+                if not apath.exists() and (ROOT / "data" / "replay" / f"{day}_adsb.json.gz").exists():
+                    apath = ROOT / "data" / "replay" / f"{day}_adsb.json.gz"      # committed copy with nic/nac_p
                 if apath.exists():
                     for hexid, a in load_tracks(apath).items():
                         if hexid in self.tracks:
@@ -112,6 +166,19 @@ class ReplayState:
                     self.loaded_layers["adsb"].append(day)
                 else:
                     log.warning("replay: no ADS-B file for %s", day)
+            self.sar = []
+            for spath in sorted((DATA / "replay").glob("*_sar.json")):
+                try:
+                    sday = datetime.strptime(spath.name[:10], "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp()
+                except ValueError:
+                    continue
+                if self.t_min - 3 * 86400 <= sday <= self.t_max + 3 * 86400:
+                    self.sar += json.loads(spath.read_text(encoding="utf-8"))
+            self.baseline = Baseline(self.t_min, self.t_max)
+            self.baseline.add_events(self.events)
+            self.baseline.add_tracks(self.tracks)
+            self.baseline.add_firms(self.firms)
+            self.incidents = IncidentTracker(self.baseline, self.events)
             self.loaded = True
             log.info("replay %s: %d events, %d aircraft; layers loaded %s", "..".join(self.days), len(self.events), len(self.tracks), self.loaded_layers)
 
@@ -122,8 +189,33 @@ class ReplayState:
             "layers_loaded": self.loaded_layers,
             "n_events": len(self.events), "n_conflict": sum(e.is_conflict for e in self.events),
             "n_aircraft": len(self.tracks), "n_military": sum(1 for a in self.tracks.values() if a["military"]),
-            "adsb_available": bool(self.tracks), "n_firms": len(self.firms),
+            "adsb_available": bool(self.tracks), "n_firms": len(self.firms), "n_sar": len(self.sar),
+            "n_navint_aircraft": sum(1 for a in self.tracks.values() if any(len(p) > 9 and (p[8] is not None or p[9] is not None) for p in a["points"])),
+            "sar_scenes": sorted({d["ts"] for d in self.sar}),
+            "sar_summary": self._sar_summary(),
         }
+
+    def _core_dets(self, core=(26.0, 55.8, 27.0, 56.9)) -> list[dict]:
+        """Detections from scenes that image the strait core (scene must have >= 20 core detections)."""
+        la0, lo0, la1, lo1 = core
+        per = {}
+        for d in self.sar:
+            if la0 <= d["lat"] <= la1 and lo0 <= d["lon"] <= lo1:
+                per[d["ts"]] = per.get(d["ts"], 0) + 1
+        ok = {ts for ts, n in per.items() if n >= 20}
+        return [d for d in self.sar if d["ts"] in ok]
+
+    def _sar_summary(self, core=(26.0, 55.8, 27.0, 56.9)) -> list[dict]:
+        """Per radar scene: total ship detections and how many sit in the strait core box, so the UI
+        can state the before/after change in plain words."""
+        la0, lo0, la1, lo1 = core
+        out = {}
+        for d in self.sar:
+            o = out.setdefault(d["ts"], {"ts": d["ts"], "n": 0, "core": 0, "scene": d["scene"][:32]})
+            o["n"] += 1
+            if la0 <= d["lat"] <= la1 and lo0 <= d["lon"] <= lo1:
+                o["core"] += 1
+        return [out[k] for k in sorted(out)]
 
     def at(self, t: float, lookback_min: float = 120.0, radius_km: float = 75.0, tail_min: float = 30.0) -> dict:
         """Fused picture at instant t (epoch seconds). Events from the prior lookback window, aircraft
@@ -142,7 +234,10 @@ class ReplayState:
         event_ids = [event.id for event in ev]
         self.store.ingest(ev, tr, batch_id, hotspots=current_firms, social_posts=self.social_posts)
         alerts = self.store.correlate(event_ids, batch_id, radius_km, lookback_min, min_severity=0.3)
-        candidates = generate_candidates(records_from_sources(ev, tr, current_firms, self.social_posts), limit=250)
+        baseline = getattr(self, "baseline", None)
+        departures = baseline.departures_at(t) if baseline else []
+        departed = baseline.departed_cells(t) if baseline else set()
+        candidates, ungated_n = self._gated_candidates(t, ev, tr, current_firms, departed)
         assessments = [assessment for candidate in candidates
                        if (assessment := self.fusion_ai.cached_assessment(candidate)) is not None]
         clusters = self.fusion_ai.clusters(assessments)
@@ -153,7 +248,9 @@ class ReplayState:
             "t": t, "t_iso": t_iso.isoformat(),
             "counts": {"events": len(stored_events), "conflict_events": sum(e["is_conflict"] for e in stored_events),
                        "tracks": len(stored_tracks), "military_tracks": sum(x["military"] for x in stored_tracks),
-                       "alerts": len(alerts), "candidates": len(candidates),
+                       "alerts": len(alerts), "candidates": len(candidates), "candidates_ungated": ungated_n,
+                       "departures": len(departures), "departed_cells": len(departed),
+                       "incidents": len(getattr(self, "incidents", None).at(t)) if getattr(self, "incidents", None) else 0,
                        "assessments": len(assessments),
                        "supported": sum(value.verdict == "SUPPORTED" for value in assessments),
                        "plausible": sum(value.verdict == "PLAUSIBLE" for value in assessments),
@@ -162,14 +259,33 @@ class ReplayState:
             "tracks": stored_tracks,
             "alerts": [a.to_dict() for a in alerts[:300]],
             "candidates": [candidate.to_dict(False) for candidate in candidates],
+            # what is unusual for each cell at this hour, with the reference it rests on
+            "departures": [d.to_dict() for d in departures],
+            "departed_cells": sorted([list(c) for c in departed]),
+            # assessments use completed hours only: nothing after this instant is consulted
+            "assessed_through": (datetime.fromtimestamp(baseline.bin_end(baseline.completed_bin(t)), tz=timezone.utc).isoformat()
+                                 if baseline and baseline.completed_bin(t) is not None else None),
+            # persistent incidents formed from departed cells, with revisions available at t only
+            "incidents": [inc.to_dict() for inc in (getattr(self, "incidents", None).at(t) if getattr(self, "incidents", None) else [])],
+            "baseline": {"z_threshold": MISSION["z_threshold"], "persistent_bins": MISSION["persistent_bins"],
+                         "reference": "same hour +/-2 h on other days, 2-3 h away same day", "days": len(self.days)},
             # Rejections remain available for the explicit UI toggle, while the graph projection
             # and default list continue to hide them.
             "assessments": [assessment.to_dict() for assessment in assessments],
             "clusters": [cluster.to_dict() for cluster in clusters],
             "graph": self.store.graph(event_ids, batch_id, max_nodes=220, max_links=400),
             "tails": track_polylines(self.tracks, t - tail_min * 60, t) if self.tracks else [],
+            # navigation integrity over the last hour, per 1-degree cell, with the aircraft count it rests on
+            "navint": navint_window(self.tracks, t - 3600, t) if self.tracks else [],
+            "navint_min_known": MIN_KNOWN,
             # thermal anomalies seen in the last 12 h (satellite passes are ~2x/day)
             "firms": current_firms,
+            # radar ship detections from the most recent scene at or before t (within 12 h)
+            "sar": (sar := _nearest_scene(self.sar, t))[0],
+            "sar_scene": sar[1],
+            # the scene closest in time that actually images the strait core (may be days away)
+            "sar_core": (sc := _nearest_scene(self._core_dets(), t, max_age_h=96.0))[0],
+            "sar_core_scene": sc[1],
         }
         if len(self._cache) > 200:
             self._cache.clear()
@@ -237,6 +353,48 @@ class ReplayState:
         )
         return assessment.to_dict()
 
+    def _window(self, t: float, lookback_min: float = 120.0):
+        """Events, aircraft and thermal detections visible at instant t (same rule as at())."""
+        ev = [e for e in self.events if t - lookback_min * 60 <= datetime.fromisoformat(e.ts).timestamp() <= t]
+        tr = snapshot_at(self.tracks, t) if self.tracks else []
+        firms = [h for h in self.firms if t - 12 * 3600 <= datetime.fromisoformat(h["ts"]).timestamp() <= t]
+        return ev, tr, firms
+
+    def _gated_candidates(self, t: float, ev, tr, current_firms, departed) -> tuple[list, int]:
+        """Candidates from records in departed cells (or their neighbours), never dateline news; plus the
+        ungated count for comparison."""
+        hot = {(c[0] + dy, c[1] + dx) for c in departed for dy in (-1, 0, 1) for dx in (-1, 0, 1)}
+        all_records = records_from_sources(ev, tr, current_firms, self.social_posts)
+        gated = [r for r in all_records
+                 if cell_of(r.lat, r.lon) in hot
+                 and not (r.kind == "gdelt" and is_dateline(r.label.split(": ", 1)[-1]))]
+        return generate_candidates(gated, limit=250), len(generate_candidates(all_records, limit=250))
+
+    def adjudicate_instant(self, t: float, limit: int = 12) -> list:
+        """Adjudicate the best candidates at instant t (incident cells first, then shared entities, then
+        news-to-news) and leave the verdicts in the cache so the scrubber shows them. Returns assessments."""
+        self.load()
+        t = min(max(t, self.t_min), self.t_max)
+        ev, tr, firms = self._window(t)
+        baseline = getattr(self, "baseline", None)
+        departed = baseline.departed_cells(t) if baseline else set()
+        candidates, _ = self._gated_candidates(t, ev, tr, firms, departed)
+        tracker = getattr(self, "incidents", None)
+        hot = {tuple(c) for inc in (tracker.at(t) if tracker else []) for c in inc.cells}
+
+        def prio(c):
+            inside = cell_of(c.left.lat, c.left.lon) in hot or cell_of(c.right.lat, c.right.lon) in hot
+            return (not inside, -len(c.entity_overlap), not (c.left.kind == "gdelt" and c.right.kind == "gdelt"), -c.candidate_score)
+
+        out = []
+        for c in sorted(candidates, key=prio)[:limit]:
+            try:
+                out.append(self.fusion_ai.adjudicate(c))
+            except Exception as e:
+                log.warning("adjudication failed for %s: %s", c.id, e)
+        self._cache.pop(int(t // 60), None)          # at(t) re-reads the cache on its next call
+        return out
+
     def evidence(self) -> dict | None:
         """Curated manual evidence attached to this scenario (None if the scenario has none).
         Loaded fresh from the committed JSON; never mixed into events, tracks or alerts."""
@@ -256,7 +414,7 @@ class ReplayState:
         step = step_min * 60
         n = int((self.t_max + 1 - self.t_min) // step)
         bins = [{"t": self.t_min + i * step, "events": 0, "conflict": 0, "social": 0,
-                 "tracks": 0, "military": 0, "firms_new": 0} for i in range(n)]
+                 "tracks": 0, "military": 0, "firms_new": 0, "navint_known": 0, "navint_degraded": 0} for i in range(n)]
 
         def idx(ts):
             i = int((ts - self.t_min) // step)
@@ -266,7 +424,7 @@ class ReplayState:
             i = idx(datetime.fromisoformat(e.ts).timestamp())
             if i is None:
                 continue
-            if e.source_domain.startswith("t.me/"):
+            if is_social_event(e):
                 bins[i]["social"] += 1
             else:
                 bins[i]["events"] += 1
@@ -283,8 +441,21 @@ class ReplayState:
         for i in range(n):
             bins[i]["tracks"] = len(seen[i])
             bins[i]["military"] = len(mil[i])
+        nav_known, nav_deg = navint_timeline(self.tracks, self.t_min, n, step)
+        for i in range(n):
+            bins[i]["navint_known"] = nav_known[i]
+            bins[i]["navint_degraded"] = nav_deg[i]
         for h in self.firms:
             i = idx(datetime.fromisoformat(h["ts"]).timestamp())
             if i is not None and h.get("novelty", 0) >= 0.9:
                 bins[i]["firms_new"] += 1
-        return {"step_min": step_min, "t_min": self.t_min, "bins": bins}
+        baseline = getattr(self, "baseline", None)
+        if baseline:
+            zs = baseline.timeline()
+            for i in range(n):
+                h = int((bins[i]["t"] - self.t_min) // 3600)
+                bins[i]["z"] = {s: (zs[s][h] if h < len(zs[s]) else None) for s in zs}
+        scenes = sorted({d["ts"] for d in self.sar})
+        return {"step_min": step_min, "t_min": self.t_min, "bins": bins,
+                "sar_scenes": [{"ts": ts, "t": datetime.fromisoformat(ts).timestamp(),
+                                "n": sum(1 for d in self.sar if d["ts"] == ts)} for ts in scenes]}

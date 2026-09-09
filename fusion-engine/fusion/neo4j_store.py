@@ -61,7 +61,7 @@ def _neighbor_grids(lat: float, lon: float) -> list[str]:
 def _node_kind(node) -> str:
     labels = set(node.labels)
     if "SocialPost" in labels:
-        return "telegram"
+        return node.get("source_kind") or "telegram"
     if "Event" in labels:
         return "event"
     if "Actor" in labels:
@@ -152,7 +152,7 @@ class Neo4jStore:
             props = asdict(event)
             post = social_posts.get(event.id)
             if post:
-                props.update(source_kind="telegram", text=post.text[:8000], channel=post.channel,
+                props.update(source_kind=post.platform or "telegram", text=post.text[:8000], channel=post.channel,
                              keywords=post.keywords, views=post.views, has_media=post.has_media)
             else:
                 props["source_kind"] = "gdelt"

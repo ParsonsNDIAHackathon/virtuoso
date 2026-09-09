@@ -9,8 +9,9 @@ from dataclasses import dataclass, field
 from urllib.parse import unquote, urlparse
 
 from .source_documents import article_url_key, cached_document_text
+from .ingest_social import SOCIAL_PLATFORMS
 
-NEWS = {"gdelt", "telegram"}
+NEWS = {"gdelt", *SOCIAL_PLATFORMS}
 GENERIC_NAMES = {
     "unknown", "unidentified", "none", "null", "test", "test vessel", "vessel", "ship",
     "government", "military", "police", "president", "minister", "company", "school",
@@ -175,19 +176,20 @@ def refresh_signature(candidate) -> str:
     return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()
 
 
-def select_batch(candidates, limit=12, proximity_limit=2):
+def select_batch(candidates, limit=12, proximity_limit=2, priority=None):
     """Semantic matches first, with source-pair diversity and a small exploration budget."""
     result, seen = [], set()
+    rank = lambda candidate: (bool(priority(candidate)) if priority else False, candidate.candidate_score)
     for tier in ("identifier", "name", "entity", "topic", "proximity"):
         pool = [value for value in candidates if value.match_type == tier]
         cap = min(proximity_limit, limit) if tier == "proximity" else limit
         groups = {}
-        for candidate in sorted(pool, key=lambda value: value.candidate_score, reverse=True):
+        for candidate in sorted(pool, key=rank, reverse=True):
             groups.setdefault(tuple(sorted((candidate.left.kind, candidate.right.kind))), []).append(candidate)
         added = 0
         while groups and len(result) < limit and added < cap:
             # Highest-ranked remaining modality group gets the first slot each round.
-            for key in sorted(groups, key=lambda key: groups[key][0].candidate_score, reverse=True):
+            for key in sorted(groups, key=lambda key: rank(groups[key][0]), reverse=True):
                 group = groups[key]
                 while group and coverage_key(group[0]) in seen:
                     group.pop(0)

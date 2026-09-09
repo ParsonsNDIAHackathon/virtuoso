@@ -1,15 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import L from "leaflet";
 import { RfSpectrumDialog } from "./RfSpectrumDialog";
-import { ZoomControl, Circle, CircleMarker, MapContainer, Marker, Popup, Polyline, Rectangle, TileLayer, useMap, useMapEvents } from "react-leaflet";
-import type { Alert, Assessment, Event, Firms, RecordRef, Region, Tail, Track, Vessel, Viewport } from "../lib/types";
+import { ZoomControl, Circle, CircleMarker, MapContainer, Marker, Popup, Polyline, Rectangle, TileLayer, Tooltip, useMap, useMapEvents } from "react-leaflet";
+import type { Alert, Assessment, Event, Firms, Incident, RecordRef, Region, Sar, Tail, Track, Vessel, Viewport } from "../lib/types";
 import { distanceKm } from "../lib/utils";
 
 const NM_KM = 1.852;
 const renderer = L.canvas({ padding: .5 });
 const eventColor = "#eab85a";
 const aoiColor = "#a78bfa";
-const LAYER_LABELS: Record<keyof LayerState, string> = { events: "OSINT", tracks: "ADS-B", firms: "Thermal", links: "Links", imagery: "Imagery", rf: "RF", ais: "AIS" };
+const LAYER_LABELS: Record<keyof LayerState, string> = { events: "OSINT", tracks: "ADS-B", firms: "Thermal", links: "Links", imagery: "Imagery", rf: "RF", ais: "AIS", sar: "SAR", incidents: "Incidents" };
 const clusterIcon = (count: number, color: string) => L.divIcon({ className: "", iconSize: [34, 34], iconAnchor: [17, 17], html: `<span style="display:grid;place-items:center;width:34px;height:34px;border-radius:50%;border:2px solid ${color};background:#101710e8;color:${color};font:600 10px monospace">${count > 999 ? "999+" : count}</span>` });
 const rfIcon = L.divIcon({
   className: "", iconSize: [32, 32], iconAnchor: [16, 16],
@@ -34,10 +34,57 @@ const osintIcon = L.divIcon({
   className: "", iconSize: [22, 22], iconAnchor: [11, 11],
   html: '<svg viewBox="0 0 32 32" width="22" height="22" style="display:block;filter:drop-shadow(0 0 2px #101710)" aria-label="OSINT news report"><circle cx="16" cy="16" r="14" fill="#eab85a" stroke="#101710" stroke-width="1.5"/><rect x="9" y="8.5" width="14" height="15" rx="1" fill="#fff8e7"/><rect x="11" y="11" width="4" height="5" rx=".5" fill="#d69d3c"/><path d="M17 11h4M17 14h4M11 18h10M11 21h8" stroke="#694713" stroke-width="1.4" stroke-linecap="round"/></svg>',
 });
+const redditIcon = L.divIcon({
+  className: "", iconSize: [22, 22], iconAnchor: [11, 11],
+  html: '<svg viewBox="0 0 32 32" width="22" height="22" style="display:block;filter:drop-shadow(0 0 2px #101710)" aria-label="Reddit post"><circle cx="16" cy="16" r="14" fill="#ff4500" stroke="#101710" stroke-width="1.5"/><circle cx="11" cy="15" r="2.2" fill="#101710"/><circle cx="21" cy="15" r="2.2" fill="#101710"/><path d="M9 20c2 2.4 12 2.4 14 0" stroke="#101710" stroke-width="1.8" fill="none" stroke-linecap="round"/></svg>',
+});
+const blueskyIcon = L.divIcon({
+  className: "", iconSize: [22, 22], iconAnchor: [11, 11],
+  html: '<svg viewBox="0 0 32 32" width="22" height="22" style="display:block;filter:drop-shadow(0 0 2px #101710)" aria-label="Bluesky post"><circle cx="16" cy="16" r="14" fill="#1185fe" stroke="#101710" stroke-width="1.5"/><path d="M9 12.5c1.2 1 4.2 3.6 7 3.6s5.8-2.6 7-3.6c-.6 3.2-1.6 7.6-2.6 9.2-.9 1.4-2.6 1.7-4.4 1.7s-3.5-.3-4.4-1.7c-1-1.6-2-6-2.6-9.2z" fill="#effaff"/></svg>',
+});
+const mastodonIcon = L.divIcon({
+  className: "", iconSize: [22, 22], iconAnchor: [11, 11],
+  html: '<svg viewBox="0 0 32 32" width="22" height="22" style="display:block;filter:drop-shadow(0 0 2px #101710)" aria-label="Mastodon post"><circle cx="16" cy="16" r="14" fill="#6364ff" stroke="#101710" stroke-width="1.5"/><circle cx="12" cy="14" r="2" fill="#effaff"/><circle cx="20" cy="14" r="2" fill="#effaff"/><path d="M11 20c1.4 1.6 8.6 1.6 10 0" stroke="#effaff" stroke-width="1.8" fill="none" stroke-linecap="round"/></svg>',
+});
 
-// GDELT can cite a t.me channel landing page (and sometimes a stale username).
-// Only records created by ingest_telegram are actual, individual Telegram posts.
-function isTelegram(event: Event) { return event.id.startsWith("tg:"); }
+// GDELT can cite a bare social landing page (t.me channel page, reddit thread
+// index, sometimes a stale username). Only records created by the social
+// ingesters are actual, individual posts — identified by their id prefix.
+function socialPlatform(event: Event): string | null {
+  const id = event.id ?? "";
+  if (id.startsWith("tg:")) return "telegram";
+  if (id.startsWith("reddit:")) return "reddit";
+  if (id.startsWith("bsky:")) return "bluesky";
+  if (id.startsWith("mastodon:") || id.startsWith("md:")) return "mastodon";
+  return null;
+}
+
+function socialIcon(event: Event) {
+  switch (socialPlatform(event)) {
+    case "telegram": return telegramIcon;
+    case "reddit": return redditIcon;
+    case "bluesky": return blueskyIcon;
+    case "mastodon": return mastodonIcon;
+    default: return undefined;
+  }
+}
+
+function socialTitle(event: Event) {
+  switch (socialPlatform(event)) {
+    case "telegram": return `Telegram · ${event.source_domain?.replace(/^t\.me\//, "") || "post"}`;
+    case "reddit": return `Reddit · ${event.source_domain?.replace(/^reddit\.com\//, "") || "post"}`;
+    case "bluesky": return "Bluesky · post";
+    case "mastodon": return `Mastodon · ${event.source_domain || "post"}`;
+    default: return event.root_label;
+  }
+}
+
+function isSocial(event: Event) { return socialPlatform(event) !== null; }
+
+// Bare social landing pages cited by GDELT (channel pages, thread indexes)
+// are not previewable posts — only ingested records link out.
+const SOCIAL_LANDING = ["t.me/", "reddit.com/", "bsky.app/", "mastodon"];
+function isSocialLanding(url?: string) { return !!url && SOCIAL_LANDING.some((s) => url.includes(s)); }
 
 function thermalIcon(novel: boolean) {
   const key = novel ? "novel" : "routine"; const cached = thermalIcons.get(key); if (cached) return cached;
@@ -64,13 +111,16 @@ function planeIcon(track: Track) {
 }
 
 export type MapDetail = { title: string; lines: string[]; href?: string; hrefLabel?: string; entityId?: string; recordRef?: RecordRef; point?: [number, number]; connections?: Array<{ kind: "event" | "aircraft"; label: string; detail: string; selected?: boolean }> };
-export type LayerState = { events: boolean; tracks: boolean; firms: boolean; links: boolean; imagery: boolean; rf: boolean; ais: boolean };
+export type LayerState = { events: boolean; tracks: boolean; firms: boolean; links: boolean; imagery: boolean; rf: boolean; ais: boolean; sar: boolean; incidents: boolean };
+const INCIDENT_COLOR: Record<string, string> = { new_change: "#df5e55", persistent: "#eab85a", recovering: "#5cc7da" };
+const STREAM_SHORT: Record<string, string> = { news: "news", conflict: "conflict", social: "social", tracks: "aircraft", military: "military", firms_new: "thermal", navint: "nav integrity" };
 type Cluster<T> = { lat: number; lon: number; items: T[] };
 type Point = { lat: number; lon: number };
 type Props = {
-  events: Event[]; tracks: Track[]; vessels: Vessel[]; live: boolean; alerts: Alert[]; firms: Firms[]; tails: Tail[]; regions: Region[]; layers: LayerState; viewport: Viewport;
+  events: Event[]; tracks: Track[]; vessels: Vessel[]; live: boolean; sar: Sar[]; sarCore: Sar[]; alerts: Alert[]; firms: Firms[]; tails: Tail[]; regions: Region[]; layers: LayerState; viewport: Viewport;
   assessments?: Assessment[];
   filterAoi: boolean; drawing: boolean; focus?: [number, number, number]; satelliteDay?: string; replayBounds?: [number, number, number, number];
+  incidents?: Incident[]; selectedIncident?: string | null; onIncidentSelect?: (id: string) => void;
   compareSelection?: MapDetail[]; compareVerdict?: string; compareArticleMatch?: boolean;
   onDraft: (draft: Omit<Region, "id">) => void; onSelect: (detail: MapDetail) => void; onAoiZoom: (region: Region) => void; onAnalyzeAoi: (region: Region) => void; aoiAnalysisPending: boolean; onBackgroundClick: () => void; onViewport: (viewport: Viewport) => void; onLayerToggle: (layer: keyof LayerState) => void;
 };
@@ -125,7 +175,7 @@ function ThermalLayer({ values, zoom, onSelect }: { values: Firms[]; zoom: numbe
   return <>{groups.map((group, index) => { const item = group.items[0]; const novel = (item.novelty ?? 0) >= .9; return group.items.length === 1 && zoom >= 5 ? <Marker key={`thermal-${item.lat}-${item.lon}-${item.ts}`} position={[group.lat, group.lon]} icon={thermalIcon(novel)} eventHandlers={{ click: () => onSelect(detail(item)) }} /> : group.items.length === 1 ? <CircleMarker key={`thermal-point-${item.lat}-${item.lon}-${item.ts}`} center={[group.lat, group.lon]} renderer={renderer} radius={novel ? 4 : 3} pathOptions={{ color: novel ? "#f87171" : "#8d2b24", fillOpacity: .8, weight: 1 }} eventHandlers={{ click: () => onSelect(detail(item)) }} /> : <Marker key={`thermal-cluster-${index}`} position={[group.lat, group.lon]} icon={clusterIcon(group.items.length, "#f87171")} eventHandlers={{ click: () => map.setView([group.lat, group.lon], Math.min(zoom + 2, 9)) }} />; })}</>;
 }
 
-export function OperationalMap({ events, tracks, vessels, live, alerts, firms, tails, regions, layers, viewport, assessments = [], filterAoi, drawing, focus, satelliteDay, replayBounds, compareSelection = [], compareVerdict, compareArticleMatch, onDraft, onSelect, onAoiZoom, onAnalyzeAoi, aoiAnalysisPending, onBackgroundClick, onViewport, onLayerToggle }: Props) {
+export function OperationalMap({ events, tracks, vessels, live, alerts, firms, sar, sarCore, tails, regions, layers, viewport, assessments = [], incidents = [], selectedIncident = null, onIncidentSelect, filterAoi, drawing, focus, satelliteDay, replayBounds, compareSelection = [], compareVerdict, compareArticleMatch, onDraft, onSelect, onAoiZoom, onAnalyzeAoi, aoiAnalysisPending, onBackgroundClick, onViewport, onLayerToggle }: Props) {
   const [rfOpen, setRfOpen] = useState(false);
   useEffect(() => { if (!layers.rf) setRfOpen(false); }, [layers.rf]);
   const include = (lat: number, lon: number) => !filterAoi || regions.length === 0 || regions.some((region) => distanceKm(lat, lon, region.lat, region.lon) <= region.radius_nm * NM_KM);
@@ -143,14 +193,24 @@ export function OperationalMap({ events, tracks, vessels, live, alerts, firms, t
     {layers.imagery && <TileLayer url={`https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/VIIRS_SNPP_CorrectedReflectance_TrueColor/default/${imagery}/GoogleMapsCompatible_Level9/{z}/{y}/{x}.jpg`} attribution={`NASA GIBS VIIRS ${imagery}`} maxNativeZoom={9} maxZoom={18} opacity={.85} />}
     {layers.rf && <Marker position={[26.55, 56.45]} icon={rfIcon} title="RF sample · Strait of Hormuz · Open spectrum" alt="Open simulated RF spectrum" zIndexOffset={1100} eventHandlers={{ click: () => { if (!drawing) setRfOpen(true); } }} />}
     {regions.map((region) => <AoiCircle key={region.id} region={region} drawing={drawing} onZoom={onAoiZoom} onAnalyze={onAnalyzeAoi} pending={aoiAnalysisPending} />)}
-    {layers.firms && <ThermalLayer values={firms} zoom={viewport.zoom} onSelect={onSelect} />}
-    {layers.events && <ClusterLayer values={filteredEvents} zoom={viewport.zoom} color={eventColor} pointColor={(item) => isTelegram(item) ? "#e879f9" : eventColor} markerIcon={(item) => isTelegram(item) ? telegramIcon : osintIcon} onSelect={onSelect} renderPoint={(item) => ({ title: isTelegram(item) ? `Telegram · ${item.source_domain?.replace(/^t\.me\//, "") || "post"}` : item.root_label, lines: [item.place, `Goldstein ${item.goldstein ?? "–"} · tone ${item.tone?.toFixed(1) ?? "–"}`, `Themes: ${item.themes?.slice(0, 8).join(", ") || "–"}`], entityId: item.id, recordRef: { kind: isTelegram(item) ? "telegram" : "gdelt", id: item.id }, point: [item.lat, item.lon], href: isTelegram(item) || !item.url?.includes("t.me/") ? item.url : undefined, hrefLabel: "Open source" })} />}
-    {live && layers.ais && <ClusterLayer values={vessels.filter((vessel) => regions.some((region) => distanceKm(vessel.lat, vessel.lon, region.lat, region.lon) <= region.radius_nm * NM_KM))} zoom={viewport.zoom} color="#34d399" markerIcon={() => vesselIcon} onSelect={onSelect} renderPoint={(vessel) => ({ title: vessel.name || `Vessel ${vessel.mmsi}`, recordRef: { kind: "ais", id: vessel.id }, point: [vessel.lat, vessel.lon], lines: [`AIS · MMSI ${vessel.mmsi}`, `${vessel.sog ?? "–"} kt · course ${vessel.cog ?? "–"}° · heading ${vessel.heading ?? "–"}°`, `${vessel.lat.toFixed(4)}, ${vessel.lon.toFixed(4)}`, `Last report ${vessel.ts} · ${vessel.age_min.toFixed(1)} min ago`, vessel.age_min >= 15 ? "Stale position · no report for at least 15 minutes; coverage may be interrupted." : "Live AIS · aisstream.io"] })} />}
+    {layers.firms && <ThermalLayer values={firms.filter((item) => include(item.lat, item.lon))} zoom={viewport.zoom} onSelect={onSelect} />}
+    {layers.sar && <ClusterLayer values={sarCore} zoom={viewport.zoom} color="#f2bb57" onSelect={onSelect} renderPoint={(item) => ({ title: "Radar ship · strait-core scene", lines: [`~${item.length_m ?? "?"} m`, `Sentinel-1 ${item.ts.slice(0, 16)}Z`] })} />}
+    {layers.sar && <ClusterLayer values={sar} zoom={viewport.zoom} color="#e5e7df" onSelect={onSelect} renderPoint={(item) => ({ title: "Radar ship detection", lines: [`~${item.length_m ?? "?"} m · contrast ${item.contrast ?? "?"}`, `Sentinel-1 ${item.ts.slice(0, 16)}Z`] })} />}
+    {layers.events && <ClusterLayer values={filteredEvents} zoom={viewport.zoom} color={eventColor} pointColor={(item) => isSocial(item) ? "#e879f9" : eventColor} markerIcon={(item) => isSocial(item) ? socialIcon(item) ?? osintIcon : osintIcon} onSelect={onSelect} renderPoint={(item) => ({ title: isSocial(item) ? socialTitle(item) : item.root_label, lines: [item.place, `Goldstein ${item.goldstein ?? "–"} · tone ${item.tone?.toFixed(1) ?? "–"}`, `Themes: ${item.themes?.slice(0, 8).join(", ") || "–"}`], entityId: item.id, recordRef: { kind: socialPlatform(item) ?? "gdelt", id: item.id }, point: [item.lat, item.lon], href: isSocial(item) || !isSocialLanding(item.url) ? item.url : undefined, hrefLabel: "Open source" })} />}
     {layers.tracks && <TrackLayer values={filteredTracks} zoom={viewport.zoom} onSelect={onSelect} />}
     {layers.tracks && tails.map((tail, index) => <Polyline key={`tail-${index}`} positions={tail.coords} renderer={renderer} pathOptions={{ color: tail.military ? "#1d4ed8" : "#5cc7da", weight: 2.5, opacity: .85 }} />)}
     {layers.links && alerts.filter((item) => include(item.lat, item.lon)).slice(0, 75).flatMap((alert) => { const track = trackById.get(alert.aircraft_id); return track ? [<Polyline key={`${alert.aircraft_id}-${alert.event_id}`} positions={[[alert.lat, alert.lon], [track.lat, track.lon]]} renderer={renderer} pathOptions={{ color: "#eab85a", weight: 1 + 2 * alert.score, opacity: .45, dashArray: "5 5" }} />] : []; })}
     {layers.links && assessments.slice(0, 100).flatMap((assessment) => { const point = (id: string): [number, number] | undefined => { const record = assessment.evidence?.find((item) => item.id === id); return record ? [record.lat, record.lon] : evidencePoints.get(id); }; const left = point(assessment.left_id); const right = point(assessment.right_id); const color = assessment.verdict === "SUPPORTED" ? "#94c973" : assessment.verdict === "PLAUSIBLE" ? "#eab85a" : assessment.has_article_match ? "#a78bfa" : "#df5e55"; return left && right ? [<Polyline key={`assessment-${assessment.id}`} positions={[left, right]} renderer={renderer} pathOptions={{ color, weight: 2 + 3 * assessment.evidence_strength, opacity: .85, dashArray: assessment.verdict === "SUPPORTED" ? undefined : "8 4" }} />] : []; })}
     {compareSelection.length === 2 && compareSelection[0].point && compareSelection[1].point && <Polyline positions={[compareSelection[0].point, compareSelection[1].point]} renderer={renderer} pathOptions={{ color: compareVerdict === "SUPPORTED" ? "#94c973" : compareVerdict === "PLAUSIBLE" ? "#eab85a" : compareArticleMatch ? "#a78bfa" : compareVerdict ? "#df5e55" : "#a78bfa", weight: 4, opacity: .9, dashArray: compareVerdict === "SUPPORTED" ? undefined : "7 5" }} />}
     {replayBounds && <Rectangle bounds={[[replayBounds[0], replayBounds[1]], [replayBounds[2], replayBounds[3]]]} renderer={renderer} pathOptions={{ color: eventColor, weight: 1, fill: false, dashArray: "4 4" }} />}
+    {layers.incidents && incidents.flatMap((inc) => inc.cells.map((cell) => {
+      const color = INCIDENT_COLOR[inc.state] ?? "#df5e55"; const on = selectedIncident === inc.id;
+      const departed = Object.entries(inc.streams).filter(([, st]) => st.departed).map(([k, st]) => `${STREAM_SHORT[k] ?? k}${st.best?.z != null ? ` z${st.best.z}` : ""}`);
+      return <Rectangle key={`${inc.id}:${cell[0]}:${cell[1]}`} bounds={[[cell[0], cell[1]], [cell[0] + 1, cell[1] + 1]]} renderer={renderer}
+        pathOptions={{ color, weight: on ? 3 : 1.5, fillColor: color, fillOpacity: on ? 0.28 : 0.14, dashArray: inc.state === "recovering" ? "4 4" : undefined }}
+        eventHandlers={{ click: () => { if (!drawing) onIncidentSelect?.(inc.id); } }}>
+        <Tooltip sticky direction="top" opacity={0.95}><span className="font-mono text-[10px]">{inc.id.replace("incident:", "#")} · {inc.state.replace("_", " ")} · {departed.join(", ") || "no stream departed"}<br />{inc.explanations[0]?.title ?? ""}</span></Tooltip>
+      </Rectangle>;
+    }))}
   </MapContainer><div className="absolute right-3 top-3 z-[1000] grid grid-cols-2 gap-1 border border-line bg-panel/95 p-1">{(Object.keys(layers) as Array<keyof LayerState>).map((layer) => <button key={layer} disabled={layer === "ais" && !live} title={layer === "ais" ? (live ? "Live AIS vessels inside AOIs only" : "AIS is available in live mode only") : undefined} onClick={() => onLayerToggle(layer)} aria-pressed={layers[layer]} className={`border px-2 py-1 font-mono text-[9px] uppercase disabled:opacity-40 ${layers[layer] ? "border-command/50 text-command" : "border-line text-muted"}`}>{LAYER_LABELS[layer]}</button>)}</div>{layers.rf && rfOpen && <RfSpectrumDialog onClose={() => setRfOpen(false)} />}</div>;
 }

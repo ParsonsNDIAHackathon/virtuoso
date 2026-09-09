@@ -25,6 +25,7 @@ export type Alert = {
 };
 
 export type Firms = { id: string; lat: number; lon: number; novelty?: number; ts: string; frp?: number; satellite?: string; daynight?: string };
+export type Sar = { lat: number; lon: number; length_m?: number; contrast?: number; ts: string };
 export type Tail = { coords: [number, number][]; military?: boolean; callsign?: string; r?: string; hex?: string; t?: string };
 
 export type GraphNode = { id: string; kind: string; label: string; lat?: number; lon?: number; military?: boolean; mentions?: number; severity?: number; x?: number; y?: number; vx?: number; vy?: number; fx?: number | null; fy?: number | null };
@@ -38,7 +39,7 @@ export type Status = {
 };
 
 export type ReplayScenario = { id: string; title: string; notes?: string; center: [number, number]; zoom: number; day: string; days?: string[]; bbox: [number, number, number, number]; sources?: [string, string][] };
-export type ReplayConfig = { scenario: ReplayScenario; t_min: number; t_max: number; days?: string[]; layers_loaded?: Record<string, string[]>; n_events: number; n_aircraft: number; n_military: number; n_firms?: number; adsb_available?: boolean; };
+export type ReplayConfig = { scenario: ReplayScenario; t_min: number; t_max: number; days?: string[]; layers_loaded?: Record<string, string[]>; n_events: number; n_aircraft: number; n_military: number; n_firms?: number; n_sar?: number; adsb_available?: boolean; sar_scenes?: string[]; sar_summary?: Array<{ ts: string; n: number; core: number; scene: string }> };
 
 // Curated (manual) evidence: analyst-reviewed records served by /api/replay/{id}/evidence. Claims are
 // claims, not observations: no coordinates, no scores, timing kept at the record's own precision.
@@ -54,21 +55,36 @@ export type SourceDocument = { record_id: string; url: string; resolved_url: str
 export type Assessment = { evidence?: Array<{ id: string; kind: string; label: string; ts: string; lat: number; lon: number }>; id: string; candidate_id: string; left_id: string; left_kind: string; right_id: string; right_kind: string; verdict: "SUPPORTED" | "PLAUSIBLE" | "INSUFFICIENT_EVIDENCE" | "CONTRADICTED"; relation: string; evidence_strength: number; supporting_facts: string[]; strongest_limitation: string; rationale: string; resolved_entities?: Array<{ record_id: string; name: string; canonical_name: string; entity_type: string; confidence: number }>; model: string; prompt_version: string; created_at: string; cached: boolean; needs_review: boolean; distance_km: number; dt_min: number; incident_relationship?: "SAME_INCIDENT" | "RELATED_INCIDENTS" | "UNRELATED" | "UNCERTAIN" | "NOT_APPLICABLE"; article_match?: ArticleMatch; has_article_match?: boolean; source_documents?: SourceDocument[]; source_groups?: Record<string, string> };
 export type FusionCluster = { id: string; record_ids: string[]; assessment_ids: string[]; modalities: string[]; score: number; needs_review: boolean; brief?: string | null; caveats: string[] };
 export type AIStatus = { provider: "openai"; model: string; configured: boolean; prompt_version: string };
-export type ReplaySnapshot = { t: number; events: Event[]; tracks: Track[]; alerts: Alert[]; graph: Graph; tails?: Tail[]; firms?: Firms[]; candidates?: FusionCandidate[]; assessments?: Assessment[]; clusters?: FusionCluster[]; counts: Status["counts"]; t_iso: string };
+export type ReplaySnapshot = { t: number; events: Event[]; tracks: Track[]; alerts: Alert[]; graph: Graph; tails?: Tail[]; firms?: Firms[]; sar?: Sar[]; sar_scene?: { n: number; label: string; ts: string }; sar_core?: Sar[]; sar_core_scene?: { n: number; label: string; ts: string }; candidates?: FusionCandidate[]; assessments?: Assessment[]; clusters?: FusionCluster[]; counts: Status["counts"]; t_iso: string;
+  navint?: NavintCell[]; navint_min_known?: number; assessed_through?: string | null; departures?: Departure[]; departed_cells?: number[][]; incidents?: Incident[]; baseline?: { z_threshold: number; persistent_bins: number; reference: string; days: number } };
+export type NavintCell = { t: number; cell: [number, number]; cell_deg: number; known: number; degraded: number; frac: number | null; coverage: "adequate" | "insufficient" };
+export type Departure = { stream: string; cell: [number, number]; t: number; value: number; median: number; scale: number; z: number | null; state: "new_change" | "persistent" | "recovering" | "normal" | "insufficient"; reference_n: number; coverage: number | null; expected_cooccurrence: boolean };
+export type IncidentPrediction = { prediction: string; status: "supported" | "contradicted" | "untested"; evidence: string };
+export type IncidentExplanation = { id: string; title: string; supported: number; contradicted: number; untested: number; predictions: IncidentPrediction[] };
+export type Incident = { id: string; cells: [number, number][]; first_t: number; last_t: number; state: "new_change" | "persistent" | "recovering"; streams: Record<string, { departed: boolean; adequate: boolean; best: Departure | null }>; explanations: IncidentExplanation[]; next_check: { prediction: string; separates: number; source: string; why: string } | null; revisions: Array<{ t: number; added: string[]; gone: string[]; cells: number; leading: string | null }>; assessment: { established: string; disputed: string; unresolved: string; leading: string | null; relevance: string } };
 export type EntityNode = { id: string; kind: "event" | "actor" | "location" | "source" | "aircraft" | string; label: string; military?: boolean };
 export type Entity = { node: EntityNode; neighbors: EntityNode[]; links: Array<{ source: string; target: string; kind?: string }> };
 export type LinkPreview = { url: string; host: string; title?: string | null; description?: string | null; image?: string | null; site_name?: string | null; published?: string | null; embeddable?: boolean; error?: string | null; status?: number };
 
 export type LivePicture = { status: Status; events: Event[]; tracks: Track[]; alerts: Alert[]; firms: Firms[] };
 
+export type SocialPlatform = { id: string; label: string; targets: string[]; count: number; status?: string };
+export type SocialPlatforms = { platforms: SocialPlatform[]; total: number };
+
+export type SourcePreview = {
+  url: string; final_url?: string; site?: string; title?: string | null; description?: string | null;
+  image?: string | null; text?: string; fetched_at?: string; error?: string | null;
+};
+
 export type Viewport = { west: number; south: number; east: number; north: number; zoom: number };
 // Live bins: flows (events, social, alerts, firms_new) are sums per 15-min bin; tracks/military are
 // levels averaged from this server's own fuse history and null where nothing was recorded yet.
-export type TimelineBin = { ais?: number | null; t: number; events: number; conflict: number; social: number; tracks: number | null; military: number | null; alerts?: number; firms_new: number; backfilled?: boolean };
+export type TimelineBin = { ais?: number | null; t: number; events: number; conflict: number; social: number; tracks: number | null; military: number | null; alerts?: number; firms_new: number; backfilled?: boolean; navint_known?: number; navint_degraded?: number; z?: Record<string, number | null> };
 export type Timeline = {
-  bins: TimelineBin[]; step_min: number; hours?: number; t_min?: number;
+  bins: TimelineBin[]; step_min: number; hours?: number; t_min?: number; sar_scenes?: Array<{ t: number; ts: string; n: number }>;
   backfill?: { status: string; hours: number; windows: number }; since?: number | null;
 };
 
 export type Vessel = { id: string; mmsi: number; ts: string; lat: number; lon: number; name?: string | null; sog?: number | null; cog?: number | null; heading?: number | null; nav_status?: number | null; age_min: number };
 export type AisPicture = { vessels: Vessel[]; source: NonNullable<Status["sources"]>[string] };
+export type LiveIncidents = { status: string; built_at: string | null; t?: number; assessed_through?: string | null; aircraft_history?: { from: string; to: string } | null; incidents: Incident[]; departures: Departure[]; departed_cells: number[][]; baseline?: { z_threshold: number; reference: string; days: number; note?: string } };

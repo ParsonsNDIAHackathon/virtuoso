@@ -1,23 +1,24 @@
 import { useEffect, useRef, useState } from "react";
 import type { Timeline, TimelineBin } from "../lib/types";
 
-type SeriesKey = "ais" | "conflict" | "social" | "tracks" | "military" | "firms_new" | "alerts";
+type SeriesKey = "ais" | "conflict" | "social" | "tracks" | "military" | "firms_new" | "alerts" | "navint_degraded";
 type Series = { key: SeriesKey; label: string; color: string };
 
 // Replay: arrivals per 15-min bin across the scenario day.
 const REPLAY_SERIES: Series[] = [
   { key: "conflict", label: "conflict OSINT events", color: "#eab85a" },
-  { key: "social", label: "Telegram posts", color: "#d99add" },
+  { key: "social", label: "Social posts", color: "#d99add" },
   { key: "tracks", label: "aircraft", color: "#5cc7da" },
   { key: "military", label: "military aircraft", color: "#df5e55" },
   { key: "firms_new", label: "new thermal anomalies", color: "#ef4444" },
+  { key: "navint_degraded", label: "aircraft reporting degraded nav integrity", color: "#f97316" },
   { key: "alerts", label: "correlations", color: "#a78bfa" },
 ];
-// Live: 15-min bins inside the drawn circles; GDELT + Telegram backfilled from the sources,
+// Live: 15-min bins inside the drawn circles; GDELT + social backfilled from the sources,
 // aircraft as levels and correlations as flows from the server's own history.
 const LIVE_SERIES: Series[] = [
   { key: "conflict", label: "conflict OSINT events (in circles)", color: "#eab85a" },
-  { key: "social", label: "Telegram posts (in circles)", color: "#d99add" },
+  { key: "social", label: "Social posts (in circles)", color: "#d99add" },
   { key: "tracks", label: "aircraft in coverage", color: "#5cc7da" },
   { key: "ais", label: "Vessels in Coverage", color: "#34d399" },
   { key: "military", label: "military aircraft", color: "#df5e55" },
@@ -102,6 +103,13 @@ export function ActivityTimeline({ timeline, activeTime, mode, onSeek }: Props) 
         context.textAlign = i === 0 ? "left" : i === ticks ? "right" : "center"; context.fillText(stampUtc(t, spanHours > 36), px, rect.height - 6);
       }
       context.textAlign = "left";
+      // Radar scene markers (replay).
+      for (const scene of timeline?.sar_scenes ?? []) {
+        if (scene.t < start || scene.t > end) continue;
+        const px = x(scene.t);
+        context.strokeStyle = "#e5e7df"; context.setLineDash([3, 3]); context.beginPath(); context.moveTo(px, MARGIN.top); context.lineTo(px, MARGIN.top + height); context.stroke(); context.setLineDash([]);
+        context.fillStyle = "#e5e7df"; context.fillText(`radar ${scene.n} ships`, px + 3, MARGIN.top + height - 4);
+      }
       // Scrubber cursor (replay).
       if (activeTime && activeTime >= start && activeTime <= end) {
         const px = x(activeTime);

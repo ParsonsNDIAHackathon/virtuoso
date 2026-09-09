@@ -106,7 +106,7 @@ The legacy ADS-B/OSINT cues panel is removed; map zoom controls are at the botto
 
 **Analyze an AOI:** click its purple center marker, then **Analyze**. The summary panel includes
 source counts, findings with numbered citations, evidence gaps and the snapshot time. It uses all
-available GDELT, Telegram, AIS, ADS-B and FIRMS records inside the circle, including hidden layers;
+available GDELT, Telegram, Reddit, Bluesky, Mastodon, AIS, ADS-B and FIRMS records inside the circle, including hidden layers;
 map viewport limits do not truncate it. Large snapshots are summarized in batches and combined.
 This covers available feed observations, not every real-world event or vessel. It uses structured
 news records rather than fetching every article. In replay, analysis pauses at the displayed instant
@@ -116,7 +116,7 @@ is `FUSION_AOI_SUMMARY_TIMEOUT_S=180` seconds; errors appear in the panel with a
 
 Automatic pair analysis is eligible every **3 minutes**, checked each fusion cycle, with at most
 **12 pairs** per pass (`FUSION_LLM_EVERY_S=180`, `FUSION_LLM_MAX_CANDIDATES=12`). Ranking
-prioritizes source evidence and alternates source-pair types within each priority tier. At most
+prioritizes source evidence and alternates source-pair types within each priority tier, favoring current incident cells within a tier. Once the live baseline is ready, automatic retrieval is gated to departed cells and their neighbors; manual comparisons and AOI summaries use all available records. At most
 **two proximity-only pairs** are analyzed per pass (`FUSION_LLM_PROXIMITY_LIMIT=2`). A recently
 assessed report/asset pair has a **30-minute cooldown** (`FUSION_LLM_REPEAT_S=1800`) unless material
 evidence changes; routine position/time updates do not bypass it. Manual comparisons bypass these
@@ -128,6 +128,8 @@ API: `/api/status`, `/api/alerts`, `/api/events?conflict_only=true`, `/api/aircr
 `/api/ais`, `/api/graph`, `/api/entity/{id}`, `/api/regions` (GET/POST/PATCH/DELETE), `POST /api/refresh`,
 `/api/fusion/status|candidates|assessments|clusters`, `POST /api/fusion/adjudicate`,
 `POST /api/regions/{id}/analyze` (`mode`, optional replay `t`, optional `force`),
+`/api/source/preview?url=…`,
+`/api/social?platform=reddit&limit=500`, `/api/social/platforms`,
 `/api/replay/scenarios`, `/api/replay/{id}/config|timeline|at?t=`.
 
 ## Sources
@@ -136,7 +138,7 @@ API: `/api/status`, `/api/alerts`, `/api/events?conflict_only=true`, `/api/aircr
 |---|---|---|---|
 | OSINT events + GKG entities | GDELT 2.0, every 15 min | all 96 windows of the day, Hormuz bbox/keywords | `ingest_gdelt.py`, `replay_gdelt.py` |
 | Air tracks | adsb.lol military feed + one query per drawn circle, every 60 s | adsb.lol `globe_history` daily archive (ODbL), traces filtered to the Gulf | `ingest_adsb.py`, `replay_adsb.py`, `scripts/fetch_archive.py` |
-| Social posts | Telegram public channel previews, every 5 min | same channels paged back to the day | `ingest_telegram.py` |
+| Social posts | Telegram + Reddit + Bluesky + Mastodon (keyless public endpoints), every 5 min. Configure with `SOCIAL_PLATFORMS` / `SOCIAL_REDDIT_SUBS` / `SOCIAL_BLUESKY_QUERIES` / `SOCIAL_MASTODON_INSTANCES` | same sources paged back to the day (`python -m fusion.ingest_social --since 2026-08-18`) | `ingest_social.py` registry + `ingest_telegram.py`, `ingest_reddit.py`, `ingest_bluesky.py`, `ingest_mastodon.py` |
 | Thermal anomalies | NASA FIRMS VIIRS inside each circle, every 15 min, novelty vs 7 days earlier | FIRMS for the day, novelty vs Aug 11 | `ingest_firms.py` |
 | Radar ship detections | n/a (revisit is days) | Sentinel-1 GRD COG scenes from Copernicus S3, nearest scene within 3 days, age labeled | `sar_ships.py` |
 | Vessels (AIS) | aisstream.io · AOI bounding boxes, then circle filtering; coverage varies | none free | `ingest_ais.py` |
@@ -165,7 +167,7 @@ All replay layers are **real data for that day**, with no relocation or syntheti
 |---|---|---|
 | OSINT | GDELT 2.0, all 96 windows of 2026-08-18, filtered to the Hormuz bbox (23.5–28.5 N, 52–59 E) or Hormuz/tanker keywords | `python -m fusion.replay_gdelt 2026-08-18` |
 | Air tracks | adsb.lol `globe_history_2026` release `v2026.08.18-planes-readsb-prod-0` (two split tar parts, ~4 GB, ODbL) | `python scripts/fetch_archive.py 2026-08-18 <folder>` then `python -m fusion.replay_adsb extract <folder>` |
-| Social | Telegram public channels | `python -m fusion.ingest_telegram --since 2026-08-18 --until 2026-08-19` |
+| Social | Telegram + Reddit + Bluesky + Mastodon public posts | `python -m fusion.ingest_social --since 2026-08-18 --until 2026-08-19` (or per-platform `ingest_telegram` / `ingest_reddit` / `ingest_bluesky` / `ingest_mastodon`) |
 | Thermal | NASA FIRMS | `python -m fusion.ingest_firms 2026-08-18 --baseline 2026-08-11` |
 | Radar ships | Sentinel-1 GRD COG (Copernicus S3) | download VV tiff + annotation XML for a scene, then `python -m fusion.sar_ships <scene folder>` |
 
@@ -201,6 +203,8 @@ feed such as aisstream.io labeled as current.
   API projections query Neo4j directly.
 - Track history: persist ADS-B snapshots to detect loitering / orbit patterns, not just presence.
 - Extend entity extraction beyond the current source fields and LLM-resolved explicit mentions.
+
+- Social spike detection across all four platforms (per-platform bursts in `/api/social/platforms` + timeline).
 
 ### Live AIS
 
@@ -242,7 +246,7 @@ Automatic verdicts appear as each pair completes and survive live refreshes. The
 per record pair is retained for up to an hour while both records remain available, bounded to 500
 pairs. Every new verdict includes the actual observation timestamps and positions; retained results
 do not become cached verdicts for newer positions. The map draws assessed links at their evaluated
-positions. **AI ASSESSMENTS** counts all returned verdicts; **Show rejected** reveals unsupported
+positions. Assessments are dropped immediately when the underlying claims change or are withdrawn. **AI ASSESSMENTS** counts all returned verdicts; **Show rejected** reveals unsupported
 or contradicted links. The count can be positive even when no association is supported.
 
 Graph artifact writes run in a single background worker so database delays cannot block ingestion

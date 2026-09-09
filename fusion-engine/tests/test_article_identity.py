@@ -100,7 +100,7 @@ def test_failed_context_does_not_cache_an_assessment_forever():
         candidate = candidate_for_pair(news("gdelt:a"), news("gdelt:b"))
         value = service.adjudicate(candidate).to_dict()
         value["created_at"] = (datetime.now(timezone.utc) - timedelta(minutes=6)).isoformat()
-        key = f"assessment:{PROMPT_VERSION}:{service.client.model}:{candidate.id}"
+        key = service._cache_key(candidate)
         service.cache.put(key, "assessment", value)
         assert service.cached_assessment(candidate) is None
 

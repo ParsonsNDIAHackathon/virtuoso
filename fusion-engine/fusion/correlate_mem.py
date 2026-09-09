@@ -144,7 +144,7 @@ def graph_to_json(G: nx.MultiDiGraph, max_nodes: int = 1500) -> dict:
             keep.update((source, target))
     # add locations/actors/sources hanging off kept events
     for n in list(keep):
-        if G.nodes[n].get("kind") in {"event", "telegram"}:
+        if G.nodes[n].get("kind") in {"event", "telegram", "reddit", "bluesky", "mastodon"}:
             keep.update(G.successors(n))
     # top actors overall
     actors = sorted((n for n, d in G.nodes(data=True) if d.get("kind") == "actor"),

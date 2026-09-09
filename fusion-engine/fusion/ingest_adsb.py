@@ -40,6 +40,8 @@ class AirTrack:
     source: str        # adsb_icao | mlat | tisb | adsr ...
     rssi: float | None
     messages: int | None
+    nic: int | None = None       # navigation integrity category, as transmitted
+    nac_p: int | None = None     # navigation accuracy category (position), as transmitted
 
     def to_dict(self):
         return asdict(self)
@@ -69,6 +71,8 @@ def _norm(a: dict, ts: str, military: bool) -> AirTrack | None:
         source=a.get("type", "unknown"),
         rssi=a.get("rssi"),
         messages=a.get("messages"),
+        nic=a.get("nic"),
+        nac_p=a.get("nac_p"),
     )
 
 

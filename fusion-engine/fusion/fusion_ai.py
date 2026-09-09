@@ -24,6 +24,7 @@ import requests
 from .geo import haversine_km
 from .source_documents import FAILURE_TTL, article_url_key, document_text
 from .retrieval import NEWS, features, identity_matches, match, source_key
+from .ingest_social import SOCIAL_PLATFORMS, platform_of
 
 PROMPT_VERSION = "fusion-evidence-v3-article-identity"
 VERDICTS = ("SUPPORTED", "PLAUSIBLE", "INSUFFICIENT_EVIDENCE", "CONTRADICTED")
@@ -65,6 +66,18 @@ class EvidenceRecord:
     def fingerprint(self) -> str:
         raw = json.dumps(self.to_dict(), sort_keys=True, ensure_ascii=False, default=str)
         return hashlib.sha256(raw.encode()).hexdigest()[:24]
+
+    CLAIM_FIELDS = ("url", "text", "themes", "actor1", "actor2", "persons", "orgs", "event_code", "root_label",
+                    "keywords", "channel", "callsign", "registration", "squawk", "emergency", "military", "novelty", "frp",
+                    "mmsi", "imo", "name", "nav_status", "on_ground")
+
+    def claim_fingerprint(self) -> str:
+        """Hash of what the record CLAIMS (text, actors, identity flags), not where or when it was
+        observed. A verdict is reused while the claims are unchanged and re-adjudicated when an
+        article is edited or withdrawn; an aircraft moving along its track does not trigger a re-run."""
+        payload = {k: self.data.get(k) for k in self.CLAIM_FIELDS if self.data.get(k) not in (None, "", [])}
+        payload["label"] = self.label
+        return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()[:16]
 
 
 @dataclass
@@ -119,6 +132,7 @@ class Assessment:
     source_documents: list[dict[str, Any]] = field(default_factory=list)
     source_groups: dict[str, str] = field(default_factory=dict)
     evidence: list[dict[str, Any]] = field(default_factory=list)
+    claim_fingerprints: dict[str, str] = field(default_factory=dict)
 
     @property
     def has_article_match(self) -> bool:
@@ -260,26 +274,22 @@ def _iso_ts(value: str) -> float:
 
 
 def _pair_id(left: EvidenceRecord, right: EvidenceRecord) -> str:
+    # Identify the assessed observation. Durable pair retention and refresh cooldowns live in
+    # the pipeline; they preserve verdicts without caching them as analysis of newer positions.
     parts = sorted((f"{left.kind}:{left.id}:{left.fingerprint()}", f"{right.kind}:{right.id}:{right.fingerprint()}"))
     return "candidate:" + hashlib.sha256("|".join(parts).encode()).hexdigest()[:24]
 
 
 # Candidate windows are deliberately pair-specific.  They are permissive retrieval windows,
 # not claims that records inside them are related.
-PAIR_RULES: tuple[tuple[str, str, float, float], ...] = (
-    ("gdelt", "gdelt", 100.0, 12 * 60),
-    ("telegram", "telegram", 100.0, 12 * 60),
-    ("gdelt", "telegram", 100.0, 12 * 60),
-    ("gdelt", "adsb", 75.0, 4 * 60),
-    ("telegram", "adsb", 75.0, 4 * 60),
-    ("gdelt", "firms", 50.0, 12 * 60),
-    ("telegram", "firms", 50.0, 12 * 60),
-    ("adsb", "firms", 30.0, 3 * 60),
-    ("gdelt", "ais", 75.0, 4 * 60),
-    ("telegram", "ais", 75.0, 4 * 60),
-    ("ais", "firms", 30.0, 3 * 60),
-    ("adsb", "ais", 30.0, 60.0),
+PAIR_RULES: tuple[tuple[str, str, float, float], ...] = tuple(
+    [(left, right, 100.0, 12 * 60) for i, left in enumerate(sorted(NEWS)) for right in sorted(NEWS)[i:]]
+    + [(news, "adsb", 75.0, 4 * 60) for news in sorted(NEWS)]
+    + [(news, "ais", 75.0, 4 * 60) for news in sorted(NEWS)]
+    + [(news, "firms", 50.0, 12 * 60) for news in sorted(NEWS)]
+    + [("adsb", "firms", 30.0, 3 * 60), ("ais", "firms", 30.0, 3 * 60), ("adsb", "ais", 30.0, 60.0)]
 )
+NEWS_KINDS = {"gdelt", *SOCIAL_PLATFORMS}
 RETRIEVAL_KINDS = {kind for pair in PAIR_RULES for kind in pair[:2]}
 
 
@@ -511,7 +521,7 @@ class FusionAI:
         return self.client.available
 
     def adjudicate(self, candidate: Candidate, *, force: bool = False) -> Assessment:
-        cache_key = f"assessment:{PROMPT_VERSION}:{self.client.model}:{candidate.id}"
+        cache_key = self._cache_key(candidate)
         cached_assessment = self.cached_assessment(candidate) if not force else None
         if cached_assessment:
             return cached_assessment
@@ -559,7 +569,7 @@ class FusionAI:
                                         "fusion_adjudication", ASSESSMENT_SCHEMA)
         verdict = result["verdict"] if result["verdict"] in VERDICTS else "INSUFFICIENT_EVIDENCE"
         relation = result["relation"] if result["relation"] in RELATIONS else "NONE"
-        news_pair = candidate.left.kind in {"gdelt", "telegram"} and candidate.right.kind in {"gdelt", "telegram"}
+        news_pair = candidate.left.kind in NEWS_KINDS and candidate.right.kind in NEWS_KINDS
         incident = result.get("incident_relationship", "UNCERTAIN") if news_pair else "NOT_APPLICABLE"
         if incident not in INCIDENT_RELATIONSHIPS or (news_pair and incident == "NOT_APPLICABLE"):
             incident = "UNCERTAIN"
@@ -610,12 +620,18 @@ class FusionAI:
             source_documents=source_documents, source_groups=source_groups,
             evidence=[{key: record.to_dict()[key] for key in ("id", "kind", "label", "ts", "lat", "lon")}
                       for record in (candidate.left, candidate.right)],
+            claim_fingerprints={f"{record.kind}:{record.id}": record.claim_fingerprint()
+                                for record in (candidate.left, candidate.right)},
         )
         self.cache.put(cache_key, "assessment", assessment.to_dict())
         return assessment
 
+    def _cache_key(self, candidate: Candidate) -> str:
+        claims = "|".join(sorted((candidate.left.claim_fingerprint(), candidate.right.claim_fingerprint())))
+        return f"assessment:{PROMPT_VERSION}:{self.client.model}:{candidate.id}:{claims}"
+
     def cached_assessment(self, candidate: Candidate) -> Assessment | None:
-        cache_key = f"assessment:{PROMPT_VERSION}:{self.client.model}:{candidate.id}"
+        cache_key = self._cache_key(candidate)
         cached = self.cache.get(cache_key)
         if not cached:
             return None
@@ -624,6 +640,8 @@ class FusionAI:
             if age >= FAILURE_TTL:
                 return None
         cached["cached"] = True
+        cached.setdefault("claim_fingerprints", {f"{record.kind}:{record.id}": record.claim_fingerprint()
+                                               for record in (candidate.left, candidate.right)})
         if not cached.get("evidence"):
             cached["evidence"] = [{key: record.to_dict()[key] for key in ("id", "kind", "label", "ts", "lat", "lon")}
                                   for record in (candidate.left, candidate.right)]
@@ -728,7 +746,7 @@ def records_from_sources(events, tracks, hotspots, social_posts: dict[str, Any] 
     records: list[EvidenceRecord] = []
     for event in events:
         post = social_posts.get(event.id)
-        kind = "telegram" if event.id.startswith("tg:") else "gdelt"
+        kind = (platform_of(post) if post else platform_of(event)) or "gdelt"
         data = {
             "actor1": event.actor1, "actor2": event.actor2, "persons": event.persons,
             "orgs": event.orgs, "themes": event.themes, "event_code": event.event_code,
@@ -740,7 +758,7 @@ def records_from_sources(events, tracks, hotspots, social_posts: dict[str, Any] 
                         views=post.views, has_media=post.has_media)
         records.append(EvidenceRecord(
             id=event.id, kind=kind, label=f"{event.root_label}: {event.place}", ts=event.ts,
-            timestamp_kind="telegram_post_time" if kind == "telegram" else "gdelt_date_added_not_incident_time",
+            timestamp_kind=f"{kind}_post_time" if kind in SOCIAL_PLATFORMS else "gdelt_date_added_not_incident_time",
             lat=event.lat, lon=event.lon, source=event.source_domain,
             data=data, graph_context=graph_context.get(event.id, []),
         ))
