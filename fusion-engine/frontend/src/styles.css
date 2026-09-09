@@ -14,6 +14,13 @@ body::before { content: ""; position: fixed; inset: 0; pointer-events: none; opa
 .leaflet-control-layers { color: hsl(var(--ink)); }
 .scrollbar { scrollbar-color: hsl(var(--line)) transparent; }
 
-/* Right-column panels: drag the bottom edge to resize; each panel keeps its own scroll. */
-.sidebar-resizable > section, .sidebar-resizable > details > section { resize: vertical; overflow: auto; min-height: 88px; max-height: 80vh !important; }
-.sidebar-resizable > section::-webkit-resizer { background: linear-gradient(135deg, transparent 50%, rgba(255,255,255,.25) 50%); }
+/* Right-column panels: a drag bar at the bottom edge resizes the panel (double-click resets). */
+.panel { position: relative; }
+.panel-grip { display: none; }
+.sidebar-resizable > .panel, .sidebar-resizable > details > .panel { overflow: auto; padding-bottom: 12px; }
+.sidebar-resizable > .panel > .panel-grip, .sidebar-resizable > details > .panel > .panel-grip {
+  display: flex; position: sticky; bottom: 0; left: 0; right: 0; height: 12px; margin: 0 -12px -12px; align-items: center; justify-content: center;
+  cursor: ns-resize; background: linear-gradient(180deg, transparent, rgba(0,0,0,.45)); user-select: none; z-index: 5;
+}
+.panel-grip > span { width: 36px; height: 3px; border-radius: 2px; background: rgba(255,255,255,.28); }
+.panel-grip:hover > span { background: rgba(255,255,255,.6); }
